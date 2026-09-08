@@ -97,11 +97,15 @@ GW_ADMIN_SECRET=x GW_APP_SECRET=y GW_API_ID=z GW_API_HASH=h \
 
 | Document | Description |
 |---|---|
+| [Architecture](docs/architecture.md) | How both products are built — planes, diagrams, failure model |
+| [Migration Guide](docs/migration.md) | Move an existing aiogram/PTB/Pyrogram bot onto the gateway |
+| [Comparison](docs/comparison.md) | vs direct polling, webhooks, in-process Pyrogram — and when NOT to use this |
 | [Spec](docs/spec.md) | Bot API gateway specification |
 | [Sidecar Spec](docs/sidecar-spec.md) | MTProto sidecar requirements |
 | [Engineering Plan](docs/mtproto-gateway-plan.md) | MTProto sidecar implementation plan |
 | [Roadmap](docs/roadmap-10-of-10.md) | Path to v1.0 |
 | [Gap Analysis](docs/gap-analysis-report.md) | External review findings |
+| [Compatibility](docs/compatibility.md) | Pyrogram / pyrofork / Telethon support matrix |
 
 ## License
 

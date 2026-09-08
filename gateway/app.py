@@ -64,6 +64,34 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
 
+    @app.get("/metrics")
+    async def metrics(request: Request):
+        """Prometheus text format — same names as the MTProto sidecar."""
+        import time as _time
+
+        from fastapi import Response
+
+        lines = []
+        for s in request.app.state.mgr.sessions.values():
+            labels = f'alias="{s.alias}"'
+            lines.append(
+                f"tg_gateway_session_state{{{labels}}} {1 if s.state.value == 'live' else 0}"
+            )
+            age = int(_time.time() - s.connected_since) if s.connected_since else 0
+            lines.append(f"tg_gateway_session_connection_age_seconds{{{labels}}} {age}")
+            q = s.queue.stats()
+            lines.append(f"tg_gateway_update_queue_depth{{{labels}}} {q['depth']}")
+            lines.append(
+                f"tg_gateway_updates_dropped_oldest_total{{{labels}}} {q['dropped_oldest']}"
+            )
+            lines.append(
+                f"tg_gateway_updates_expired_by_ttl_total{{{labels}}} {q['expired_by_ttl']}"
+            )
+            lines.append(f"tg_gateway_queue_persistent{{{labels}}} {1 if q['persistent'] else 0}")
+            lines.append(f"tg_gateway_real_429_total{{{labels}}} {s.real_429}")
+            lines.append(f"tg_gateway_synthetic_429_total{{{labels}}} {s.synthetic_429}")
+        return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
     return app
 
 
