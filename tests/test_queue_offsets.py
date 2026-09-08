@@ -1,6 +1,7 @@
 """Update queue + offset tests — acceptance criteria 3, 8, 9 (spec §14)."""
 
 import asyncio
+import os
 
 from gateway.queue import Overflow, UpdateQueue
 
@@ -98,3 +99,72 @@ class TestOffsetPersistence:
                 await s2.close()
 
             asyncio.run(scenario())
+
+
+class TestQueuePersistence:
+    """Review §4: queue must survive gateway restart — not just in-memory."""
+
+    def _make_persistent_queue(self, tmpdir, alias="bot1"):
+        from gateway.queue import UpdateQueue
+        path = os.path.join(tmpdir, "queue.db")
+        return UpdateQueue(maxsize=100, persist_path=path, bot_alias=alias), path
+
+    def test_push_persists_to_sqlite(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            q, _ = self._make_persistent_queue(d)
+            q.push_all([{"update_id": 100}, {"update_id": 101}])
+            assert q.persistent is True
+            assert q.stats()["persistent"] is True
+            q.close()
+
+    def test_restart_restores_unacked(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            # First "boot": push updates, don't ack
+            q1, path = self._make_persistent_queue(d)
+            q1.push_all([{"update_id": 100}, {"update_id": 101}, {"update_id": 102}])
+            q1.close()
+
+            # "Restart": new queue, same persistence path
+            q2 = UpdateQueue(maxsize=100, persist_path=path, bot_alias="bot1")
+            batch = asyncio.run(q2.pull(None, timeout=0.05))
+            assert [u["update_id"] for u in batch] == [100, 101, 102]
+            q2.close()
+
+    def test_restart_respects_consumer_offset(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            # First boot: push 3, ack 2
+            q1, path = self._make_persistent_queue(d)
+            q1.push_all([{"update_id": 100}, {"update_id": 101}, {"update_id": 102}])
+            q1.ack(101)  # consumed through 101
+            q1.close()
+
+            # Restart: should only see 102
+            q2 = UpdateQueue(maxsize=100, persist_path=path, bot_alias="bot1")
+            batch = asyncio.run(q2.pull(None, timeout=0.05))
+            assert [u["update_id"] for u in batch] == [102]
+            q2.close()
+
+    def test_ack_persists_and_cleans_db(self):
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            q, path = self._make_persistent_queue(d)
+            q.push_all([{"update_id": 1}, {"update_id": 2}, {"update_id": 3}])
+            q.ack(3)  # all consumed
+            q.close()
+
+            # Verify DB is clean
+            db = sqlite3.connect(path)
+            count = db.execute("SELECT COUNT(*) FROM update_queue WHERE bot_alias='bot1'").fetchone()[0]
+            db.close()
+            assert count == 0
+
+    def test_memory_only_when_no_persist_path(self):
+        from gateway.queue import UpdateQueue
+        q = UpdateQueue(maxsize=10)
+        assert q.persistent is False
+        q.push_all([{"update_id": 1}])
+        assert q.depth() == 1
