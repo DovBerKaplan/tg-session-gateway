@@ -96,6 +96,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 {"ok": False, "error_code": 404, "description": f"unknown session: {alias}"},
                 status_code=404,
             )
+        # This route SHADOWS the dedicated /getUpdates path (FastAPI matches
+        # registration order) — delegate before the proxy treats it as a
+        # Pyrogram method and 404s it.
+        if method.lower() == "getupdates":
+            return await pull_updates(alias, request)
         if not s.client or s.state != SessionState.live:
             return JSONResponse(
                 {
