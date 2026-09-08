@@ -4,6 +4,5 @@ pyrogram>=2.0
 aiosqlite>=0.20
 cryptography>=42.0
 pydantic>=2.6
-# tgcrypto is a performance enhancement (C extension, optional)
-# Install separately if build tools are available:
-#   pip install tgcrypto
+# tgcrypto: optional C-accelerated crypto (install manually if build tools available)
+# pip install tgcrypto
