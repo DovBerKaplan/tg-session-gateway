@@ -2,6 +2,11 @@
 
 **Deploy your bot without dropping its Telegram session.**
 
+> **Status: 0.0.1 — proof of concept.** Architecture and consumer
+> contract per the spec; hardened against a real bot library
+> (update_id offsets, multipart media, webhook-format push), but not yet
+> battle-tested in production. Known limitations below.
+
 A long-lived infrastructure container that owns the connection to Telegram
 for any number of Bot API tokens. Your application talks only to the
 gateway — redeploys, crashes and rebuilds of your app no longer cause
@@ -97,6 +102,17 @@ bucket overrides (`GW_PRIVATE_RATE` …), `GW_UPDATE_QUEUE_MAX`.
 
 `GET /admin/status` — per bot: session state, connection age, queue depth,
 empty buckets, real vs synthetic 429 counters (spec §13).
+
+## Known limitations (0.0.1)
+
+- **Update queue is in-memory.** App restarts/disconnects lose nothing;
+  a GATEWAY restart restores Telegram offsets from disk but drops
+  queued-unacked updates (Telegram already considers them delivered).
+  Mitigation: `deploy/safe-restart.sh` drains queues first. Persistence
+  of the queue itself is a 0.2 target.
+- **Single consumer per bot** (spec V1). Multiple consumers need the V2 lease.
+- **No clustering** — one gateway process; spec caps a process at ~20–50 bots.
+- Alerts (spec §13) surface as metrics on `/admin/status`; no notifier wired.
 
 ## Scope
 

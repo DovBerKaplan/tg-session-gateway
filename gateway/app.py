@@ -82,6 +82,14 @@ def build_router_from_state(cfg: Config):
 
     router = APIRouter()
 
+    async def _call_route(request: Request, s, method: str):
+        proxy = Proxy(cfg, request.app.state.mgr, request.app.state.client)
+        ctype = request.headers.get("content-type", "application/json")
+        if not ctype.startswith("application/json"):
+            raw = await request.body()          # multipart / form — verbatim
+            return await proxy.call(s, method, raw, ctype)
+        return await proxy.call(s, method, await _json_body(request))
+
     @router.post("/tgapi/bot{token}/{method}")
     async def tgapi(token: str, method: str, request: Request):
         mgr = request.app.state.mgr
@@ -91,8 +99,19 @@ def build_router_from_state(cfg: Config):
                 {"ok": False, "error_code": 404, "description": "unknown bot token"},
                 status_code=404,
             )
+        return await _call_route(request, s, method)
+
+    @router.get("/tgapi/bot{token}/{method}")
+    async def tgapi_get(token: str, method: str, request: Request):
+        """Some clients use GET — served with query-string params."""
+        mgr = request.app.state.mgr
+        s = mgr.find_by_token(token)
+        if not s:
+            return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
         proxy = Proxy(cfg, mgr, request.app.state.client)
-        return await proxy.call(s, method, await _json_body(request))
+        if method.lower() == "getupdates":
+            return await proxy.call(s, method, dict(request.query_params))
+        return await proxy.call(s, method, dict(request.query_params))
 
     @router.post("/bots/{alias}/{method}")
     async def by_alias(alias: str, method: str, request: Request):
@@ -105,8 +124,7 @@ def build_router_from_state(cfg: Config):
                 {"ok": False, "error_code": 404, "description": "unknown alias"},
                 status_code=404,
             )
-        proxy = Proxy(cfg, mgr, request.app.state.client)
-        return await proxy.call(s, method, await _json_body(request))
+        return await _call_route(request, s, method)
 
     @router.get("/file/bot{token}/{path:path}")
     async def file_proxy(token: str, path: str, request: Request):
@@ -114,7 +132,7 @@ def build_router_from_state(cfg: Config):
         if not mgr.find_by_token(token):
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
         resp = await request.app.state.client.get(f"/file/bot{token}/{path}")
-        return JSONResponse({"ok": False, "error_code": 503, "detail": "file passthrough disabled in factory shim"}) if False else _file_response(resp)
+        return _file_response(resp)
 
     def _file_response(resp):
         from fastapi import Response

@@ -6,30 +6,38 @@ from gateway.queue import Overflow, UpdateQueue
 
 
 class TestQueueOffsets:
-    def test_consumer_offset_is_internal_and_independent(self):
-        """Telegram offset advances on enqueue; consumer acks separately —
-        an app that disappears and returns sees exactly its unacked tail."""
+    def test_ptb_style_offset_contract(self):
+        """THE drop-in contract: consumer acks with update_id + 1 exactly
+        like against Telegram (aiogram/PTB/grammY) — real ids, big numbers."""
         q = UpdateQueue()
         q.push_all([{"update_id": 9001}, {"update_id": 9002}])
-        batch1 = asyncio.run(q.pull(None, timeout=0.05))
-        assert [u["update_id"] for u in batch1] == [9001, 9002]
+        b1 = asyncio.run(q.pull(None, timeout=0.05))
+        assert [u["update_id"] for u in b1] == [9001, 9002]
+        assert "_gw_internal_id" not in b1[0]  # verbatim Telegram updates
 
-        # app processes 9001, acks via offset=internal id of 9001
-        q.ack(batch1[0]["_gw_internal_id"])
-        assert q.depth() == 1
+        # PTB: next getUpdates carries offset = last update_id + 1
+        b2 = asyncio.run(q.pull(offset=9002, timeout=0.01))
+        assert b2 == []
+        assert q.depth() == 0  # 9001, 9002 dropped
 
-        # NEW updates arrive while the app is down
         q.push_all([{"update_id": 9003}])
-        batch2 = asyncio.run(q.pull(None, timeout=0.05))
-        assert [u["update_id"] for u in batch2] == [9002, 9003]
+        b3 = asyncio.run(q.pull(None, 0.05))
+        assert [u["update_id"] for u in b3] == [9003]
 
-    def test_no_duplicates_after_ack(self):
+    def test_partial_ack_keeps_tail(self):
         q = UpdateQueue()
         q.push_all([{"update_id": 1}, {"update_id": 2}, {"update_id": 3}])
         b = asyncio.run(q.pull(None, 0.05))
-        q.ack(b[1]["_gw_internal_id"])  # acked through #2
+        q.ack(b[1]["update_id"])  # acked through #2
         b2 = asyncio.run(q.pull(None, 0.05))
         assert [u["update_id"] for u in b2] == [3]
+
+    def test_telegram_redelivery_deduped(self):
+        q = UpdateQueue()
+        q.push_all([{"update_id": 50}, {"update_id": 51}])
+        q.push_all([{"update_id": 50}])  # redelivery
+        b = asyncio.run(q.pull(None, 0.05))
+        assert [u["update_id"] for u in b] == [50, 51]
 
     def test_consumer_down_queue_grows_to_cap_then_drop_oldest(self):
         """Criterion 8 logic: consumer gone → queue grows, nothing reconnects."""

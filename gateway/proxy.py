@@ -38,8 +38,11 @@ class Proxy:
         self.mgr = mgr
         self.client = client
 
-    async def call(self, s: BotSession, method: str, body: dict) -> Response:
+    async def call(self, s: BotSession, method: str, body, content_type: str = "application/json") -> Response:
         m = method.lower()
+        raw = None if isinstance(body, dict) else body  # multipart/form passthrough
+        if raw is not None:
+            return await self._forward_raw(s, method, raw, content_type)
         body = await self._resolve_username_chat(s, body)
 
         if m in GATEWAY_OWNED:
@@ -114,6 +117,48 @@ class Proxy:
             s.note_send()
 
         # learn from real 429s (highest authority, spec §8.2 §5–6)
+        if resp.status_code == 429:
+            s.real_429 += 1
+            try:
+                retry = float(resp.json().get("parameters", {}).get("retry_after", 5))
+            except Exception:
+                retry = 5.0
+            s.guard.report_429(chat_id, retry)
+            s.last_429 = {"method": method, "chat_id": chat_id,
+                          "retry_after": retry, "at": time.time()}
+        return Response(content=resp.content, status_code=resp.status_code,
+                        media_type="application/json")
+
+    async def _forward_raw(self, s, method: str, raw: bytes, content_type: str) -> Response:
+        """Multipart/form-data (sendPhoto, documents...) — Rate Guard uses
+        the chat_id form field when present; body passes through verbatim."""
+        chat_id = None
+        try:
+            import re as _re
+
+            m = _re.search(rb'name="chat_id"\r?\n\r?\n(-?\d+)\r?\n', raw)
+            if m:
+                chat_id = int(m.group(1))
+        except Exception:
+            pass
+        if not s.guard.try_acquire(method, chat_id):
+            s.synthetic_429 += 1
+            retry = max(1, min(s.guard.wait_time(method, chat_id), 60))
+            return JSONResponse(
+                {"ok": False, "error_code": 429,
+                 "description": f"Too Many Requests: retry after {int(retry)}",
+                 "parameters": {"retry_after": int(retry)}},
+                status_code=429,
+            )
+        try:
+            resp = await self.client.post(
+                f"/bot{s.token}/{method}", content=raw,
+                headers={"Content-Type": content_type},
+            )
+        except httpx.HTTPError as e:
+            return JSONResponse({"ok": False, "error_code": 502,
+                                 "description": f"upstream: {e}"}, status_code=502)
+        s.note_send()
         if resp.status_code == 429:
             s.real_429 += 1
             try:

@@ -19,7 +19,7 @@ from typing import Optional
 
 @dataclass
 class QueuedUpdate:
-    internal_id: int
+    update_id: int      # Telegram's own id — the consumer speaks this natively
     update: dict
     enqueued_at: float
 
@@ -35,8 +35,8 @@ class UpdateQueue:
         self.overflow = overflow
         self.ttl_s = ttl_s
         self._q: deque[QueuedUpdate] = deque()
-        self._next_id = 1
-        self._consumer_offset = 0  # highest internal_id acked by the consumer
+        self._seen_ids: set[int] = set()   # Telegram redelivery dedup
+        self._consumer_offset = 0  # highest TELEGRAM update_id acked
         self._new_data = asyncio.Event()
         self.dropped = 0
         self.expired = 0
@@ -49,13 +49,21 @@ class UpdateQueue:
             self._push(u)
 
     def _push(self, update: dict) -> None:
+        uid = update.get("update_id")
+        if uid is None:
+            uid = (self._q[-1].update_id + 1) if self._q else self._consumer_offset + 1
+            update = dict(update)
+            update["update_id"] = uid
+        if uid in self._seen_ids:
+            return  # Telegram redelivered — already queued
         if len(self._q) >= self.maxsize:
             if self.overflow == "reject_new":
                 raise Overflow()
-            self._q.popleft()  # drop_oldest
+            old = self._q.popleft()  # drop_oldest
+            self._seen_ids.discard(old.update_id)
             self.dropped += 1
-        self._q.append(QueuedUpdate(self._next_id, update, time.monotonic()))
-        self._next_id += 1
+        self._q.append(QueuedUpdate(uid, update, time.monotonic()))
+        self._seen_ids.add(uid)
         self._new_data.set()
 
     def _prune_expired(self) -> None:
@@ -71,24 +79,16 @@ class UpdateQueue:
     # ── consumer side (Bot-API-compatible getUpdates semantics) ──────
 
     async def pull(self, offset: Optional[int], timeout: float, limit: int = 100) -> list[dict]:
-        """Long-poll: wait up to `timeout` for updates newer than `offset`.
-
-        offset here is the INTERNAL id: consumers ack by returning the
-        last internal_id they saw, exactly like the real Bot API's
-        update_id+1 semantics. Every returned update carries
-        `_gw_internal_id` so the ack can flow back transparently."""
+        """Long-poll with REAL Bot API semantics: offset is Telegram's
+        update_id (+1 style) exactly as aiogram/PTB/grammY send it.
+        The updates returned are Telegram's verbatim — no extra fields."""
         if offset is not None:
             self.ack(offset)
         deadline = time.monotonic() + timeout
         while True:
-            pending = [u for u in self._q if u.internal_id > self._consumer_offset]
+            pending = [u for u in self._q if u.update_id > self._consumer_offset]
             if pending:
-                out = []
-                for q in pending[:limit]:
-                    u = dict(q.update)
-                    u["_gw_internal_id"] = q.internal_id
-                    out.append(u)
-                return out
+                return [q.update for q in pending[:limit]]
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return []
@@ -98,10 +98,13 @@ class UpdateQueue:
             except asyncio.TimeoutError:
                 return []
 
-    def ack(self, last_seen_internal_id: int) -> None:
-        self._consumer_offset = max(self._consumer_offset, last_seen_internal_id)
-        while self._q and self._q[0].internal_id <= self._consumer_offset:
-            self._q.popleft()
+    def ack(self, last_seen_update_id: int) -> None:
+        """Consumers ack exactly like against Telegram: the next getUpdates
+        carries update_id+1; anything ≤ it is dropped from the queue."""
+        self._consumer_offset = max(self._consumer_offset, last_seen_update_id)
+        while self._q and self._q[0].update_id <= self._consumer_offset:
+            old = self._q.popleft()
+            self._seen_ids.discard(old.update_id)
 
     # ── push mode ────────────────────────────────────────────────────
 
