@@ -1,0 +1,33 @@
+# The gateway's OWN lifecycle — never referenced from a consumer compose.
+# Spec §5: separate project name, external network, dedicated volume.
+# Start once with deploy/install.sh; consumers only JOIN the network.
+name: tg-gateway
+
+services:
+  gateway:
+    build: .
+    image: tg-session-gateway:latest
+    container_name: tg-gateway
+    labels:
+      tg.gateway: "true"
+    restart: unless-stopped
+    environment:
+      GW_ADMIN_SECRET: ${GW_ADMIN_SECRET:?set in .env}
+      GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}
+      GW_FERNET_KEY: ${GW_FERNET_KEY:-}
+      GW_ON_LIMIT: ${GW_ON_LIMIT:-queue}
+    volumes:
+      - tg-gateway-data:/data
+    networks:
+      - tg-gateway-net
+    ports:
+      - "127.0.0.1:8080:8080"   # admin/API on loopback only (spec §5.1)
+
+networks:
+  tg-gateway-net:
+    name: tg-gateway-net
+    external: true              # created once by install.sh
+
+volumes:
+  tg-gateway-data:
+    name: tg-gateway-data
