@@ -132,7 +132,9 @@ class SessionManager:
         if not s:
             return False
         await self.store.set_paused(alias, False)
-        s.state = State.live if s.task and not s.task.done() else State.connecting
+        if not s.task or s.task.done():  # dead poller → restart it
+            s.task = asyncio.create_task(self._poller(s), name=f"poll-{alias}")
+        s.state = State.live
         return True
 
     async def drain(self, alias: str) -> bool:
@@ -254,7 +256,10 @@ class SessionManager:
                     offset = max(u["update_id"] for u in updates)
                     await self.store.save_offset(s.alias, offset)
                     if s.push_url:
-                        asyncio.create_task(self._push_to_consumer(s, updates))
+                        # official webhook shape: ONE Update per POST, body = the
+                        # Update object itself — webhook libraries connect as-is
+                        for u in updates:
+                            asyncio.create_task(self._push_to_consumer(s, u))
                 else:
                     s.state = State.live
             except asyncio.CancelledError:
@@ -267,10 +272,10 @@ class SessionManager:
                 backoff = min(backoff * 2, self.cfg.poll_backoff_max)
                 s.state = State.live
 
-    async def _push_to_consumer(self, s: BotSession, updates: list[dict]) -> None:
-        """Push mode: internal webhook to the consumer (spec §10.1)."""
+    async def _push_to_consumer(self, s: BotSession, update: dict) -> None:
+        """Push mode = Telegram webhook format: the Update object IS the body."""
         try:
-            await self.client.post(s.push_url, json={"updates": updates}, timeout=10)
+            await self.client.post(s.push_url, json=update, timeout=10)
         except Exception as e:
             log.info("[%s] push to consumer failed (queue keeps growing): %s", s.alias, e)
 
