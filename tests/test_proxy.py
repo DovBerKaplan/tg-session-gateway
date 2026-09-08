@@ -24,6 +24,7 @@ def make_proxy(on_limit="reject") -> tuple[Proxy, BotSession]:
     s = BotSession(
         alias="t", token="1:abc",
         queue=UpdateQueue(100), guard=BotRateGuard(cfg.rate, on_limit),
+        on_limit=None if on_limit == "queue" else on_limit,
     )
     return Proxy(cfg, s, httpx.AsyncClient(base_url=BASE)), s
 

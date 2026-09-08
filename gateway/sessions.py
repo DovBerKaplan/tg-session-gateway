@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -44,8 +45,28 @@ class BotSession:
     last_error: str = ""
     real_429: int = 0
     synthetic_429: int = 0
+    last_429: dict = field(default_factory=dict)   # §10.2: פרטי 429 אחרון
     push_url: Optional[str] = None
     push_task: Optional[asyncio.Task] = None
+    push_healthy: Optional[bool] = None
+    # per-bot overrides (§8.3/§10.2) — fall back to gateway defaults
+    on_limit: Optional[str] = None
+    paid_broadcasts: bool = False
+    # rolling send meter (§13: שידורים/שנייה מול תקרת 30)
+    _send_times: deque = field(default_factory=lambda: deque(maxlen=200))
+
+    def note_send(self) -> None:
+        self._send_times.append(time.monotonic())
+
+    def sends_per_s(self) -> float:
+        now = time.monotonic()
+        while self._send_times and now - self._send_times[0] > 1.0:
+            self._send_times.popleft()
+        return round(len(self._send_times) / 1.0, 1)
+
+    @property
+    def effective_on_limit(self) -> str:
+        return self.on_limit or "queue"
 
     def public_status(self) -> dict:
         return {
@@ -57,10 +78,15 @@ class BotSession:
             else None,
             "queue": self.queue.stats(),
             "buckets": self.guard.snapshot(),
+            "sends_per_s": self.sends_per_s(),
             "real_429": self.real_429,
             "synthetic_429": self.synthetic_429,
+            "last_429": self.last_429 or None,
             "last_error": self.last_error[:200],
             "push_url": self.push_url,
+            "push_healthy": self.push_healthy,
+            "on_limit": self.effective_on_limit,
+            "paid_broadcasts": self.paid_broadcasts,
         }
 
 
@@ -73,15 +99,21 @@ class SessionManager:
 
     # ── lifecycle ────────────────────────────────────────────────────
 
-    async def attach(self, alias: str, token: str) -> BotSession:
+    async def attach(self, alias: str, token: str, on_limit: str | None = None,
+                     paid_broadcasts: bool = False) -> BotSession:
         if alias in self.sessions:
             return self.sessions[alias]
         s = BotSession(
             alias=alias,
             token=token,
-            queue=UpdateQueue(self.cfg.policy.update_queue_max),
+            queue=UpdateQueue(self.cfg.policy.update_queue_max,
+                              overflow="drop_oldest",
+                              ttl_s=self.cfg.policy.update_ttl_s),
             guard=BotRateGuard(self.cfg.rate, self.cfg.policy.on_limit),
+            on_limit=on_limit,
+            paid_broadcasts=paid_broadcasts,
         )
+        s.guard.paid_enabled = paid_broadcasts
         self.sessions[alias] = s
         await self.store.register_bot(alias, token)
         s.task = asyncio.create_task(self._poller(s), name=f"poll-{alias}")
@@ -146,6 +178,34 @@ class SessionManager:
               for t in (s.task, s.push_task) if t),
             return_exceptions=True,
         )
+
+    def set_push(self, alias: str, url: Optional[str]) -> bool:
+        """Wire push mode + the §10.1 consumer healthcheck (every 60s;
+        failure marks unhealthy — the queue keeps growing, Telegram stays)."""
+        s = self.sessions.get(alias)
+        if not s:
+            return False
+        s.push_url = url
+        if s.push_task and not s.push_task.done():
+            s.push_task.cancel()
+        s.push_task = None
+        s.push_healthy = None
+        if url:
+            s.push_task = asyncio.create_task(self._push_healthcheck(s), name=f"pushhc-{alias}")
+        return True
+
+    async def _push_healthcheck(self, s: BotSession) -> None:
+        interval = self.cfg.push_health_interval
+        while True:
+            await asyncio.sleep(interval)
+            if not s.push_url:
+                s.push_healthy = None
+                continue
+            try:
+                await self.client.get(s.push_url, timeout=5)
+                s.push_healthy = True
+            except Exception:
+                s.push_healthy = False  # queue grows; never disconnect Telegram
 
     # ── the poller — exclusive getUpdates owner ──────────────────────
 

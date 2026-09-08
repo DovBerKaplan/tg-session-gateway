@@ -55,6 +55,7 @@ class BotPolicy:
     on_limit: str = _env("GW_ON_LIMIT", "queue")  # queue | reject
     queue_wait_timeout: float = _env_float("GW_QUEUE_WAIT_TIMEOUT", 25.0)
     update_queue_max: int = _env_int("GW_UPDATE_QUEUE_MAX", 5000)
+    update_ttl_s: float = _env_float("GW_UPDATE_TTL_S", 3600.0)
     paid_broadcasts_enabled: bool = _env_bool("GW_PAID_BROADCASTS", False)
 
 

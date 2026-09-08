@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .admin import RegisterBot, SetPush
+from .admin import RegisterBot, SetPaid, SetPush
 from .config import Config
 from .sessions import SessionManager
 from .store import Store
@@ -139,9 +139,16 @@ def build_admin_router_lazy(cfg: Config):
     async def register(body: RegisterBot, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        if body.on_limit and body.on_limit not in ("queue", "reject"):
+            return JSONResponse({"ok": False, "error_code": 400,
+                                 "description": "on_limit must be queue|reject"}, status_code=400)
         alias = body.alias or f"bot-{__import__('secrets').token_hex(4)}"
-        s = await request.app.state.mgr.attach(alias, body.token)
-        return {"ok": True, "alias": alias, "state": s.state.value}
+        s = await request.app.state.mgr.attach(
+            alias, body.token, on_limit=body.on_limit,
+            paid_broadcasts=body.paid_broadcasts,
+        )
+        return {"ok": True, "alias": alias, "state": s.state.value,
+                "on_limit": s.effective_on_limit}
 
     @router.get("/admin/status")
     async def status(request: Request):
@@ -178,10 +185,22 @@ def build_admin_router_lazy(cfg: Config):
     async def set_push(alias: str, body: SetPush, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        ok = request.app.state.mgr.set_push(alias, body.url)
+        if not ok:
+            return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
+        return {"ok": True, "push_url": request.app.state.mgr.sessions[alias].push_url}
+
+    @router.post("/admin/bots/{alias}/paid")
+    async def set_paid(alias: str, body: SetPaid, request: Request):
+        """§8.2 §8: the paid 1000/s ceiling needs THIS arm plus the
+        request-side allow_paid_broadcast flag — double opt-in."""
+        if not _authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
         s = request.app.state.mgr.sessions.get(alias)
         if not s:
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
-        s.push_url = body.url
-        return {"ok": True, "push_url": s.push_url}
+        s.paid_broadcasts = body.enabled
+        s.guard.paid_enabled = body.enabled
+        return {"ok": True, "paid_broadcasts": s.paid_broadcasts}
 
     return router
