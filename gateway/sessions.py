@@ -1,3 +1,4 @@
+import os
 """Session plane — one poller per token, exclusive ownership (spec §6.1).
 
 States: connecting → live → (paused | draining) → error
@@ -115,6 +116,8 @@ class SessionManager:
                 self.cfg.policy.update_queue_max,
                 overflow="drop_oldest",
                 ttl_s=self.cfg.policy.update_ttl_s,
+                persist_path=os.path.join(self.cfg.data_dir, "queue.db"),
+                bot_alias=alias,
             ),
             guard=BotRateGuard(self.cfg.rate, self.cfg.policy.on_limit),
             on_limit=on_limit,
