@@ -286,12 +286,13 @@ class MTSessionManager:
         """Create a Pyrogram update handler that routes to the session."""
 
         async def handler(client, update, users, chats):
-            # Serialize Pyrogram update to dict
+            # Serialize Pyrogram update to dict. _serialize_update returns
+            # None for anything it can't serialize — no hasattr guard
+            # (plain dicts have no __dict__ and were silently dropped).
             try:
-                if hasattr(update, "__dict__"):
-                    update_dict = self._serialize_update(update)
-                    if update_dict:
-                        await s.push_update(update_dict)
+                update_dict = self._serialize_update(update)
+                if update_dict:
+                    await s.push_update(update_dict)
             except Exception as e:
                 log.warning("[%s] update handler error: %s", s.alias, e)
 
