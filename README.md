@@ -125,6 +125,45 @@ empty buckets, real vs synthetic 429 counters (spec §13).
 - **No clustering** — one gateway process; spec caps a process at ~20–50 bots.
 - Alerts (spec §13) surface as metrics on `/admin/status`; no notifier wired.
 
+## MTProto Session Persistence (Pyrogram / pyrofork)
+
+For **Pyrogram / pyrofork** bots (MTProto): the gateway includes a
+transparent session-persistence layer. **Zero changes to application code.**
+
+Your app creates `Client(name, ..., in_memory=True)` — the patch intercepts
+this and converts it to file-based sessions on a persistent volume.
+Pyrogram loads the saved `auth_key` on every boot, skips
+`ImportBotAuthorization` entirely, and connects in 1-2 seconds. The
+FloodWait (20-45 min per deploy) is eliminated.
+
+### Integration (zero code changes)
+
+```dockerfile
+# Option 1 — use as base image + entrypoint shim
+FROM ghcr.io/dovberkaplan/tg-session-gateway:latest
+COPY your-app/ /app/
+CMD ["python", "-m", "mtproto.entrypoint", "your_app.main"]
+
+# Option 2 — sitecustomize (applies automatically)
+COPY mtproto/sitecustomize.py /usr/local/lib/python3.12/site-packages/
+CMD ["python", "-m", "your_app.main"]
+
+# Option 3 — explicit (in your code)
+# from mtproto import apply; apply()
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PYROGRAM_SESSION_DIR` | `/data/sessions` | Session file directory |
+| `PYROGRAM_PERSIST_SESSIONS` | `1` | Set `0` to disable |
+
+### What it does NOT do
+
+- Does not hold TCP connections across restarts (the MTProto TCP
+  reconnect takes 1-2s — the FloodWait killer is the re-auth, not the TCP)
+- Does not intercept network traffic (library patch, not a proxy)
+- Works only with Pyrogram / pyrofork
+
 ## Scope
 
 V1: multi-bot, pull + push to consumers, full rate guard, isolated
