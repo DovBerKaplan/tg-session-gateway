@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS bots (
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     paused       INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS admin_audit (
+    ts       TEXT NOT NULL DEFAULT (datetime('now')),
+    action   TEXT NOT NULL,
+    alias    TEXT NOT NULL,
+    detail   TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -120,6 +126,26 @@ class Store:
             "UPDATE bots SET telegram_offset = ? WHERE alias = ?", (offset, alias)
         )
         await self.db.commit()
+
+    # ── admin audit trail (append-only) ───────────────────────────────
+
+    async def audit(self, action: str, alias: str, detail: str = "") -> None:
+        """Record an admin action. Never raises into the caller's path."""
+        try:
+            await self.db.execute(
+                "INSERT INTO admin_audit (action, alias, detail) VALUES (?, ?, ?)",
+                (action, alias, detail),
+            )
+            await self.db.commit()
+        except Exception as e:  # audit must not break the admin action itself
+            log.error("audit write failed (%s %s): %s", action, alias, e)
+
+    async def get_audit(self, limit: int = 100) -> list[dict]:
+        async with self.db.execute(
+            "SELECT ts, action, alias, detail FROM admin_audit ORDER BY rowid DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
     @staticmethod
     def token_suffix(token: str) -> str:

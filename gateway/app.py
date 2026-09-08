@@ -217,6 +217,9 @@ def build_admin_router_lazy(cfg: Config):
             on_limit=body.on_limit,
             paid_broadcasts=body.paid_broadcasts,
         )
+        await request.app.state.store.audit(
+            "register", alias, f"token=…{body.token[-4:]} on_limit={s.effective_on_limit}"
+        )
         return {
             "ok": True,
             "alias": alias,
@@ -237,25 +240,37 @@ def build_admin_router_lazy(cfg: Config):
     async def pause(alias: str, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.pause(alias)}
+        ok = await request.app.state.mgr.pause(alias)
+        if ok:
+            await request.app.state.store.audit("pause", alias)
+        return {"ok": ok}
 
     @router.post("/admin/bots/{alias}/resume")
     async def resume(alias: str, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.resume(alias)}
+        ok = await request.app.state.mgr.resume(alias)
+        if ok:
+            await request.app.state.store.audit("resume", alias)
+        return {"ok": ok}
 
     @router.post("/admin/bots/{alias}/drain")
     async def drain(alias: str, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.drain(alias)}
+        ok = await request.app.state.mgr.drain(alias)
+        if ok:
+            await request.app.state.store.audit("drain", alias)
+        return {"ok": ok}
 
     @router.delete("/admin/bots/{alias}")
     async def delete(alias: str, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.delete(alias)}
+        ok = await request.app.state.mgr.delete(alias)
+        if ok:
+            await request.app.state.store.audit("delete", alias)
+        return {"ok": ok}
 
     @router.post("/admin/bots/{alias}/push")
     async def set_push(alias: str, body: SetPush, request: Request):
@@ -264,6 +279,7 @@ def build_admin_router_lazy(cfg: Config):
         ok = request.app.state.mgr.set_push(alias, body.url)
         if not ok:
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
+        await request.app.state.store.audit("set_push", alias, f"url={body.url}")
         return {"ok": True, "push_url": request.app.state.mgr.sessions[alias].push_url}
 
     @router.post("/admin/bots/{alias}/paid")
@@ -277,6 +293,13 @@ def build_admin_router_lazy(cfg: Config):
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
         s.paid_broadcasts = body.enabled
         s.guard.paid_enabled = body.enabled
+        await request.app.state.store.audit("set_paid", alias, f"enabled={body.enabled}")
         return {"ok": True, "paid_broadcasts": s.paid_broadcasts}
+
+    @router.get("/admin/audit")
+    async def audit_log(request: Request):
+        if not _authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        return {"ok": True, "entries": await request.app.state.store.get_audit()}
 
     return router
