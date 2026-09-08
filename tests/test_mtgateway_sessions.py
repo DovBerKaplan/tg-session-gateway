@@ -169,3 +169,66 @@ class TestManagerLifecycle:
                 assert await mgr.resume("bot1") is True
                 assert s.state == SessionState.live
                 await store.close()
+
+
+class TestIdempotency:
+    """E2: App-supplied idempotency keys prevent duplicate sends."""
+
+    def test_first_key_accepted(self):
+        s = MTSession(alias="bot1", token="t")
+        assert s.check_idempotency("send-001") is True
+
+    def test_duplicate_key_rejected(self):
+        s = MTSession(alias="bot1", token="t")
+        s.check_idempotency("send-001")
+        assert s.check_idempotency("send-001") is False
+
+    def test_different_keys_both_accepted(self):
+        s = MTSession(alias="bot1", token="t")
+        assert s.check_idempotency("send-001") is True
+        assert s.check_idempotency("send-002") is True
+
+
+class TestPauseSending:
+    """E4: Pause outbound; keep receiving updates."""
+
+    async def test_pause_and_resume_sending(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _cfg(d)
+            store = MTStore(d)
+            await store.connect()
+            mgr = MTSessionManager(cfg, store)
+            with patch.object(MTSessionManager, "_start_client", new=AsyncMock()):
+                s = await mgr.register("bot1", "t")
+                assert s.send_paused is False
+                assert await mgr.pause_sending("bot1") is True
+                assert s.send_paused is True
+                # Receiving still works (queue accepts updates)
+                await s.push_update({"update_id": 1})
+                assert s._update_queue.qsize() == 1
+                assert await mgr.resume_sending("bot1") is True
+                assert s.send_paused is False
+                await store.close()
+
+
+class TestDeployToFirstMessageSLO:
+    """E7: Track time from consumer attach to first outbound send."""
+
+    def test_slo_zero_before_any_send(self):
+        s = MTSession(alias="bot1", token="t")
+        assert s.deploy_to_first_message_s == 0.0
+
+    def test_slo_recorded_after_first_send(self):
+        import time as _t
+        s = MTSession(alias="bot1", token="t")
+        h = ConsumerHandle(consumer_id="c1")
+        h.connected_at = _t.time() - 2.5  # attached 2.5 seconds ago
+        s.add_consumer(h)
+        s.note_first_send()
+        assert 2.0 < s.deploy_to_first_message_s < 3.0
+
+    def test_stats_includes_slo(self):
+        s = MTSession(alias="bot1", token="t")
+        stats = s.stats()
+        assert "deploy_to_first_message_s" in stats
+        assert stats["deploy_to_first_message_s"] is None  # not yet sent

@@ -114,6 +114,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         elif not isinstance(chat_id, int):
             chat_id = None
 
+        # ── E2: Idempotency check (app-supplied key prevents duplicate sends)
+        idem_key = body.pop("_idempotency_key", None)
+        if idem_key and not s.check_idempotency(idem_key):
+            return JSONResponse(
+                {"ok": True, "result": None, "idempotent_replay": True,
+                 "description": "duplicate send suppressed (idempotency key already seen)"})
+
+        # ── E4: Check send-paused state
+        if s.send_paused and method.lower() not in (
+            "answer_callback_query", "answer_inline_query", "get_updates"):
+            return JSONResponse(
+                {"ok": False, "error_code": 423,
+                 "description": "sending is paused for this session (E4)"},
+                status_code=423)
+
         # ── Rate Guard admission ─────────────────────────────────────
         paid_requested = bool(body.get("allow_paid_broadcast"))
         s.guard.enter_paid_lane(paid_requested)
@@ -149,6 +164,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # Clear backoff on success (positive signal)
             if chat_id is not None:
                 s.guard.clear_peer_backoff(chat_id)
+
+            # E7: Track deploy-to-first-message SLO
+            s.note_first_send()
 
             return JSONResponse({"ok": True, "result": _serialize(result)})
         except Exception as e:
@@ -328,6 +346,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
         return {"ok": await request.app.state.mgr.unregister(alias)}
 
+    @app.post("/v1/admin/sessions/{alias}/pause_sending")
+    async def admin_pause_sending(alias: str, request: Request):
+        """E4: Pause outbound sends; keep receiving updates."""
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        return {"ok": await request.app.state.mgr.pause_sending(alias)}
+
+    @app.post("/v1/admin/sessions/{alias}/resume_sending")
+    async def admin_resume_sending(alias: str, request: Request):
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        return {"ok": await request.app.state.mgr.resume_sending(alias)}
+
     @app.post("/v1/admin/sessions/{alias}/paid")
     async def admin_paid(alias: str, body: SetPaid, request: Request):
         if not _admin_authed(request):
@@ -369,6 +400,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             lines.append(f"tg_gateway_real_flood_wait_total{{{labels}}} {s.real_flood_wait}")
             lines.append(f"tg_gateway_synthetic_429_total{{{labels}}} {s.synthetic_429}")
             lines.append(f"tg_gateway_consumers{{{labels}}} {len(s._consumers)}")
+            slo = s.deploy_to_first_message_s
+            if slo:
+                lines.append(f"tg_gateway_deploy_to_first_message_seconds{{{labels}}} {slo:.2f}")
+            lines.append(f"tg_gateway_send_paused{{{labels}}} {1 if s.send_paused else 0}")
         return Response(content="\n".join(lines) + "\n",
                         media_type="text/plain; version=0.0.4")
 

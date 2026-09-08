@@ -77,6 +77,27 @@ class MTSession:
 
     _session_dir: str = "/data/sessions"  # overridden by manager
 
+    # E2: Idempotency — app-supplied keys prevent duplicate sends
+    _seen_idempotency_keys: dict = None  # key → timestamp (LRU-ish)
+
+    def check_idempotency(self, key: str) -> bool:
+        """Returns True if this is a NEW key (proceed with send).
+        Returns False if the key was already seen (skip, return cached result)."""
+        if self._seen_idempotency_keys is None:
+            self._seen_idempotency_keys = {}
+        if key in self._seen_idempotency_keys:
+            return False
+        self._seen_idempotency_keys[key] = time.time()
+        # Prune keys older than 5 minutes (bounded memory)
+        cutoff = time.time() - 300
+        stale = [k for k, ts in self._seen_idempotency_keys.items() if ts < cutoff]
+        for k in stale:
+            del self._seen_idempotency_keys[k]
+        return True
+
+    # E4: Pause sending while keeping receiving alive
+    send_paused: bool = False
+
     def add_consumer(self, handle: ConsumerHandle) -> None:
         self._consumers.append(handle)
         self.active_consumer = handle.consumer_id
@@ -115,6 +136,19 @@ class MTSession:
                     log.warning("[%s] WS push to %s failed: %s",
                                 self.alias, consumer.consumer_id, e)
 
+    # E7: SLO metric — time from consumer attach to first outbound send
+    _first_send_at: float = 0.0
+
+    def note_first_send(self) -> None:
+        if not self._first_send_at and self._consumers:
+            self._first_send_at = time.time()
+
+    @property
+    def deploy_to_first_message_s(self) -> float:
+        if not self._first_send_at or not self._consumers:
+            return 0.0
+        return self._first_send_at - self._consumers[-1].connected_at
+
     def stats(self) -> dict:
         return {
             "alias": self.alias,
@@ -128,6 +162,9 @@ class MTSession:
             "synthetic_429": self.synthetic_429,
             "last_flood_wait": self.last_flood_wait or None,
             "last_error": self.last_error[:200],
+            "send_paused": self.send_paused,
+            "deploy_to_first_message_s": round(self.deploy_to_first_message_s, 2)
+            if self.deploy_to_first_message_s else None,
         }
 
 
@@ -259,6 +296,21 @@ class MTSessionManager:
             except Exception:
                 pass
         await self.store.delete(alias)
+        return True
+
+    async def pause_sending(self, alias: str) -> bool:
+        """E4: Pause outbound sends; keep receiving updates."""
+        s = self.sessions.get(alias)
+        if not s:
+            return False
+        s.send_paused = True
+        return True
+
+    async def resume_sending(self, alias: str) -> bool:
+        s = self.sessions.get(alias)
+        if not s:
+            return False
+        s.send_paused = False
         return True
 
     async def pause(self, alias: str) -> bool:
