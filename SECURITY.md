@@ -18,9 +18,30 @@
 2. **Consumer API** — on the internal Docker network (`tg-gateway-net`); requires
    `Authorization: Bearer $GW_APP_SECRET`.
 3. **Session files** — on a dedicated Docker volume (`tg-gateway-data` or
-   `tg-mtgateway-data`); not baked into images; permissions `0600` on directory.
+   `tg-mtgateway-data`); not baked into images; permissions `0700` on directory,
+   `0600` on files (enforced by the sidecar at startup).
 4. **Network** — the sidecar/gateway is the only process with TCP to Telegram.
    Consumers have no direct Telegram access.
+
+### Known footgun: `/tgapi/bot{token}/...` is unauthenticated
+
+The Bot API-compatible surface (`/tgapi/bot<token>/<method>` and
+`/file/bot<token>/...`) authenticates by **possession of the token
+itself** — exactly like `api.telegram.org`. There is no additional
+secret. Consequences:
+
+- Anyone on the gateway's Docker network who learns a bot token can
+  send as that bot through the gateway.
+- Treat the token with the same care as in direct mode: never in
+  logs, never in app config committed to a repo.
+- For a hardened setup, use the alias surface
+  (`/bots/{alias}/{method}`, Bearer `GW_APP_SECRET`) so consumer
+  processes never hold bot tokens at all — and rotate `GW_APP_SECRET`
+  independently of bot tokens.
+
+Admin actions (register, delete, pause, resume, push/paid settings)
+are recorded in an append-only audit table in the store
+(`admin_audit`) — check it when a session "disappears".
 
 ## Session File Security
 
@@ -30,7 +51,8 @@ filesystem access to the session volume can impersonate the bot.
 **Mitigations:**
 
 - Session volume is a dedicated Docker volume, not a bind mount to the host
-- Volume permissions: `chmod 700` on the directory, `chmod 600` on files
+- Volume permissions: `chmod 700` on the directory, `chmod 600` on the
+  `.session` files — both enforced by the sidecar itself at startup
 - Session files are never logged (only alias names appear in logs)
 - Tokens ARE encrypted at rest (Fernet); session files are filesystem-protected
 
@@ -39,6 +61,20 @@ inside them is only as safe as the Docker volume. If you need encryption
 at rest for session files, use filesystem-level encryption (LUKS, eCryptfs)
 on the Docker volume. Application-level session file encryption is on the
 roadmap ([Phase 0.4](roadmap-10-of-10.md#04-session-file-encryption-at-rest)).
+
+## Secrets policy (Fernet key)
+
+`GW_FERNET_KEY` encrypts bot tokens in the store. Behavior:
+
+- **Not set** → a key is auto-generated into `<data_dir>/.fernet_key`
+  (0600) with a loud warning. Acceptable for a POC, **not for real
+  traffic**: losing the file loses every stored token.
+- **Production** → set `GW_FERNET_KEY` explicitly, store it in your
+  secrets manager, and **back it up** — the encrypted tokens are
+  unrecoverable without it.
+- **Rotation** → set the new key, then re-register each bot
+  (`POST /admin/bots` with the same alias and token — the store
+  re-encrypts on upsert). The old key is not needed for rotation.
 
 ## Singleton Lock
 
@@ -57,7 +93,9 @@ process dead + no heartbeat for 60 seconds) is automatically reclaimed.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Contact: security@your-domain.com (replace with your actual contact)
+Use GitHub's **private vulnerability reporting** on this repo
+(Security tab → "Report a vulnerability"), or open a draft
+GitHub Security Advisory.
 
 - Response time: within 48 hours
 - Disclosure: coordinated (we'll acknowledge, investigate, and credit you)
@@ -73,4 +111,3 @@ Contact: security@your-domain.com (replace with your actual contact)
 - [ ] Restrict Docker network access to known consumer containers
 - [ ] Monitor `/admin/status` for unexpected sessions
 - [ ] Set up alerting on `tg_gateway_real_flood_wait_total > 0`
-READMEEOF

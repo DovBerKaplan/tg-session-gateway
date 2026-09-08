@@ -66,32 +66,95 @@ POST /v1/sessions/{alias}/getUpdates
 
 [Engineering plan →](docs/mtproto-gateway-plan.md)
 
-## Guarantees (both products)
+## Invariants
 
-- **Two lifecycles.** The gateway/sidecar never lives in your Compose file. `docker compose down` on your app cannot touch it.
-- **One owner per token/session.** No two pollers, no two sockets on one auth_key. A singleton file lock prevents AUTH_KEY_DUPLICATED at the process level.
-- **Rate Guard.** FAQ-exact token buckets. Real 429s from Telegram ≈ 0 during normal operation. One hot chat cannot silence the bot for everyone.
-- **Update queue.** Survives app restarts. Bounded, with drop-oldest or reject policies.
+Design rules the code enforces — with the tests that prove them
+(0.0.x honesty: proven where a test is linked, aspirational elsewhere):
+
+- **One owner per token.** The gateway runs the only `getUpdates`
+  poller; a singleton file lock (PID + heartbeat) blocks a second
+  sidecar process **before** it opens a connection to Telegram.
+  *Tests: two-process lock refusal + stale reclaim
+  (`tests/test_session_lock.py`), gateway-owns-getUpdates
+  (`tests/test_proxy.py`).*
+- **A hot chat cannot silence the bot.** Rate Guard buckets are
+  per-chat; a real 429 or `FloodWait` pauses that chat only.
+  *Tests: `test_chat_429_pauses_only_that_chat`,
+  `test_other_chat_unaffected` (`tests/test_rateguard.py`).*
+- **Updates survive kills.** The update queue is SQLite-WAL-persisted;
+  unacked updates replay after a gateway restart, and consumer offsets
+  resume.
+  *Test: restart-with-unacked-updates
+  (`tests/test_integration_gateway.py`).*
+- **App deploys never touch Telegram.** The gateway/sidecar lives in
+  its own Compose project; `docker compose down` on your app cannot
+  kill the Telegram session.
+- **Replica overlap loses nothing.** During a rolling deploy, old and
+  new replicas can both poll (real Telegram returns 409 Conflict to
+  the second poller; the gateway allows the overlap). Every update
+  reaches at least one replica, and each replica's own stream is
+  duplicate-free when it acks Bot API-style (`offset = seen + 1`).
+  *Test: replica overlap (`tests/test_integration_gateway.py`).*
+  NOTE: the offset contract is subtle — until v0.1, treat the queue
+  ack path as fresh code and keep the tests green before upgrading.
+
+**Status, plainly:** the Bot API gateway is a working prototype with
+the tests above. The MTProto sidecar is earlier — the lock, rate guard
+and HTTP façade are implemented and unit-tested, but it has not carried
+production traffic. Do not put someone else's production on either
+half yet; the sidecar least of all.
+
+**Single-loop assumption.** The rate guards keep all state in-process
+(single asyncio loop). Do not front the gateway with a multi-worker
+gunicorn/uvicorn setup — the buckets would not be shared and the
+limits would multiply. One process per gateway, always.
 
 ## Quickstart
 
-Pre-built multi-arch images (amd64/arm64) are published on every version tag:
+Fastest path — from source with plain Compose (read
+[docker-compose.yml](docker-compose.yml) first; it publishes on
+loopback only):
+
+```bash
+git clone https://github.com/DovBerKaplan/tg-session-gateway && cd tg-session-gateway
+docker network create tg-gateway-net
+printf 'GW_ADMIN_SECRET=%s\nGW_APP_SECRET=%s\n' \
+  "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+docker compose up -d          # builds + starts on 127.0.0.1:8080
+curl -s localhost:8080/healthz
+```
+
+Pre-built multi-arch images (amd64/arm64), published on every version tag:
 
 ```bash
 docker pull ghcr.io/dovberkaplan/tg-session-gateway:latest      # Bot API gateway
 docker pull ghcr.io/dovberkaplan/tg-session-gateway-mtproto:latest  # MTProto sidecar
 ```
 
-Or from source:
+For a server install with the external network, dedicated volume and
+generated secrets in one step: `sudo bash deploy/install.sh`
+(read it before running — never curl-pipe-sudo).
+
+MTProto sidecar:
 
 ```bash
-# Bot API gateway
-sudo bash deploy/install.sh
-
-# MTProto sidecar
 GW_ADMIN_SECRET=x GW_APP_SECRET=y GW_API_ID=z GW_API_HASH=h \
   docker compose -f docker-compose.mtgateway.yml up -d
 ```
+
+## When to use something else
+
+| You need... | Use that instead | Why |
+|---|---|---|
+| Full local Bot API server (files, big uploads, every method) | [tdlibBotApiServer](https://github.com/tdlib/td/blob/master/README.md#telegram-bot-api) or the official [local Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server) | This gateway proxies, it doesn't re-implement the API server; no local file storage |
+| Every MadelineProto/MTProto method over HTTP | [TelegramApiServer](https://github.com/xtrime-ru/TelegramApiServer), [docker-telethon-plus](https://github.com/psyb0t/docker-telethon-plus) | Broader method coverage, battle-tested; this sidecar is Façade-minimal (send + updates + files) |
+| Session persistence for one in-process bot | A volume + Pyrogram file sessions | Less moving parts; you only need this repo when deploys/replicas share one session |
+| Managed scaling for grammY bots | grammY runner / BotMux-style gateways | Ecosystem-native; this repo is library-agnostic HTTP |
+| A user MTProto proxy | [mtproto proxy](https://core.telegram.org/mtproto/mtproto-proxy) implementations | Different problem; out of scope here |
+
+The honest pitch: **Bot API FAQ buckets + synthetic 429 + Compose
+isolation** for HTTP bots, and — if it matures — a Pyrogram-shaped
+long-lived sidecar for the client you already have.
 
 ## Documentation
 

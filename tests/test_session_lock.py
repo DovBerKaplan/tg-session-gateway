@@ -1,6 +1,7 @@
 """Tests for the singleton session lock (AUTH_KEY_DUPLICATED prevention)."""
 
 import os
+import sys
 import tempfile
 import time
 
@@ -135,3 +136,61 @@ class TestLockInSessionManager:
 
             other_lock.release()
             await store.close()
+
+
+class TestTwoProcessLock:
+    """The real AUTH_KEY_DUPLICATED scenario: a second OS process.
+
+    Same-process double-acquire is already covered above; these tests
+    spawn an actual subprocess holding the lock, because the failure
+    we are preventing is a second sidecar/container/process — not a
+    second object in one process.
+    """
+
+    def _holder_script(self):
+        return (
+            "import sys, time; sys.path.insert(0, {root!r}); "
+            "from mtgateway.lock import SessionLock; "
+            "l = SessionLock(alias='bot1', lock_dir={d!r}); "
+            "assert l.acquire(), 'holder could not acquire'; "
+            "print('HELD', flush=True); "
+            "time.sleep(30)"
+        )
+
+    def test_second_process_refused_while_holder_alive(self, tmp_path):
+        import subprocess
+
+        d = str(tmp_path)
+        holder = subprocess.Popen(
+            [sys.executable, "-c", self._holder_script().format(root=os.getcwd(), d=d)],
+            stdout=subprocess.PIPE,
+        )
+        try:
+            assert holder.stdout.readline().decode().strip() == "HELD"  # holder is live
+
+            # this process must be refused — the lock is held by ANOTHER pid
+            contender = SessionLock(alias="bot1", lock_dir=d)
+            assert contender.acquire() is False
+            assert contender._fd is None  # refused: never owned the fd
+        finally:
+            holder.kill()
+            holder.wait()
+
+    def test_lock_reclaimable_after_holder_dies(self, tmp_path):
+        import subprocess
+
+        d = str(tmp_path)
+        holder = subprocess.Popen(
+            [sys.executable, "-c", self._holder_script().format(root=os.getcwd(), d=d)],
+            stdout=subprocess.PIPE,
+        )
+        assert holder.stdout.readline().decode().strip() == "HELD"
+        holder.kill()
+        holder.wait()
+
+        # holder pid is dead → lock is stale → next acquire reclaims.
+        # _is_stale needs the pid gone (it is) — heartbeat age doesn't
+        # matter when the process no longer exists.
+        nxt = SessionLock(alias="bot1", lock_dir=d)
+        assert nxt.acquire() is True
+        nxt.release()

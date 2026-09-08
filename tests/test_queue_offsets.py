@@ -16,14 +16,19 @@ class TestQueueOffsets:
         assert [u["update_id"] for u in b1] == [9001, 9002]
         assert "_gw_internal_id" not in b1[0]  # verbatim Telegram updates
 
-        # PTB: next getUpdates carries offset = last update_id + 1
-        b2 = asyncio.run(q.pull(offset=9002, timeout=0.01))
+        # Telegram docs: "offset = highest previously received update_id
+        # + 1" — what aiogram/PTB/grammY actually send. Acking through
+        # offset-1 must drop exactly the two SEEN updates, never a
+        # third unseen one (regression: acking through `offset` itself
+        # dropped one unseen update per ack — silent data loss for any
+        # real Bot API library).
+        b2 = asyncio.run(q.pull(offset=9003, timeout=0.01))
         assert b2 == []
-        assert q.depth() == 0  # 9001, 9002 dropped
+        assert q.depth() == 0  # 9001, 9002 dropped — and nothing else
 
-        q.push_all([{"update_id": 9003}])
-        b3 = asyncio.run(q.pull(None, 0.05))
-        assert [u["update_id"] for u in b3] == [9003]
+        q.push_all([{"update_id": 9003}, {"update_id": 9004}])
+        b3 = asyncio.run(q.pull(offset=9003, timeout=0.05))  # "give me from 9003"
+        assert [u["update_id"] for u in b3] == [9003, 9004]  # 9003 survives
 
     def test_partial_ack_keeps_tail(self):
         q = UpdateQueue()
