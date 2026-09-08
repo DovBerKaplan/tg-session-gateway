@@ -25,11 +25,13 @@ Health:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
@@ -73,7 +75,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app = FastAPI(title="MTProto Session Gateway", version="0.1.0", lifespan=lifespan)
 
-    def _app_authed(request: Request) -> bool:
+    def _app_authed(request: Request | WebSocket) -> bool:
         return request.headers.get("authorization") == f"Bearer {cfg.app_secret}"
 
     def _admin_authed(request: Request) -> bool:
@@ -251,7 +253,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         if timeout == 0:
             # Non-blocking: return whatever is queued
-            updates = []
+            updates: list = []
             while not s._update_queue.empty() and len(updates) < limit:
                 try:
                     updates.append(s._update_queue.get_nowait())
@@ -343,6 +345,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
         try:
             media = await s.client.download_media(file_id, in_memory=True)
+            if not isinstance(media, io.BytesIO):  # None or a file path, not in-memory bytes
+                return JSONResponse(
+                    {"ok": False, "error_code": 404, "description": "media not found"},
+                    status_code=404,
+                )
             return Response(content=media.getvalue(), media_type="application/octet-stream")
         except Exception as e:
             return JSONResponse(
@@ -452,7 +459,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     return app
 
 
-def _serialize(obj) -> any:
+def _serialize(obj) -> Any:
     """Convert Pyrogram objects to JSON-serializable dicts."""
     if obj is None:
         return None

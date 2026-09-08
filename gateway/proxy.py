@@ -211,9 +211,7 @@ class Proxy:
         cid = body.get("chat_id")
         if not isinstance(cid, str) or not cid.startswith("@"):
             return body
-        cached = getattr(s, "_chat_name_cache", None)
-        if cached is None:
-            cached = s._chat_name_cache = {}
+        cached = s._chat_name_cache
         if cid in cached:
             body = dict(body)
             body["chat_id"] = cached[cid]
