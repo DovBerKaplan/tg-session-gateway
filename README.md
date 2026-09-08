@@ -75,6 +75,15 @@ POST /v1/sessions/{alias}/getUpdates
 
 ## Quickstart
 
+Pre-built multi-arch images (amd64/arm64) are published on every version tag:
+
+```bash
+docker pull ghcr.io/dovberkaplan/tg-session-gateway:latest      # Bot API gateway
+docker pull ghcr.io/dovberkaplan/tg-session-gateway-mtproto:latest  # MTProto sidecar
+```
+
+Or from source:
+
 ```bash
 # Bot API gateway
 sudo bash deploy/install.sh
