@@ -13,11 +13,9 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from gateway.rateguard import Bucket, RateConfig, method_kind
-
 
 # ── Pyrogram FLOOD_WAIT parsing ────────────────────────────────────
 
@@ -30,15 +28,11 @@ _FLOOD_PREMIUM_RE = re.compile(r"FloodPremiumWait\((\d+)\)", re.IGNORECASE)
 _SLOWMODE_WAIT_RE = re.compile(r"SlowmodeWait\((\d+)\)", re.IGNORECASE)
 _PEER_FLOOD_RE = re.compile(r"PeerFloodInvalid", re.IGNORECASE)
 # Telegram raw error format: [420 FLOOD_WAIT_X] - A wait of 42 seconds is required
-_TG_FLOOD_WAIT_RE = re.compile(
-    r"FLOOD_WAIT\S*.*?wait of (\d+) seconds", re.IGNORECASE | re.DOTALL
-)
-_TG_SLOWMODE_RE = re.compile(
-    r"SLOWMODE_WAIT\S*.*?wait of (\d+) seconds", re.IGNORECASE | re.DOTALL
-)
+_TG_FLOOD_WAIT_RE = re.compile(r"FLOOD_WAIT\S*.*?wait of (\d+) seconds", re.IGNORECASE | re.DOTALL)
+_TG_SLOWMODE_RE = re.compile(r"SLOWMODE_WAIT\S*.*?wait of (\d+) seconds", re.IGNORECASE | re.DOTALL)
 
 
-def parse_flood_wait(exc: Exception) -> Optional[dict]:
+def parse_flood_wait(exc: Exception) -> dict | None:
     """Extract rate-limit info from a Pyrogram exception.
 
     Returns:
@@ -75,11 +69,13 @@ def parse_flood_wait(exc: Exception) -> Optional[dict]:
     # Pyrogram also embeds the class name in the exception's repr
     if "FloodWait" in cls_name:
         import re as _re
+
         nums = _re.findall(r"\d+", s)
         if nums:
             return {"type": "flood_wait", "wait": int(nums[-1])}
     if "SlowmodeWait" in cls_name:
         import re as _re
+
         nums = _re.findall(r"\d+", s)
         if nums:
             return {"type": "slowmode", "wait": int(nums[-1])}
@@ -89,19 +85,22 @@ def parse_flood_wait(exc: Exception) -> Optional[dict]:
 
 # ── MTProto-specific config ─────────────────────────────────────────
 
+
 @dataclass
 class MTProtoRateConfig:
-    flood_backoff_base: float = 1.5     # exponential multiplier
+    flood_backoff_base: float = 1.5  # exponential multiplier
     slowmode_respect: bool = True
     peer_flood_cooldown: float = 300.0  # 5 min default
-    silent_rate: float = 5.0            # resolve, get_participants
+    silent_rate: float = 5.0  # resolve, get_participants
 
 
 # ── Per-peer adaptive backoff state ─────────────────────────────────
 
+
 @dataclass
 class PeerBackoff:
     """Exponential backoff per (peer_id, method) after real FLOOD_WAIT."""
+
     offences: int = 0
     last_wait: float = 0.0
     paused_until: float = 0.0
@@ -141,7 +140,7 @@ class MTRateGuard:
             self._peer_backoff[peer_id] = PeerBackoff()
         return self._peer_backoff[peer_id]
 
-    def try_acquire(self, method: str, chat_id: Optional[int]) -> bool:
+    def try_acquire(self, method: str, chat_id: int | None) -> bool:
         """Non-blocking: True = go, False = throttled."""
         now = time.monotonic()
 
@@ -159,8 +158,7 @@ class MTRateGuard:
             return True
         if kind == "read":
             return self.reads.try_take(now)
-        if method.lower() in ("resolve_username", "get_participants",
-                               "join_channel", "leave_chat"):
+        if method.lower() in ("resolve_username", "get_participants", "join_channel", "leave_chat"):
             return self.silent.try_take(now)
 
         # Write: check chat bucket first (don't charge global if blocked)
@@ -187,7 +185,7 @@ class MTRateGuard:
             chat_b.tokens -= 1
         return True
 
-    def wait_time(self, method: str, chat_id: Optional[int]) -> float:
+    def wait_time(self, method: str, chat_id: int | None) -> float:
         """Seconds until the request may proceed."""
         now = time.monotonic()
         wait = max(0.0, self.egress_paused_until - now)
@@ -207,7 +205,7 @@ class MTRateGuard:
             wait = max(wait, self._chat_bucket(chat_id).next_available(now))
         return max(0.0, wait)
 
-    def report_flood_wait(self, exc: Exception, chat_id: Optional[int]) -> Optional[dict]:
+    def report_flood_wait(self, exc: Exception, chat_id: int | None) -> dict | None:
         """Learn from a real Pyrogram FLOOD_WAIT exception.
 
         Applies adaptive backoff: each repeated offence on the same peer
@@ -247,8 +245,19 @@ class MTRateGuard:
             self.egress_paused_until = max(self.egress_paused_until, now + wait)
             self.global_writes.pause(wait, now)
 
-        return {**info, "adaptive_wait": wait if chat_id is None else
-                min(wait * (self.mtproto.flood_backoff_base ** (self._peer_backoff_state(chat_id).offences - 1)), 3600)}
+        return {
+            **info,
+            "adaptive_wait": wait
+            if chat_id is None
+            else min(
+                wait
+                * (
+                    self.mtproto.flood_backoff_base
+                    ** (self._peer_backoff_state(chat_id).offences - 1)
+                ),
+                3600,
+            ),
+        }
 
     def clear_peer_backoff(self, chat_id: int) -> None:
         """Reset backoff after a successful send (positive signal)."""
@@ -265,7 +274,8 @@ class MTRateGuard:
         now = time.monotonic()
         peer_backoffs = {
             pid: {"offences": pb.offences, "paused_for_s": round(pb.paused_until - now, 1)}
-            for pid, pb in self._peer_backoff.items() if pb.paused_until > now
+            for pid, pb in self._peer_backoff.items()
+            if pb.paused_until > now
         }
         return {
             "private_empty": sum(1 for b in self.private.values() if b.next_available(now) > 0),

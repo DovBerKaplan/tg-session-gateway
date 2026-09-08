@@ -15,10 +15,9 @@ import asyncio
 import json
 import logging
 import time
-from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
 from .config import Config
@@ -38,7 +37,9 @@ class Proxy:
         self.mgr = mgr
         self.client = client
 
-    async def call(self, s: BotSession, method: str, body, content_type: str = "application/json") -> Response:
+    async def call(
+        self, s: BotSession, method: str, body, content_type: str = "application/json"
+    ) -> Response:
         m = method.lower()
         raw = None if isinstance(body, dict) else body  # multipart/form passthrough
         if raw is not None:
@@ -49,8 +50,11 @@ class Proxy:
             if m == "getupdates":
                 return await self._internal_get_updates(s, body)
             return JSONResponse(
-                {"ok": False, "error_code": 403,
-                 "description": "Conflict: gateway owns this method (spec §4.6)"},
+                {
+                    "ok": False,
+                    "error_code": 403,
+                    "description": "Conflict: gateway owns this method (spec §4.6)",
+                },
                 status_code=403,
             )
 
@@ -65,9 +69,12 @@ class Proxy:
         try:
             if paid_requested and not s.paid_broadcasts:
                 return JSONResponse(
-                    {"ok": False, "error_code": 403,
-                     "description": "allow_paid_broadcast requires the gateway-side "
-                                    "paid_broadcasts opt-in for this bot"},
+                    {
+                        "ok": False,
+                        "error_code": 403,
+                        "description": "allow_paid_broadcast requires the gateway-side "
+                        "paid_broadcasts opt-in for this bot",
+                    },
                     status_code=403,
                 )
             return await self._admit_and_forward(s, m, method, body, chat_id, kind)
@@ -124,10 +131,15 @@ class Proxy:
             except Exception:
                 retry = 5.0
             s.guard.report_429(chat_id, retry)
-            s.last_429 = {"method": method, "chat_id": chat_id,
-                          "retry_after": retry, "at": time.time()}
-        return Response(content=resp.content, status_code=resp.status_code,
-                        media_type="application/json")
+            s.last_429 = {
+                "method": method,
+                "chat_id": chat_id,
+                "retry_after": retry,
+                "at": time.time(),
+            }
+        return Response(
+            content=resp.content, status_code=resp.status_code, media_type="application/json"
+        )
 
     async def _forward_raw(self, s, method: str, raw: bytes, content_type: str) -> Response:
         """Multipart/form-data (sendPhoto, documents...) — Rate Guard uses
@@ -145,19 +157,24 @@ class Proxy:
             s.synthetic_429 += 1
             retry = max(1, min(s.guard.wait_time(method, chat_id), 60))
             return JSONResponse(
-                {"ok": False, "error_code": 429,
-                 "description": f"Too Many Requests: retry after {int(retry)}",
-                 "parameters": {"retry_after": int(retry)}},
+                {
+                    "ok": False,
+                    "error_code": 429,
+                    "description": f"Too Many Requests: retry after {int(retry)}",
+                    "parameters": {"retry_after": int(retry)},
+                },
                 status_code=429,
             )
         try:
             resp = await self.client.post(
-                f"/bot{s.token}/{method}", content=raw,
+                f"/bot{s.token}/{method}",
+                content=raw,
                 headers={"Content-Type": content_type},
             )
         except httpx.HTTPError as e:
-            return JSONResponse({"ok": False, "error_code": 502,
-                                 "description": f"upstream: {e}"}, status_code=502)
+            return JSONResponse(
+                {"ok": False, "error_code": 502, "description": f"upstream: {e}"}, status_code=502
+            )
         s.note_send()
         if resp.status_code == 429:
             s.real_429 += 1
@@ -166,10 +183,15 @@ class Proxy:
             except Exception:
                 retry = 5.0
             s.guard.report_429(chat_id, retry)
-            s.last_429 = {"method": method, "chat_id": chat_id,
-                          "retry_after": retry, "at": time.time()}
-        return Response(content=resp.content, status_code=resp.status_code,
-                        media_type="application/json")
+            s.last_429 = {
+                "method": method,
+                "chat_id": chat_id,
+                "retry_after": retry,
+                "at": time.time(),
+            }
+        return Response(
+            content=resp.content, status_code=resp.status_code, media_type="application/json"
+        )
 
     async def _internal_get_updates(self, s: BotSession, body: dict) -> Response:
         """Serve from the internal queue — Bot API long-poll semantics,
@@ -210,7 +232,7 @@ class Proxy:
         return body
 
     @staticmethod
-    def _chat_id(body: dict) -> Optional[int]:
+    def _chat_id(body: dict) -> int | None:
         cid = body.get("chat_id") or body.get("chat_username") or body.get("chat")
         if cid is None:
             return None
@@ -226,7 +248,6 @@ class Proxy:
 
 
 async def _json_body(request):
-    import json
     try:
         raw = await request.body()
         if not raw:

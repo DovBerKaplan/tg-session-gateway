@@ -34,7 +34,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         client = httpx.AsyncClient(base_url=cfg.upstream, timeout=60.0)
         mgr = SessionManager(cfg, store, client)
         app.state.store, app.state.client, app.state.mgr, app.state.cfg = (
-            store, client, mgr, cfg,
+            store,
+            client,
+            mgr,
+            cfg,
         )
         restored = await mgr.restore_all()
         log.info("gateway up — restored %d bot session(s)", restored)
@@ -66,19 +69,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
 def _build_proxy_depd(cfg: Config):
     """Proxy routes that resolve mgr/client from request.state (set in lifespan)."""
-    from fastapi import Request
-
-    from .proxy import Proxy, build_router
 
     return build_router_from_state(cfg)
 
 
 def build_router_from_state(cfg: Config):
-    from .proxy import Proxy, _json_body
-    from .rateguard import method_kind
-
     from fastapi import APIRouter
     from fastapi.responses import JSONResponse
+
+    from .proxy import Proxy, _json_body
 
     router = APIRouter()
 
@@ -86,10 +85,11 @@ def build_router_from_state(cfg: Config):
         proxy = Proxy(cfg, request.app.state.mgr, request.app.state.client)
         ctype = request.headers.get("content-type", "application/json")
         if ctype.startswith("multipart/"):
-            raw = await request.body()          # media uploads — verbatim
+            raw = await request.body()  # media uploads — verbatim
             return await proxy.call(s, method, raw, ctype)
         if ctype.startswith("application/x-www-form-urlencoded"):
             from urllib.parse import parse_qs
+
             body = await request.body()
             parsed: dict = {}
             for k, v in parse_qs(body.decode(), keep_blank_values=True).items():
@@ -150,8 +150,12 @@ def build_router_from_state(cfg: Config):
 
     def _file_response(resp):
         from fastapi import Response
-        return Response(content=resp.content, status_code=resp.status_code,
-                        media_type=resp.headers.get("content-type", "application/octet-stream"))
+
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/octet-stream"),
+        )
 
     return router
 
@@ -164,30 +168,42 @@ def build_admin_router_lazy(cfg: Config):
     router = APIRouter()
 
     def _authed(request: Request) -> bool:
-        return bool(cfg.admin_secret) and request.headers.get(
-            "authorization") == f"Bearer {cfg.admin_secret}"
+        return (
+            bool(cfg.admin_secret)
+            and request.headers.get("authorization") == f"Bearer {cfg.admin_secret}"
+        )
 
     @router.post("/admin/bots")
     async def register(body: RegisterBot, request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
         if body.on_limit and body.on_limit not in ("queue", "reject"):
-            return JSONResponse({"ok": False, "error_code": 400,
-                                 "description": "on_limit must be queue|reject"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "error_code": 400, "description": "on_limit must be queue|reject"},
+                status_code=400,
+            )
         alias = body.alias or f"bot-{__import__('secrets').token_hex(4)}"
         s = await request.app.state.mgr.attach(
-            alias, body.token, on_limit=body.on_limit,
+            alias,
+            body.token,
+            on_limit=body.on_limit,
             paid_broadcasts=body.paid_broadcasts,
         )
-        return {"ok": True, "alias": alias, "state": s.state.value,
-                "on_limit": s.effective_on_limit}
+        return {
+            "ok": True,
+            "alias": alias,
+            "state": s.state.value,
+            "on_limit": s.effective_on_limit,
+        }
 
     @router.get("/admin/status")
     async def status(request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": True,
-                "bots": [s.public_status() for s in request.app.state.mgr.sessions.values()]}
+        return {
+            "ok": True,
+            "bots": [s.public_status() for s in request.app.state.mgr.sessions.values()],
+        }
 
     @router.post("/admin/bots/{alias}/pause")
     async def pause(alias: str, request: Request):

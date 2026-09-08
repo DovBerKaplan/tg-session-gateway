@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
@@ -45,15 +44,15 @@ CREATE INDEX IF NOT EXISTS idx_queue_alias ON update_queue(alias, update_id);
 class MTStore:
     """SQLite-backed persistence for MTProto session state."""
 
-    def __init__(self, data_dir: str, fernet_key: Optional[str] = None):
+    def __init__(self, data_dir: str, fernet_key: str | None = None):
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, "sessions"), exist_ok=True)
         self.path = os.path.join(data_dir, "mtgateway.db")
-        self._db: Optional[aiosqlite.Connection] = None
+        self._db: aiosqlite.Connection | None = None
         self._fernet = self._load_fernet(fernet_key)
 
-    def _load_fernet(self, key: Optional[str]) -> Fernet:
+    def _load_fernet(self, key: str | None) -> Fernet:
         key_path = os.path.join(self.data_dir, ".fernet_key")
         if key:
             return Fernet(key.encode())
@@ -64,8 +63,10 @@ class MTStore:
         with open(key_path, "wb") as fh:
             os.chmod(key_path, 0o600)
             fh.write(generated)
-        log.warning("GW_FERNET_KEY not set — generated at %s "
-                    "(back it up; losing it loses stored tokens)", key_path)
+        log.warning(
+            "GW_FERNET_KEY not set — generated at %s (back it up; losing it loses stored tokens)",
+            key_path,
+        )
         return Fernet(generated)
 
     async def connect(self) -> None:
@@ -99,12 +100,11 @@ class MTStore:
 
     async def list_sessions(self) -> list[dict]:
         async with self._db.execute(
-            "SELECT alias, phone_or_token, pts, qts, date, seq, paused, created_at "
-            "FROM sessions"
+            "SELECT alias, phone_or_token, pts, qts, date, seq, paused, created_at FROM sessions"
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
 
-    async def get_token(self, alias: str) -> Optional[str]:
+    async def get_token(self, alias: str) -> str | None:
         async with self._db.execute(
             "SELECT token_enc FROM sessions WHERE alias = ?", (alias,)
         ) as cur:
@@ -143,6 +143,7 @@ class MTStore:
 
     async def queue_push(self, alias: str, update_id: int, update_json: str) -> None:
         import time
+
         await self._db.execute(
             "INSERT INTO update_queue (alias, update_id, update_json, enqueued_at) "
             "VALUES (?, ?, ?, ?)",
@@ -152,14 +153,14 @@ class MTStore:
 
     async def queue_pull(self, alias: str, offset: int, limit: int = 100) -> list[dict]:
         import json
+
         async with self._db.execute(
             "SELECT update_id, update_json FROM update_queue "
             "WHERE alias = ? AND update_id > ? ORDER BY update_id LIMIT ?",
             (alias, offset, limit),
         ) as cur:
             rows = await cur.fetchall()
-        return [{"update_id": r["update_id"], **json.loads(r["update_json"])}
-                for r in rows]
+        return [{"update_id": r["update_id"], **json.loads(r["update_json"])} for r in rows]
 
     async def queue_ack(self, alias: str, last_seen: int) -> None:
         await self._db.execute(

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from typing import Optional
 
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
@@ -29,14 +28,14 @@ CREATE TABLE IF NOT EXISTS bots (
 
 
 class Store:
-    def __init__(self, data_dir: str, fernet_key: Optional[str] = None):
+    def __init__(self, data_dir: str, fernet_key: str | None = None):
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
         self.path = os.path.join(data_dir, "gateway.db")
-        self._db: Optional[aiosqlite.Connection] = None
+        self._db: aiosqlite.Connection | None = None
         self._fernet = self._load_fernet(fernet_key)
 
-    def _load_fernet(self, key: Optional[str]) -> Fernet:
+    def _load_fernet(self, key: str | None) -> Fernet:
         key_path = os.path.join(self.data_dir, ".fernet_key")
         if key:
             return Fernet(key.encode())
@@ -47,8 +46,11 @@ class Store:
         with open(key_path, "wb") as fh:  # 0600
             os.chmod(key_path, 0o600)
             fh.write(generated)
-        log.warning("GW_FERNET_KEY not set — generated a key at %s "
-                    "(back it up; losing it loses the stored tokens)", key_path)
+        log.warning(
+            "GW_FERNET_KEY not set — generated a key at %s "
+            "(back it up; losing it loses the stored tokens)",
+            key_path,
+        )
         return Fernet(generated)
 
     async def connect(self) -> None:
@@ -79,19 +81,15 @@ class Store:
         return cur.rowcount > 0
 
     async def set_paused(self, alias: str, paused: bool) -> None:
-        await self._db.execute(
-            "UPDATE bots SET paused = ? WHERE alias = ?", (int(paused), alias)
-        )
+        await self._db.execute("UPDATE bots SET paused = ? WHERE alias = ?", (int(paused), alias))
         await self._db.commit()
 
     async def list_bots(self) -> list[dict]:
         async with self._db.execute("SELECT alias, telegram_offset, paused FROM bots") as cur:
             return [dict(r) for r in await cur.fetchall()]
 
-    async def get_token(self, alias: str) -> Optional[str]:
-        async with self._db.execute(
-            "SELECT token_enc FROM bots WHERE alias = ?", (alias,)
-        ) as cur:
+    async def get_token(self, alias: str) -> str | None:
+        async with self._db.execute("SELECT token_enc FROM bots WHERE alias = ?", (alias,)) as cur:
             row = await cur.fetchone()
         if not row:
             return None
