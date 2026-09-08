@@ -138,7 +138,9 @@ class UpdateQueue:
             if rows:
                 log.info(
                     "[%s] restored %d unacked updates from disk (offset=%d)",
-                    self._bot_alias, len(rows), self._consumer_offset,
+                    self._bot_alias,
+                    len(rows),
+                    self._consumer_offset,
                 )
         except Exception as e:
             log.warning("[%s] failed to reload from SQLite: %s", self._bot_alias, e)
