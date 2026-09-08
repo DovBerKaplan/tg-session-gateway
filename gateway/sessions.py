@@ -45,14 +45,14 @@ class BotSession:
     last_error: str = ""
     real_429: int = 0
     synthetic_429: int = 0
-    last_429: dict = field(default_factory=dict)   # §10.2: פרטי 429 אחרון
+    last_429: dict = field(default_factory=dict)   # §10.2: last 429 details
     push_url: Optional[str] = None
     push_task: Optional[asyncio.Task] = None
     push_healthy: Optional[bool] = None
     # per-bot overrides (§8.3/§10.2) — fall back to gateway defaults
     on_limit: Optional[str] = None
     paid_broadcasts: bool = False
-    # rolling send meter (§13: שידורים/שנייה מול תקרת 30)
+    # rolling send meter (§13: sends/s vs the 30/s ceiling)
     _send_times: deque = field(default_factory=lambda: deque(maxlen=200))
 
     def note_send(self) -> None:
