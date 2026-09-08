@@ -49,6 +49,8 @@ class BotSession:
     push_url: str | None = None
     push_task: asyncio.Task | None = None
     push_healthy: bool | None = None
+    # @username → numeric id cache (spec §8.2 §4), one hop, per bot
+    _chat_name_cache: dict[str, int] = field(default_factory=dict)
     # per-bot overrides (§8.3/§10.2) — fall back to gateway defaults
     on_limit: str | None = None
     paid_broadcasts: bool = False
@@ -289,6 +291,9 @@ class SessionManager:
 
     async def _push_to_consumer(self, s: BotSession, update: dict) -> None:
         """Push mode = Telegram webhook format: the Update object IS the body."""
+        if not s.push_url:
+            log.info("[%s] no push_url — update stays in the pull queue", s.alias)
+            return
         try:
             await self.client.post(s.push_url, json=update, timeout=10)
         except Exception as e:

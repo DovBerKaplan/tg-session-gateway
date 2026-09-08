@@ -11,6 +11,7 @@ includes a PID + heartbeat for stale-lock detection.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import logging
 import os
@@ -38,7 +39,7 @@ class SessionLock:
     lock_dir: str
     _fd: int | None = None
     _lock_path: str = ""
-    _heartbeat_task: object | None = None
+    _heartbeat_task: asyncio.Task[None] | None = None
 
     @property
     def path(self) -> str:
@@ -87,11 +88,11 @@ class SessionLock:
         Only releases if THIS instance acquired it (has a valid _fd)."""
         if self._fd is None:
             return  # never acquired — nothing to release
-            try:
-                os.close(self._fd)
-            except OSError:
-                pass
-            self._fd = None
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+        self._fd = None
         if self._lock_path and os.path.exists(self._lock_path):
             try:
                 # Only remove if we still own it (check PID)
@@ -162,7 +163,6 @@ class SessionLock:
 
     async def start_heartbeat(self) -> None:
         """Periodically touch the lock file to prove we're alive."""
-        import asyncio
 
         async def _beat():
             while True:

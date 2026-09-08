@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from gateway.config import RateConfig
+
+__all__ = ["Config", "MTProtoRateConfig", "PolicyConfig", "RateConfig"]
+
 
 def _env(name: str, default: str) -> str:
     return os.getenv(name, default)
@@ -20,20 +24,6 @@ def _env_float(name: str, default: float) -> float:
 
 def _env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).lower() in ("1", "true", "yes")
-
-
-@dataclass
-class RateConfig:
-    """FAQ Bot API rate limits + MTProto-specific handling."""
-
-    private_rate: float = _env_float("GW_PRIVATE_RATE", 1.0)
-    private_burst: int = _env_int("GW_PRIVATE_BURST", 3)
-    group_rate: float = _env_float("GW_GROUP_RATE", 20.0 / 60.0)
-    group_burst: int = _env_int("GW_GROUP_BURST", 2)
-    global_rate: float = _env_float("GW_GLOBAL_RATE", 30.0)
-    global_burst: int = _env_int("GW_GLOBAL_BURST", 30)
-    read_rate: float = _env_float("GW_READ_RATE", 20.0)
-    paid_rate: float = _env_float("GW_PAID_RATE", 1000.0)
 
 
 @dataclass

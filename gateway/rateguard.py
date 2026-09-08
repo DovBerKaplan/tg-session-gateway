@@ -100,15 +100,15 @@ class Bucket:
 class BotRateGuard:
     """All pacing state for one bot token. Single asyncio loop assumed."""
 
-    def __init__(self, cfg: RateConfig, on_limit: str = "queue"):
-        self.cfg = cfg
+    def __init__(self, cfg: RateConfig | None = None, on_limit: str = "queue"):
+        self.cfg = cfg or RateConfig()
         self.on_limit = on_limit
         self.private: dict[int, Bucket] = {}
         self.groups: dict[int, Bucket] = {}
-        self.global_writes = Bucket(cfg.global_rate, cfg.global_burst)
-        self.paid = Bucket(cfg.paid_rate, int(cfg.paid_rate))
+        self.global_writes = Bucket(self.cfg.global_rate, self.cfg.global_burst)
+        self.paid = Bucket(self.cfg.paid_rate, int(self.cfg.paid_rate))
         self.paid_enabled: bool = False  # double opt-in (spec §8.2 §8)
-        self.reads = Bucket(cfg.read_rate, max(10, int(cfg.read_rate)))
+        self.reads = Bucket(self.cfg.read_rate, max(10, int(self.cfg.read_rate)))
         self.egress_paused_until: float = 0.0
 
     # ── bucket selection ─────────────────────────────────────────────

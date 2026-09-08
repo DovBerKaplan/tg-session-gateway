@@ -10,10 +10,10 @@ format:
 	ruff format gateway/ mtgateway/ tests/
 
 typecheck:
-	mypy --strict gateway/ mtgateway/ || true
+	mypy gateway/ mtgateway/
 
 docker-build:
-	docker build -t tg-session-gateway:dev .
+	docker build -f docker/Dockerfile.gateway -t tg-session-gateway:dev .
 	docker build -f docker/Dockerfile.mtgateway -t tg-mtgateway:dev .
 
 docker-up:

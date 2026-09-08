@@ -54,7 +54,7 @@ class MTSession:
     token: str
     state: SessionState = SessionState.connecting
     client: PyrogramClient | None = None
-    guard: MTRateGuard = None  # set in __post_init__ via config
+    guard: MTRateGuard = field(default_factory=MTRateGuard)  # replaced by manager
     connected_since: float = 0.0
     last_error: str = ""
     real_flood_wait: int = 0
@@ -62,7 +62,7 @@ class MTSession:
     last_flood_wait: dict = field(default_factory=dict)
 
     # Update routing: in-memory queue + optional WS consumers
-    _update_queue: asyncio.Queue = None
+    _update_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=5000))
     _consumers: list = field(default_factory=list)
     _next_update_seq: int = 0
 
@@ -70,23 +70,18 @@ class MTSession:
     active_consumer: str | None = None
     lock: SessionLock | None = None  # singleton enforcement (R7)
 
-    def __post_init__(self):
-        self._update_queue = asyncio.Queue(maxsize=5000)
+    _session_dir: str = "/data/sessions"  # overridden by manager
 
     @property
     def session_file(self) -> str:
         return os.path.join(self._session_dir, f"{self.alias}.session")
 
-    _session_dir: str = "/data/sessions"  # overridden by manager
-
     # E2: Idempotency — app-supplied keys prevent duplicate sends
-    _seen_idempotency_keys: dict = None  # key → timestamp (LRU-ish)
+    _seen_idempotency_keys: dict[str, float] = field(default_factory=dict)  # key → timestamp
 
     def check_idempotency(self, key: str) -> bool:
         """Returns True if this is a NEW key (proceed with send).
         Returns False if the key was already seen (skip, return cached result)."""
-        if self._seen_idempotency_keys is None:
-            self._seen_idempotency_keys = {}
         if key in self._seen_idempotency_keys:
             return False
         self._seen_idempotency_keys[key] = time.time()
