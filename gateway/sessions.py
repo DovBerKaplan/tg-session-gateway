@@ -1,4 +1,3 @@
-import os
 """Session plane — one poller per token, exclusive ownership (spec §6.1).
 
 States: connecting → live → (paused | draining) → error
@@ -10,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
