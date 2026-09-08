@@ -1,10 +1,8 @@
 """Tests for the MTProto Session Manager — lifecycle, queue, consumers."""
 
-import asyncio
 import json
-import os
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from mtgateway.config import Config
 from mtgateway.sessions import (
@@ -220,6 +218,7 @@ class TestDeployToFirstMessageSLO:
 
     def test_slo_recorded_after_first_send(self):
         import time as _t
+
         s = MTSession(alias="bot1", token="t")
         h = ConsumerHandle(consumer_id="c1")
         h.connected_at = _t.time() - 2.5  # attached 2.5 seconds ago

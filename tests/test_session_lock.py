@@ -3,7 +3,6 @@
 import os
 import tempfile
 import time
-from unittest.mock import patch
 
 from mtgateway.lock import SessionLock
 
@@ -101,16 +100,18 @@ class TestLockInSessionManager:
     async def test_session_with_lock_refused(self):
         """R7: Second sidecar on the same session fails at the lock,
         never reaches Telegram."""
-        import asyncio
         from unittest.mock import AsyncMock
 
         from mtgateway.config import Config
-        from mtgateway.sessions import MTSessionManager, SessionState
+        from mtgateway.sessions import MTSessionManager
         from mtgateway.store import MTStore
 
         with tempfile.TemporaryDirectory() as d:
             cfg = Config(
-                admin_secret="a", app_secret="b", api_id=1, api_hash="h",
+                admin_secret="a",
+                app_secret="b",
+                api_id=1,
+                api_hash="h",
                 data_dir=d,
             )
             store = MTStore(d)
@@ -118,6 +119,7 @@ class TestLockInSessionManager:
 
             # Pre-acquire the lock (simulates another sidecar)
             from mtgateway.lock import SessionLock
+
             other_lock = SessionLock(alias="bot1", lock_dir=cfg.session_dir)
             other_lock.acquire()
 

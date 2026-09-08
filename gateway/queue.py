@@ -14,12 +14,11 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class QueuedUpdate:
-    update_id: int      # Telegram's own id — the consumer speaks this natively
+    update_id: int  # Telegram's own id — the consumer speaks this natively
     update: dict
     enqueued_at: float
 
@@ -29,13 +28,12 @@ class Overflow(Exception):
 
 
 class UpdateQueue:
-    def __init__(self, maxsize: int = 5000, overflow: str = "drop_oldest",
-                 ttl_s: float = 3600.0):
+    def __init__(self, maxsize: int = 5000, overflow: str = "drop_oldest", ttl_s: float = 3600.0):
         self.maxsize = maxsize
         self.overflow = overflow
         self.ttl_s = ttl_s
         self._q: deque[QueuedUpdate] = deque()
-        self._seen_ids: set[int] = set()   # Telegram redelivery dedup
+        self._seen_ids: set[int] = set()  # Telegram redelivery dedup
         self._consumer_offset = 0  # highest TELEGRAM update_id acked
         self._new_data = asyncio.Event()
         self.dropped = 0
@@ -78,7 +76,7 @@ class UpdateQueue:
 
     # ── consumer side (Bot-API-compatible getUpdates semantics) ──────
 
-    async def pull(self, offset: Optional[int], timeout: float, limit: int = 100) -> list[dict]:
+    async def pull(self, offset: int | None, timeout: float, limit: int = 100) -> list[dict]:
         """Long-poll with REAL Bot API semantics: offset is Telegram's
         update_id (+1 style) exactly as aiogram/PTB/grammY send it.
         The updates returned are Telegram's verbatim — no extra fields."""
@@ -95,7 +93,7 @@ class UpdateQueue:
             self._new_data.clear()
             try:
                 await asyncio.wait_for(self._new_data.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return []
 
     def ack(self, last_seen_update_id: int) -> None:

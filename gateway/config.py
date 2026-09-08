@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 def _env(name: str, default: str) -> str:
@@ -72,7 +71,7 @@ class Config:
 
     # persistence (offsets, registered bots, encrypted tokens)
     data_dir: str = _env("GW_DATA_DIR", "/data")
-    fernet_key: Optional[str] = field(default_factory=lambda: os.getenv("GW_FERNET_KEY"))
+    fernet_key: str | None = field(default_factory=lambda: os.getenv("GW_FERNET_KEY"))
 
     # polling
     poll_timeout: int = _env_int("GW_POLL_TIMEOUT", 25)  # upstream long-poll
@@ -85,7 +84,11 @@ class Config:
     policy: BotPolicy = field(default_factory=BotPolicy)
 
     def validate(self) -> None:
-        missing = [n for n, v in (("GW_ADMIN_SECRET", self.admin_secret), ("GW_APP_SECRET", self.app_secret)) if not v]
+        missing = [
+            n
+            for n, v in (("GW_ADMIN_SECRET", self.admin_secret), ("GW_APP_SECRET", self.app_secret))
+            if not v
+        ]
         if missing:
             raise SystemExit(f"Missing required env: {', '.join(missing)}")
         if self.policy.on_limit not in ("queue", "reject"):

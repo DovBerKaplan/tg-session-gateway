@@ -15,13 +15,12 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
 
 from pyrogram import Client as PyrogramClient
 from pyrogram.handlers import RawUpdateHandler
-from pyrogram.types import Update as PyrogramUpdate
 
 from .config import Config
 from .lock import SessionLock
@@ -42,8 +41,9 @@ class SessionState(str, Enum):
 @dataclass
 class ConsumerHandle:
     """A connected application consumer (app replica)."""
+
     consumer_id: str
-    ws_send: Optional[Callable] = None  # WebSocket push callback
+    ws_send: Callable | None = None  # WebSocket push callback
     connected_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
 
@@ -53,7 +53,7 @@ class MTSession:
     alias: str
     token: str
     state: SessionState = SessionState.connecting
-    client: Optional[PyrogramClient] = None
+    client: PyrogramClient | None = None
     guard: MTRateGuard = None  # set in __post_init__ via config
     connected_since: float = 0.0
     last_error: str = ""
@@ -67,8 +67,8 @@ class MTSession:
     _next_update_seq: int = 0
 
     # Rolling update: track which consumer is active
-    active_consumer: Optional[str] = None
-    lock: Optional[SessionLock] = None  # singleton enforcement (R7)
+    active_consumer: str | None = None
+    lock: SessionLock | None = None  # singleton enforcement (R7)
 
     def __post_init__(self):
         self._update_queue = asyncio.Queue(maxsize=5000)
@@ -103,17 +103,23 @@ class MTSession:
     def add_consumer(self, handle: ConsumerHandle) -> None:
         self._consumers.append(handle)
         self.active_consumer = handle.consumer_id
-        log.info("[%s] consumer attached: %s (total: %d)",
-                 self.alias, handle.consumer_id, len(self._consumers))
+        log.info(
+            "[%s] consumer attached: %s (total: %d)",
+            self.alias,
+            handle.consumer_id,
+            len(self._consumers),
+        )
 
     def remove_consumer(self, consumer_id: str) -> None:
         self._consumers = [c for c in self._consumers if c.consumer_id != consumer_id]
         if self.active_consumer == consumer_id:
-            self.active_consumer = (
-                self._consumers[-1].consumer_id if self._consumers else None
-            )
-        log.info("[%s] consumer detached: %s (remaining: %d)",
-                 self.alias, consumer_id, len(self._consumers))
+            self.active_consumer = self._consumers[-1].consumer_id if self._consumers else None
+        log.info(
+            "[%s] consumer detached: %s (remaining: %d)",
+            self.alias,
+            consumer_id,
+            len(self._consumers),
+        )
 
     async def push_update(self, update: dict) -> None:
         """Called by Pyrogram's RawUpdateHandler for every update."""
@@ -135,8 +141,9 @@ class MTSession:
                 try:
                     await consumer.ws_send(json.dumps(update))
                 except Exception as e:
-                    log.warning("[%s] WS push to %s failed: %s",
-                                self.alias, consumer.consumer_id, e)
+                    log.warning(
+                        "[%s] WS push to %s failed: %s", self.alias, consumer.consumer_id, e
+                    )
 
     # E7: SLO metric — time from consumer attach to first outbound send
     _first_send_at: float = 0.0
@@ -156,7 +163,8 @@ class MTSession:
             "alias": self.alias,
             "state": self.state.value,
             "connection_age_s": round(time.time() - self.connected_since, 1)
-            if self.connected_since else None,
+            if self.connected_since
+            else None,
             "queue_depth": self._update_queue.qsize(),
             "consumers": len(self._consumers),
             "active_consumer": self.active_consumer,
@@ -166,7 +174,8 @@ class MTSession:
             "last_error": self.last_error[:200],
             "send_paused": self.send_paused,
             "deploy_to_first_message_s": round(self.deploy_to_first_message_s, 2)
-            if self.deploy_to_first_message_s else None,
+            if self.deploy_to_first_message_s
+            else None,
         }
 
 
@@ -247,14 +256,12 @@ class MTSessionManager:
             s.connected_since = time.time()
 
             me = await client.get_me()
-            log.info("[%s] live as @%s (id=%s)",
-                     s.alias, me.username, me.id)
+            log.info("[%s] live as @%s (id=%s)", s.alias, me.username, me.id)
 
             # Restore update state from disk
             state = await self.store.get_state(s.alias)
             if state.get("pts"):
-                log.info("[%s] restored state: pts=%s qts=%s",
-                         s.alias, state["pts"], state["qts"])
+                log.info("[%s] restored state: pts=%s qts=%s", s.alias, state["pts"], state["qts"])
 
             # Keep the client running (idle in a task)
             asyncio.create_task(self._keep_alive(s), name=f"mt-idle-{s.alias}")
@@ -271,6 +278,7 @@ class MTSessionManager:
 
     def _make_update_handler(self, s: MTSession):
         """Create a Pyrogram update handler that routes to the session."""
+
         async def handler(client, update, users, chats):
             # Serialize Pyrogram update to dict
             try:
@@ -280,9 +288,10 @@ class MTSessionManager:
                         await s.push_update(update_dict)
             except Exception as e:
                 log.warning("[%s] update handler error: %s", s.alias, e)
+
         return handler
 
-    def _serialize_update(self, update) -> Optional[dict]:
+    def _serialize_update(self, update) -> dict | None:
         """Convert a Pyrogram update object to a JSON-serializable dict."""
         try:
             if isinstance(update, dict):
@@ -395,7 +404,7 @@ class MTSessionManager:
                 s.lock = None
         log.info("all MTProto sessions shut down (locks released)")
 
-    def get(self, alias: str) -> Optional[MTSession]:
+    def get(self, alias: str) -> MTSession | None:
         return self.sessions.get(alias)
 
     def all_stats(self) -> list[dict]:

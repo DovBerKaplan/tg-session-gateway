@@ -1,15 +1,17 @@
 """Rate Guard unit tests — acceptance criteria 4, 5, 6, 7 (spec §14)."""
 
-import asyncio
 import time
 
 from gateway.config import RateConfig
 from gateway.rateguard import BotRateGuard, method_kind
 
 CFG = RateConfig(
-    private_rate=1.0, private_burst=3,
-    group_rate=20.0 / 60.0, group_burst=2,
-    global_rate=30.0, global_burst=30,
+    private_rate=1.0,
+    private_burst=3,
+    group_rate=20.0 / 60.0,
+    group_burst=2,
+    global_rate=30.0,
+    global_burst=30,
 )
 
 
@@ -28,8 +30,15 @@ class TestMethodClassification:
         assert method_kind("getFile") == "read"
 
     def test_writes_incl_media_and_edits(self):
-        for m in ("sendMessage", "sendPhoto", "sendVideo", "editMessageText",
-                  "forwardMessage", "copyMessage", "sendChatAction"):
+        for m in (
+            "sendMessage",
+            "sendPhoto",
+            "sendVideo",
+            "editMessageText",
+            "forwardMessage",
+            "copyMessage",
+            "sendChatAction",
+        ):
             assert method_kind(m) == "write", m
 
 
@@ -39,7 +48,7 @@ class TestAcceptance4PrivateOnePerSecond:
     def test_burst_then_block(self):
         g = guard()
         ok = [g.try_acquire("sendMessage", 100) for _ in range(3)]
-        assert all(ok)                      # burst 3 allowed
+        assert all(ok)  # burst 3 allowed
         assert not g.try_acquire("sendMessage", 100)  # 4th within the second: blocked
 
     def test_other_chat_unaffected(self):
@@ -92,13 +101,15 @@ class Test429Learning:
         g = guard()
         g.report_429(chat_id=100, retry_after=30)
         assert not g.try_acquire("sendMessage", 100)
-        assert g.try_acquire("sendMessage", 200)      # other chats unaffected
+        assert g.try_acquire("sendMessage", 200)  # other chats unaffected
 
     def test_unattributed_429_pauses_whole_bot(self):
         g = guard()
         g.report_429(chat_id=None, retry_after=10)
         assert not g.try_acquire("sendMessage", 100)
-        assert not g.try_acquire("answerInlineQuery", None) or True  # fast path may pass; egress blocks writes:
+        assert (
+            not g.try_acquire("answerInlineQuery", None) or True
+        )  # fast path may pass; egress blocks writes:
         assert not g.try_acquire("sendMessage", 999)
 
     def test_pause_expires(self):
@@ -114,6 +125,7 @@ class TestPaidBroadcastOptIn:
 
     def test_paid_disabled_by_default(self):
         from gateway.config import BotPolicy
+
         assert BotPolicy().paid_broadcasts_enabled is False
 
 
@@ -144,8 +156,8 @@ class TestSustainedGroupCadence:
 
     def test_group_refill_cadence_is_twenty_per_minute(self):
         g = guard()
-        assert g.try_acquire("sendMessage", -100)      # burst token 1
-        assert g.try_acquire("sendMessage", -100)      # burst token 2
+        assert g.try_acquire("sendMessage", -100)  # burst token 1
+        assert g.try_acquire("sendMessage", -100)  # burst token 2
         assert not g.try_acquire("sendMessage", -100)  # burst spent
         wait = g.wait_time("sendMessage", -100)
         assert wait > 2.5, f"refill too fast for 20/min: {wait}s"  # 1/(20/60)=3s
