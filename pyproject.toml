@@ -1,0 +1,14 @@
+[project]
+name = "tg-session-gateway"
+version = "0.1.0"
+description = "Long-lived Telegram Bot API session gateway — deploy your bot without dropping the session"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["gateway"]
