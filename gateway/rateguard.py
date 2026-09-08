@@ -13,21 +13,36 @@ offending chat bucket (chat-associated 429) or the whole bot egress.
 
 from __future__ import annotations
 
-
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .config import RateConfig
 
 # Methods that must never starve (spec §8.2 §3) and methods that are reads.
-FAST_PATH = {"answercallbackquery", "answerinlinequery", "answershippingquery",
-             "answerprecheckoutquery", "setmessageeffect"}
+FAST_PATH = {
+    "answercallbackquery",
+    "answerinlinequery",
+    "answershippingquery",
+    "answerprecheckoutquery",
+    "setmessageeffect",
+}
 READ_METHODS = {
-    "getme", "getchat", "getchatmember", "getchatadministrators", "getuser",
-    "getmycommands", "getmyname", "getmydescription", "getmyshortdescription",
-    "getwebhookinfo", "getchatmenuButton", "getmydefaultadministratorrights",
-    "getfile", "getchatmembercount", "getforumtopiciconstickers", "getstickerset",
+    "getme",
+    "getchat",
+    "getchatmember",
+    "getchatadministrators",
+    "getuser",
+    "getmycommands",
+    "getmyname",
+    "getmydescription",
+    "getmyshortdescription",
+    "getwebhookinfo",
+    "getchatmenuButton",
+    "getmydefaultadministratorrights",
+    "getfile",
+    "getchatmembercount",
+    "getforumtopiciconstickers",
+    "getstickerset",
 }
 
 
@@ -42,8 +57,8 @@ def method_kind(method: str) -> str:
 
 @dataclass
 class Bucket:
-    rate: float          # tokens per second
-    capacity: int        # burst size
+    rate: float  # tokens per second
+    capacity: int  # burst size
     tokens: float = -1.0  # -1 → start full (burst available immediately)
     updated: float = field(default_factory=time.monotonic)
     paused_until: float = 0.0
@@ -121,7 +136,7 @@ class BotRateGuard:
 
     # ── admission ────────────────────────────────────────────────────
 
-    def try_acquire(self, method: str, chat_id: Optional[int]) -> bool:
+    def try_acquire(self, method: str, chat_id: int | None) -> bool:
         """Non-blocking attempt; True = go. Returns False when throttled.
 
         A blocked chat attempt must NOT charge the global bucket (peek
@@ -162,7 +177,7 @@ class BotRateGuard:
             chat_b.tokens -= 1
         return True
 
-    def wait_time(self, method: str, chat_id: Optional[int]) -> float:
+    def wait_time(self, method: str, chat_id: int | None) -> float:
         """Seconds until the request may go (for queue policy / retry_after)."""
         now = time.monotonic()
         kind = method_kind(method)
@@ -178,7 +193,7 @@ class BotRateGuard:
 
     # ── learning from real 429s (spec §8.2 §5–6) ─────────────────────
 
-    def report_429(self, chat_id: Optional[int], retry_after: float) -> None:
+    def report_429(self, chat_id: int | None, retry_after: float) -> None:
         now = time.monotonic()
         if chat_id is not None:
             self._chat_bucket(chat_id).pause(retry_after, now)

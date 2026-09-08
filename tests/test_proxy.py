@@ -1,9 +1,6 @@
 """Proxy passthrough tests with a mocked upstream (respx)."""
 
-import asyncio
-
 import httpx
-import pytest
 import respx
 
 from gateway.config import Config
@@ -22,8 +19,10 @@ def make_proxy(on_limit="reject") -> tuple[Proxy, BotSession]:
     cfg.policy.on_limit = on_limit
     cfg.rate = Config().rate
     s = BotSession(
-        alias="t", token="1:abc",
-        queue=UpdateQueue(100), guard=BotRateGuard(cfg.rate, on_limit),
+        alias="t",
+        token="1:abc",
+        queue=UpdateQueue(100),
+        guard=BotRateGuard(cfg.rate, on_limit),
         on_limit=None if on_limit == "queue" else on_limit,
     )
     return Proxy(cfg, s, httpx.AsyncClient(base_url=BASE)), s
@@ -57,9 +56,7 @@ class TestPassthrough:
     @respx.mock
     async def test_throttled_write_returns_synthetic_429(self):
         p, s = make_proxy(on_limit="reject")
-        respx.post(f"{BASE}/bot1:abc/sendMessage").respond(
-            200, json={"ok": True, "result": {}}
-        )
+        respx.post(f"{BASE}/bot1:abc/sendMessage").respond(200, json={"ok": True, "result": {}})
         for _ in range(10):
             await p.call(s, "sendMessage", {"chat_id": 10, "text": "x"})
         resp = await p.call(s, "sendMessage", {"chat_id": 10, "text": "x"})
@@ -71,8 +68,7 @@ class TestPassthrough:
     async def test_real_429_pauses_that_chat(self):
         p, s = make_proxy()
         respx.post(f"{BASE}/bot1:abc/sendMessage").respond(
-            429, json={"ok": False, "error_code": 429,
-                       "parameters": {"retry_after": 30}}
+            429, json={"ok": False, "error_code": 429, "parameters": {"retry_after": 30}}
         )
         await p.call(s, "sendMessage", {"chat_id": 10, "text": "x"})
         assert s.real_429 == 1
@@ -92,7 +88,6 @@ class TestPassthrough:
 class TestMultipartAndForm:
     @respx.mock
     async def test_multipart_passthrough_verbatim(self):
-        import re as _re
 
         p, s = make_proxy()
         route = respx.post(f"{BASE}/bot1:abc/sendPhoto").respond(
@@ -110,7 +105,7 @@ class TestMultipartAndForm:
         resp = await p.call(s, "sendPhoto", raw, f"multipart/form-data; boundary={boundary}")
         assert resp.status_code == 200
         sent = route.calls.last.request.content
-        assert b"<BYTES>" in sent            # body untouched
+        assert b"<BYTES>" in sent  # body untouched
         assert b'name="chat_id"' in sent
         # the chat_id form field fed the Rate Guard
         assert not s.guard.try_acquire("sendMessage", 123) if False else True

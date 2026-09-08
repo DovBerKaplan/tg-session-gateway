@@ -30,9 +30,7 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
 
-import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -81,7 +79,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _admin_authed(request: Request) -> bool:
         return request.headers.get("authorization") == f"Bearer {cfg.admin_secret}"
 
-    def _get_session(request: Request, alias: str) -> Optional[MTSession]:
+    def _get_session(request: Request, alias: str) -> MTSession | None:
         return request.app.state.mgr.get(alias)
 
     # ── Pyrogram method proxy ────────────────────────────────────────
@@ -92,12 +90,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
         s = _get_session(request, alias)
         if not s:
-            return JSONResponse({"ok": False, "error_code": 404,
-                                 "description": f"unknown session: {alias}"}, status_code=404)
+            return JSONResponse(
+                {"ok": False, "error_code": 404, "description": f"unknown session: {alias}"},
+                status_code=404,
+            )
         if not s.client or s.state != SessionState.live:
-            return JSONResponse({"ok": False, "error_code": 503,
-                                 "description": f"session state: {s.state.value}",
-                                 "retry_in": 3}, status_code=503)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": 503,
+                    "description": f"session state: {s.state.value}",
+                    "retry_in": 3,
+                },
+                status_code=503,
+            )
 
         body = {}
         try:
@@ -105,8 +111,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if raw:
                 body = json.loads(raw)
         except Exception:
-            return JSONResponse({"ok": False, "error_code": 400,
-                                 "description": "invalid JSON body"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "error_code": 400, "description": "invalid JSON body"},
+                status_code=400,
+            )
 
         chat_id = body.get("chat_id") or body.get("chat_username") or body.get("chat")
         if isinstance(chat_id, str) and chat_id.lstrip("-").isdigit():
@@ -118,25 +126,42 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         idem_key = body.pop("_idempotency_key", None)
         if idem_key and not s.check_idempotency(idem_key):
             return JSONResponse(
-                {"ok": True, "result": None, "idempotent_replay": True,
-                 "description": "duplicate send suppressed (idempotency key already seen)"})
+                {
+                    "ok": True,
+                    "result": None,
+                    "idempotent_replay": True,
+                    "description": "duplicate send suppressed (idempotency key already seen)",
+                }
+            )
 
         # ── E4: Check send-paused state
         if s.send_paused and method.lower() not in (
-            "answer_callback_query", "answer_inline_query", "get_updates"):
+            "answer_callback_query",
+            "answer_inline_query",
+            "get_updates",
+        ):
             return JSONResponse(
-                {"ok": False, "error_code": 423,
-                 "description": "sending is paused for this session (E4)"},
-                status_code=423)
+                {
+                    "ok": False,
+                    "error_code": 423,
+                    "description": "sending is paused for this session (E4)",
+                },
+                status_code=423,
+            )
 
         # ── Rate Guard admission ─────────────────────────────────────
         paid_requested = bool(body.get("allow_paid_broadcast"))
         s.guard.enter_paid_lane(paid_requested)
         try:
             if paid_requested and not s.guard.paid_enabled:
-                return JSONResponse({"ok": False, "error_code": 403,
-                                     "description": "paid broadcast requires gateway opt-in"},
-                                    status_code=403)
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": 403,
+                        "description": "paid broadcast requires gateway opt-in",
+                    },
+                    status_code=403,
+                )
 
             waited = 0.0
             while not s.guard.try_acquire(method, chat_id):
@@ -144,10 +169,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     s.synthetic_429 += 1
                     retry = max(1.0, min(s.guard.wait_time(method, chat_id), 60.0))
                     return JSONResponse(
-                        {"ok": False, "error_code": 429,
-                         "description": f"Too Many Requests: retry after {int(retry)}",
-                         "parameters": {"retry_after": int(retry)}},
-                        status_code=429)
+                        {
+                            "ok": False,
+                            "error_code": 429,
+                            "description": f"Too Many Requests: retry after {int(retry)}",
+                            "parameters": {"retry_after": int(retry)},
+                        },
+                        status_code=429,
+                    )
                 wait = min(s.guard.wait_time(method, chat_id), 2.0)
                 await asyncio.sleep(wait)
                 waited += wait
@@ -155,9 +184,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # ── Forward to Pyrogram ──────────────────────────────────
             fn = getattr(s.client, method, None)
             if fn is None:
-                return JSONResponse({"ok": False, "error_code": 404,
-                                     "description": f"unknown Pyrogram method: {method}"},
-                                    status_code=404)
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": 404,
+                        "description": f"unknown Pyrogram method: {method}",
+                    },
+                    status_code=404,
+                )
 
             result = await fn(**body)
 
@@ -176,14 +210,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 s.real_flood_wait += 1
                 adaptive = s.guard.report_flood_wait(e, chat_id)
                 s.last_flood_wait = {**flood, "chat_id": chat_id, "at": time.time()}
-                retry = int(adaptive.get("adaptive_wait", flood["wait"])) if adaptive else flood["wait"]
+                retry = (
+                    int(adaptive.get("adaptive_wait", flood["wait"])) if adaptive else flood["wait"]
+                )
                 return JSONResponse(
-                    {"ok": False, "error_code": 429,
-                     "description": f"FLOOD_WAIT: retry after {retry}",
-                     "parameters": {"retry_after": retry}},
-                    status_code=429)
-            return JSONResponse({"ok": False, "error_code": 500,
-                                 "description": str(e)[:200]}, status_code=500)
+                    {
+                        "ok": False,
+                        "error_code": 429,
+                        "description": f"FLOOD_WAIT: retry after {retry}",
+                        "parameters": {"retry_after": retry},
+                    },
+                    status_code=429,
+                )
+            return JSONResponse(
+                {"ok": False, "error_code": 500, "description": str(e)[:200]}, status_code=500
+            )
         finally:
             s.guard.exit_paid_lane()
 
@@ -260,8 +301,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         s.add_consumer(handle)
 
         try:
-            await ws.send_json({"ok": True, "consumer_id": consumer_id,
-                                "session": alias, "state": s.state.value})
+            await ws.send_json(
+                {"ok": True, "consumer_id": consumer_id, "session": alias, "state": s.state.value}
+            )
             while True:
                 # Receive pings / commands from the consumer
                 data = await ws.receive_text()
@@ -301,11 +343,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
         try:
             media = await s.client.download_media(file_id, in_memory=True)
-            return Response(content=media.getvalue(),
-                            media_type="application/octet-stream")
+            return Response(content=media.getvalue(), media_type="application/octet-stream")
         except Exception as e:
-            return JSONResponse({"ok": False, "error_code": 500,
-                                 "description": str(e)[:200]}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error_code": 500, "description": str(e)[:200]}, status_code=500
+            )
 
     # ── Admin endpoints ──────────────────────────────────────────────
 
@@ -392,8 +434,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         lines = []
         for s in request.app.state.mgr.sessions.values():
             labels = f'alias="{s.alias}"'
-            lines.append(f"tg_gateway_session_state{{{labels}}} "
-                        f"{1 if s.state == SessionState.live else 0}")
+            lines.append(
+                f"tg_gateway_session_state{{{labels}}} {1 if s.state == SessionState.live else 0}"
+            )
             age = int(time.time() - s.connected_since) if s.connected_since else 0
             lines.append(f"tg_gateway_session_connection_age_seconds{{{labels}}} {age}")
             lines.append(f"tg_gateway_update_queue_depth{{{labels}}} {s._update_queue.qsize()}")
@@ -404,8 +447,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if slo:
                 lines.append(f"tg_gateway_deploy_to_first_message_seconds{{{labels}}} {slo:.2f}")
             lines.append(f"tg_gateway_send_paused{{{labels}}} {1 if s.send_paused else 0}")
-        return Response(content="\n".join(lines) + "\n",
-                        media_type="text/plain; version=0.0.4")
+        return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     return app
 
@@ -425,6 +467,9 @@ def _serialize(obj) -> any:
     if hasattr(obj, "to_dict"):
         return _serialize(obj.to_dict())
     if hasattr(obj, "__dict__"):
-        return {k: _serialize(v) for k, v in vars(obj).items()
-                if not k.startswith("_") and not callable(v)}
+        return {
+            k: _serialize(v)
+            for k, v in vars(obj).items()
+            if not k.startswith("_") and not callable(v)
+        }
     return str(obj)

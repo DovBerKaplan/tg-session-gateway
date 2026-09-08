@@ -13,7 +13,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 import httpx
 
@@ -40,17 +39,17 @@ class BotSession:
     state: State = State.connecting
     queue: UpdateQueue = field(default_factory=UpdateQueue)
     guard: BotRateGuard = field(default_factory=BotRateGuard)
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task | None = None
     connected_since: float = 0.0
     last_error: str = ""
     real_429: int = 0
     synthetic_429: int = 0
-    last_429: dict = field(default_factory=dict)   # §10.2: last 429 details
-    push_url: Optional[str] = None
-    push_task: Optional[asyncio.Task] = None
-    push_healthy: Optional[bool] = None
+    last_429: dict = field(default_factory=dict)  # §10.2: last 429 details
+    push_url: str | None = None
+    push_task: asyncio.Task | None = None
+    push_healthy: bool | None = None
     # per-bot overrides (§8.3/§10.2) — fall back to gateway defaults
-    on_limit: Optional[str] = None
+    on_limit: str | None = None
     paid_broadcasts: bool = False
     # rolling send meter (§13: sends/s vs the 30/s ceiling)
     _send_times: deque = field(default_factory=lambda: deque(maxlen=200))
@@ -99,21 +98,24 @@ class SessionManager:
 
     # ── lifecycle ────────────────────────────────────────────────────
 
-    async def attach(self, alias: str, token: str, on_limit: str | None = None,
-                     paid_broadcasts: bool = False) -> BotSession:
+    async def attach(
+        self, alias: str, token: str, on_limit: str | None = None, paid_broadcasts: bool = False
+    ) -> BotSession:
         existing = self.sessions.get(alias)
         if existing:
             if existing.token == token:
                 return existing
             # token rotated for this alias → swap: old poller dies, new one owns
             await self.delete(alias)
-        
+
         s = BotSession(
             alias=alias,
             token=token,
-            queue=UpdateQueue(self.cfg.policy.update_queue_max,
-                              overflow="drop_oldest",
-                              ttl_s=self.cfg.policy.update_ttl_s),
+            queue=UpdateQueue(
+                self.cfg.policy.update_queue_max,
+                overflow="drop_oldest",
+                ttl_s=self.cfg.policy.update_ttl_s,
+            ),
             guard=BotRateGuard(self.cfg.rate, self.cfg.policy.on_limit),
             on_limit=on_limit,
             paid_broadcasts=paid_broadcasts,
@@ -187,12 +189,11 @@ class SessionManager:
                 if t and not t.done():
                     t.cancel()
         await asyncio.gather(
-            *(t for s in self.sessions.values()
-              for t in (s.task, s.push_task) if t),
+            *(t for s in self.sessions.values() for t in (s.task, s.push_task) if t),
             return_exceptions=True,
         )
 
-    def set_push(self, alias: str, url: Optional[str]) -> bool:
+    def set_push(self, alias: str, url: str | None) -> bool:
         """Wire push mode + the §10.1 consumer healthcheck (every 60s;
         failure marks unhealthy — the queue keeps growing, Telegram stays)."""
         s = self.sessions.get(alias)
@@ -290,7 +291,7 @@ class SessionManager:
         except Exception as e:
             log.info("[%s] push to consumer failed (queue keeps growing): %s", s.alias, e)
 
-    def find_by_token(self, token: str) -> Optional[BotSession]:
+    def find_by_token(self, token: str) -> BotSession | None:
         for s in self.sessions.values():
             if s.token == token:
                 return s

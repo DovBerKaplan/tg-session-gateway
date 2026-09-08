@@ -1,19 +1,21 @@
 """Tests for the MTProto Rate Guard — FAQ buckets + FLOOD_WAIT parsing."""
 
 import time
-from unittest.mock import MagicMock
 
+from gateway.config import RateConfig
 from mtgateway.rateguard import (
     MTProtoRateConfig,
     MTRateGuard,
     parse_flood_wait,
 )
-from gateway.config import RateConfig
 
 FAQ = RateConfig(
-    private_rate=1.0, private_burst=3,
-    group_rate=20.0 / 60.0, group_burst=2,
-    global_rate=30.0, global_burst=30,
+    private_rate=1.0,
+    private_burst=3,
+    group_rate=20.0 / 60.0,
+    group_burst=2,
+    global_rate=30.0,
+    global_burst=30,
 )
 MT = MTProtoRateConfig(
     flood_backoff_base=1.5,

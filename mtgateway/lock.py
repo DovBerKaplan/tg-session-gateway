@@ -14,10 +14,8 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-import signal
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 log = logging.getLogger("mtgateway.lock")
 
@@ -38,9 +36,9 @@ class SessionLock:
 
     alias: str
     lock_dir: str
-    _fd: Optional[int] = None
+    _fd: int | None = None
     _lock_path: str = ""
-    _heartbeat_task: Optional[object] = None
+    _heartbeat_task: object | None = None
 
     @property
     def path(self) -> str:
@@ -58,8 +56,7 @@ class SessionLock:
         # Check for stale lock
         if os.path.exists(self._lock_path):
             if self._is_stale():
-                log.warning("[%s] removing stale lock (holder dead + no heartbeat)",
-                            self.alias)
+                log.warning("[%s] removing stale lock (holder dead + no heartbeat)", self.alias)
                 try:
                     os.unlink(self._lock_path)
                 except FileNotFoundError:
@@ -70,7 +67,8 @@ class SessionLock:
                     "[%s] LOCK REFUSED: another process holds this session "
                     "(holder: %s). A second connection would trigger "
                     "AUTH_KEY_DUPLICATED and may invalidate the auth_key.",
-                    self.alias, holder,
+                    self.alias,
+                    holder,
                 )
                 return False
 
@@ -107,7 +105,7 @@ class SessionLock:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
 
-    def _read_pid(self) -> Optional[int]:
+    def _read_pid(self) -> int | None:
         """Read the PID from the lock file. None if unreadable."""
         try:
             with open(self._lock_path) as f:
@@ -146,8 +144,12 @@ class SessionLock:
             mtime = os.path.getmtime(self._lock_path)
             age = time.time() - mtime
             if age > STALE_AFTER_SECONDS:
-                log.warning("[%s] lock heartbeat stale (%.0fs old, pid=%d still alive)",
-                           self.alias, age, pid)
+                log.warning(
+                    "[%s] lock heartbeat stale (%.0fs old, pid=%d still alive)",
+                    self.alias,
+                    age,
+                    pid,
+                )
                 return True
         except OSError:
             pass

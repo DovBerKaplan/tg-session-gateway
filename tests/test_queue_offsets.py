@@ -76,12 +76,12 @@ class TestQueueOffsets:
 
 class TestOffsetPersistence:
     def test_store_roundtrip(self):
-        import os
         import tempfile
 
         from gateway.store import Store
 
         with tempfile.TemporaryDirectory() as d:
+
             async def scenario():
                 s = Store(d)
                 await s.connect()
@@ -93,7 +93,7 @@ class TestOffsetPersistence:
                 await s.close()
                 s2 = Store(d)
                 await s2.connect()
-                assert await s2.get_offset("b1") == 9005        # survives (crit 9)
+                assert await s2.get_offset("b1") == 9005  # survives (crit 9)
                 assert await s2.get_token("b1") == "111:AAAAxxxx"
                 await s2.close()
 

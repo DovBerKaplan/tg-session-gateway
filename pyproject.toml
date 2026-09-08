@@ -8,3 +8,10 @@ license = { text = "MIT" }
 
 [tool.setuptools]
 packages = ["gateway"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = ["BLE001", "S110", "UP031", "RUF059", "F841"]  # S110: try-except-pass is intentional in cleanup; UP031: % format is fine; RUF059/F841: test unpacking
