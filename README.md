@@ -170,7 +170,9 @@ V1: multi-bot, pull + push to consumers, full rate guard, isolated
 lifecycle. Out of scope (by spec): MTProto user sessions (Telethon /
 Pyrogram / tdata), web panels, multi-replica token sharing.
 
-Full specification (Hebrew): [docs/spec.he.md](docs/spec.he.md).
+Full specification: [docs/spec.md](docs/spec.md).
+
+MTProto gateway plan: [docs/mtproto-gateway-plan.md](docs/mtproto-gateway-plan.md).
 
 ## License
 
