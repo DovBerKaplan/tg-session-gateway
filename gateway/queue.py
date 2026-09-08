@@ -24,7 +24,6 @@ import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
 
 log = logging.getLogger("gateway.queue")
 
@@ -56,7 +55,7 @@ class UpdateQueue:
         maxsize: int = 5000,
         overflow: str = "drop_oldest",
         ttl_s: float = 3600.0,
-        persist_path: Optional[str] = None,
+        persist_path: str | None = None,
         bot_alias: str = "",
     ):
         self.maxsize = maxsize
@@ -68,7 +67,7 @@ class UpdateQueue:
         self._new_data = asyncio.Event()
         self.dropped = 0
         self.expired = 0
-        self._db: Optional[sqlite3.Connection] = None
+        self._db: sqlite3.Connection | None = None
         self._bot_alias = bot_alias
 
         if persist_path:
