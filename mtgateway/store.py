@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS update_queue (
     FOREIGN KEY (alias) REFERENCES sessions(alias) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_queue_alias ON update_queue(alias, update_id);
+
+CREATE TABLE IF NOT EXISTS admin_audit (
+    ts       TEXT NOT NULL DEFAULT (datetime('now')),
+    action   TEXT NOT NULL,
+    alias    TEXT NOT NULL,
+    detail   TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -182,3 +189,23 @@ class MTStore:
         ) as cur:
             row = await cur.fetchone()
         return row["n"] if row else 0
+
+    # ── admin audit trail (append-only) ───────────────────────────────
+
+    async def audit(self, action: str, alias: str, detail: str = "") -> None:
+        """Record an admin action. Never raises into the caller's path."""
+        try:
+            await self.db.execute(
+                "INSERT INTO admin_audit (action, alias, detail) VALUES (?, ?, ?)",
+                (action, alias, detail),
+            )
+            await self.db.commit()
+        except Exception as e:  # audit must not break the admin action itself
+            log.error("audit write failed (%s %s): %s", action, alias, e)
+
+    async def get_audit(self, limit: int = 100) -> list[dict]:
+        async with self.db.execute(
+            "SELECT ts, action, alias, detail FROM admin_audit ORDER BY rowid DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]

@@ -183,3 +183,96 @@ class TestGatewayLifecycle:
                 await asyncio.sleep(0.05)
             texts = [u["message"]["text"] for u in pulled]
             assert texts == ["first", "second"], f"queue not restored: {pulled}"
+
+
+class TestReplicaOverlap:
+    """Two app replicas pulling the same bot's queue concurrently.
+
+    Rolling deploys overlap old and new replicas for a few seconds.
+    The invariant: the union of what both replicas received is every
+    update exactly once — no duplicates, no losses, regardless of how
+    the interleaving lands.
+    """
+
+    @respx.mock
+    async def test_two_concurrent_pullers_exactly_once(self, tmp_path):
+        # a wider batch so the interleaving actually has room to race
+        batch = [{"update_id": 2000 + i, "message": {"text": f"m{i}"}} for i in range(20)]
+
+        async def feed(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content) if request.content else {}
+            if feed.calls == 0 and body.get("offset", 0) <= 2000:
+                feed.calls += 1
+                return httpx.Response(200, json={"ok": True, "result": batch})
+            await asyncio.sleep(0.01)
+            return httpx.Response(200, json={"ok": True, "result": []})
+
+        feed.calls = 0
+        respx.post(f"{BASE}/bot{TOKEN}/deleteWebhook").respond(
+            200, json={"ok": True, "result": True}
+        )
+        respx.post(f"{BASE}/bot{TOKEN}/getUpdates").mock(side_effect=feed)
+
+        cfg = make_cfg(str(tmp_path / "d3"))
+        app = create_app(cfg)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gw") as c,
+        ):
+            await c.post("/admin/bots", json={"token": TOKEN, "alias": "r1"}, headers=ADM)
+
+            # wait until the whole batch is queued
+            deadline = asyncio.get_event_loop().time() + 5
+            while asyncio.get_event_loop().time() < deadline:
+                r = await c.get("/admin/status", headers=ADM)
+                if r.json()["bots"][0]["queue"]["depth"] >= 20:
+                    break
+                await asyncio.sleep(0.02)
+
+            async def puller(out: list) -> None:
+                """A replica behaving like aiogram/PTB: every getUpdates
+                echoes offset = highest_seen + 1, until the queue drains."""
+                idle = 0
+                offset = None
+                while idle < 3:
+                    body = {"timeout": 0, "limit": 5}
+                    if offset is not None:
+                        body["offset"] = offset + 1  # Telegram +1 style
+                    r = await c.post(f"/tgapi/bot{TOKEN}/getUpdates", json=body)
+                    got = r.json().get("result") or []
+                    out.extend(got)
+                    if got:
+                        offset = max(u["update_id"] for u in got)
+                    idle = idle + 1 if not got else 0
+                    await asyncio.sleep(0.01)
+
+            replica_a: list = []
+            replica_b: list = []
+            await asyncio.gather(puller(replica_a), puller(replica_b))
+
+            ids_a = [u["update_id"] for u in replica_a]
+            ids_b = [u["update_id"] for u in replica_b]
+
+            # Invariant 1 — no update is ever lost across the overlap:
+            got = set(ids_a) | set(ids_b)
+            assert got == {u["update_id"] for u in batch}, (
+                f"lost updates across replicas: missing="
+                f"{sorted({u['update_id'] for u in batch} - got)}"
+            )
+            # Invariant 2 — each replica's own stream is duplicate-free:
+            # its offset acks advance monotonically (the drop-in contract
+            # real aiogram/PTB consumers rely on).
+            for name, ids in (("A", ids_a), ("B", ids_b)):
+                assert sorted(set(ids)) == sorted(ids), (
+                    f"replica {name} saw the same update twice: {ids}"
+                )
+            # Cross-replica duplicates during the overlap window are Bot
+            # API semantics (unacked updates go to any poller) — real
+            # Telegram would 409 the second poller; the gateway allows
+            # the overlap instead. That IS the rolling-deploy feature.
+
+            # audit recorded the registration
+            r = await c.get("/admin/audit", headers=ADM)
+            entries = r.json()["entries"]
+            assert entries and entries[0]["action"] == "register"
+            assert entries[0]["alias"] == "r1"

@@ -213,7 +213,9 @@ class MTSessionManager:
         (R7: AUTH_KEY_DUPLICATED prevention at the process level).
         """
         s.state = SessionState.connecting
-        os.makedirs(self.cfg.session_dir, exist_ok=True)
+        # Session files are raw auth_key material: 0700 dir, and the
+        # .session file gets 0600 after Pyrogram creates it (below).
+        os.makedirs(self.cfg.session_dir, mode=0o700, exist_ok=True)
 
         # ── Singleton lock BEFORE any Telegram contact ────────────────
         lock = SessionLock(alias=s.alias, lock_dir=self.cfg.session_dir)
@@ -249,6 +251,15 @@ class MTSessionManager:
             s.client = client
             s.state = SessionState.live
             s.connected_since = time.time()
+
+            # Pyrogram creates the .session file with default umask —
+            # tighten it: the file IS the account (auth_key).
+            sf = f"{s.session_file}.session"
+            try:
+                if os.path.exists(sf):
+                    os.chmod(sf, 0o600)
+            except OSError as e:
+                log.warning("[%s] could not chmod session file: %s", s.alias, e)
 
             me = await client.get_me()
             log.info("[%s] live as @%s (id=%s)", s.alias, me.username, me.id)

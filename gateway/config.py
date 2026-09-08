@@ -1,6 +1,6 @@
 """TG Session Gateway — configuration.
 
-Environment-driven (12-factor). Every knob the spec (docs/spec.he.md)
+Environment-driven (12-factor). Every knob the spec (docs/spec.md)
 defines has an env counterpart; sane defaults come from the spec's V1.
 """
 

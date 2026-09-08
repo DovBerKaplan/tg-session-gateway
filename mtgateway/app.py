@@ -363,6 +363,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
         s = await request.app.state.mgr.register(body.alias, body.token)
+        await request.app.state.store.audit("register", body.alias, f"token=…{body.token[-4:]}")
         return {"ok": True, "alias": s.alias, "state": s.state.value}
 
     @app.get("/v1/admin/status")
@@ -375,38 +376,56 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     async def admin_pause(alias: str, request: Request):
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.pause(alias)}
+        ok = await request.app.state.mgr.pause(alias)
+        if ok:
+            await request.app.state.store.audit("pause", alias)
+        return {"ok": ok}
 
     @app.post("/v1/admin/sessions/{alias}/resume")
     async def admin_resume(alias: str, request: Request):
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.resume(alias)}
+        ok = await request.app.state.mgr.resume(alias)
+        if ok:
+            await request.app.state.store.audit("resume", alias)
+        return {"ok": ok}
 
     @app.post("/v1/admin/sessions/{alias}/drain")
     async def admin_drain(alias: str, request: Request):
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.drain(alias)}
+        ok = await request.app.state.mgr.drain(alias)
+        if ok:
+            await request.app.state.store.audit("drain", alias)
+        return {"ok": ok}
 
     @app.delete("/v1/admin/sessions/{alias}")
     async def admin_delete(alias: str, request: Request):
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.unregister(alias)}
+        ok = await request.app.state.mgr.unregister(alias)
+        if ok:
+            await request.app.state.store.audit("delete", alias)
+        return {"ok": ok}
 
     @app.post("/v1/admin/sessions/{alias}/pause_sending")
     async def admin_pause_sending(alias: str, request: Request):
         """E4: Pause outbound sends; keep receiving updates."""
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.pause_sending(alias)}
+        ok = await request.app.state.mgr.pause_sending(alias)
+        if ok:
+            await request.app.state.store.audit("pause_sending", alias)
+        return {"ok": ok}
 
     @app.post("/v1/admin/sessions/{alias}/resume_sending")
     async def admin_resume_sending(alias: str, request: Request):
         if not _admin_authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        return {"ok": await request.app.state.mgr.resume_sending(alias)}
+        ok = await request.app.state.mgr.resume_sending(alias)
+        if ok:
+            await request.app.state.store.audit("resume_sending", alias)
+        return {"ok": ok}
 
     @app.post("/v1/admin/sessions/{alias}/paid")
     async def admin_paid(alias: str, body: SetPaid, request: Request):
@@ -416,7 +435,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not s:
             return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
         s.guard.paid_enabled = body.enabled
+        await request.app.state.store.audit("set_paid", alias, f"enabled={body.enabled}")
         return {"ok": True, "paid_broadcasts": s.guard.paid_enabled}
+
+    @app.get("/v1/admin/audit")
+    async def admin_audit_log(request: Request):
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        return {"ok": True, "entries": await request.app.state.store.get_audit()}
 
     # ── Health endpoints ─────────────────────────────────────────────
 

@@ -240,10 +240,12 @@ class UpdateQueue:
     # ── consumer side (Bot-API-compatible getUpdates semantics) ──────
 
     async def pull(self, offset: int | None, timeout: float, limit: int = 100) -> list[dict]:
-        """Long-poll with REAL Bot API semantics: offset is Telegram's
-        update_id (+1 style) exactly as aiogram/PTB/grammY send it."""
+        """Long-poll with REAL Bot API semantics: offset is the id of the
+        FIRST update the consumer wants back — i.e. highest_seen + 1,
+        exactly as aiogram/PTB/grammY send it (Telegram Bot API docs).
+        Everything strictly below offset is acknowledged and dropped."""
         if offset is not None:
-            self.ack(offset)
+            self.ack(offset - 1)
         deadline = time.monotonic() + timeout
         while True:
             pending = [u for u in self._q if u.update_id > self._consumer_offset]
