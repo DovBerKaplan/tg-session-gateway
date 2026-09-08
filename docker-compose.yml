@@ -5,7 +5,9 @@ name: tg-gateway
 
 services:
   gateway:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
     image: tg-session-gateway:latest
     container_name: tg-gateway
     labels:
