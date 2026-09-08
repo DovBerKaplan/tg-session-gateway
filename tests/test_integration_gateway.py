@@ -91,11 +91,6 @@ class TestGatewayLifecycle:
             assert r.status_code == 200, r.text
             assert r.json()["alias"] == "b1"
 
-            # poller picks up the batch → consumer pulls via Bot API shape
-            async def pulled():
-                r = await c.post(f"/tgapi/bot{TOKEN}/getUpdates", json={"timeout": 0})
-                return r.json().get("result") or []
-
             # poller picks the batch up asynchronously — poll until it lands
             deadline = asyncio.get_event_loop().time() + 5
             updates: list = []
@@ -104,6 +99,14 @@ class TestGatewayLifecycle:
                 updates.extend(r.json().get("result") or [])
             assert len(updates) == 2, f"poller never fed the queue: {updates}"
             assert gu.called
+
+            # Prometheus metrics expose the session and the queue
+            r = await c.get("/metrics")
+            assert r.status_code == 200
+            body = r.text
+            assert 'tg_gateway_session_state{alias="b1"} 1' in body
+            assert "tg_gateway_update_queue_depth" in body
+            assert "tg_gateway_real_429_total" in body
 
             # send through the alias route → proxied verbatim
             r = await c.post(
