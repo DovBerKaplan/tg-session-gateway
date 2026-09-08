@@ -24,6 +24,7 @@ from pyrogram.handlers import RawUpdateHandler
 from pyrogram.types import Update as PyrogramUpdate
 
 from .config import Config
+from .lock import SessionLock
 from .rateguard import MTRateGuard
 from .store import MTStore
 
@@ -67,6 +68,7 @@ class MTSession:
 
     # Rolling update: track which consumer is active
     active_consumer: Optional[str] = None
+    lock: Optional[SessionLock] = None  # singleton enforcement (R7)
 
     def __post_init__(self):
         self._update_queue = asyncio.Queue(maxsize=5000)
@@ -200,9 +202,28 @@ class MTSessionManager:
         return s
 
     async def _start_client(self, s: MTSession) -> None:
-        """Start a Pyrogram client with persistent session file."""
+        """Start a Pyrogram client with persistent session file.
+
+        Acquires a singleton lock FIRST — a second process on this
+        session fails at the filesystem and never reaches Telegram
+        (R7: AUTH_KEY_DUPLICATED prevention at the process level).
+        """
         s.state = SessionState.connecting
         os.makedirs(self.cfg.session_dir, exist_ok=True)
+
+        # ── Singleton lock BEFORE any Telegram contact ────────────────
+        lock = SessionLock(alias=s.alias, lock_dir=self.cfg.session_dir)
+        if not lock.acquire():
+            s.state = SessionState.error
+            s.last_error = (
+                f"session lock refused: another process holds '{s.alias}'. "
+                "A second connection would trigger AUTH_KEY_DUPLICATED."
+            )
+            log.error("[%s] refusing to start — lock held by another process", s.alias)
+            # Remove from sessions dict so admin can retry after lock release
+            self.sessions.pop(s.alias, None)
+            return
+        s.lock = lock
 
         try:
             client = PyrogramClient(
@@ -238,10 +259,15 @@ class MTSessionManager:
             # Keep the client running (idle in a task)
             asyncio.create_task(self._keep_alive(s), name=f"mt-idle-{s.alias}")
 
+            # Start lock heartbeat (proves we're alive for stale detection)
+            await lock.start_heartbeat()
+
         except Exception as e:
             s.state = SessionState.error
             s.last_error = str(e)
             log.error("[%s] failed to start: %s", s.alias, e)
+            lock.release()
+            s.lock = None
 
     def _make_update_handler(self, s: MTSession):
         """Create a Pyrogram update handler that routes to the session."""
@@ -285,7 +311,7 @@ class MTSessionManager:
             log.error("[%s] keep_alive error: %s", s.alias, e)
 
     async def unregister(self, alias: str) -> bool:
-        """Stop a session and remove it."""
+        """Stop a session and remove it. Releases the singleton lock."""
         s = self.sessions.pop(alias, None)
         if not s:
             return False
@@ -295,6 +321,9 @@ class MTSessionManager:
                 await s.client.stop()
             except Exception:
                 pass
+        if s.lock:
+            s.lock.release()
+            s.lock = None
         await self.store.delete(alias)
         return True
 
@@ -353,7 +382,7 @@ class MTSessionManager:
         return count
 
     async def shutdown(self) -> None:
-        """Graceful shutdown: stop all clients."""
+        """Graceful shutdown: stop all clients, release all locks."""
         for alias, s in list(self.sessions.items()):
             s.state = SessionState.draining
             if s.client:
@@ -361,7 +390,10 @@ class MTSessionManager:
                     await s.client.stop()
                 except Exception:
                     pass
-        log.info("all MTProto sessions shut down")
+            if s.lock:
+                s.lock.release()
+                s.lock = None
+        log.info("all MTProto sessions shut down (locks released)")
 
     def get(self, alias: str) -> Optional[MTSession]:
         return self.sessions.get(alias)
