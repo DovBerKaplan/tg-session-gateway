@@ -21,6 +21,7 @@ from typing import Optional
 class QueuedUpdate:
     internal_id: int
     update: dict
+    enqueued_at: float
 
 
 class Overflow(Exception):
@@ -28,19 +29,22 @@ class Overflow(Exception):
 
 
 class UpdateQueue:
-    def __init__(self, maxsize: int = 5000, overflow: str = "drop_oldest"):
+    def __init__(self, maxsize: int = 5000, overflow: str = "drop_oldest",
+                 ttl_s: float = 3600.0):
         self.maxsize = maxsize
         self.overflow = overflow
+        self.ttl_s = ttl_s
         self._q: deque[QueuedUpdate] = deque()
         self._next_id = 1
         self._consumer_offset = 0  # highest internal_id acked by the consumer
         self._new_data = asyncio.Event()
         self.dropped = 0
-        self.push_waited_s = 0.0  # max age of an update in the queue
+        self.expired = 0
 
     # ── poller side ──────────────────────────────────────────────────
 
     def push_all(self, updates: list[dict]) -> None:
+        self._prune_expired()
         for u in updates:
             self._push(u)
 
@@ -50,9 +54,19 @@ class UpdateQueue:
                 raise Overflow()
             self._q.popleft()  # drop_oldest
             self.dropped += 1
-        self._q.append(QueuedUpdate(self._next_id, update))
+        self._q.append(QueuedUpdate(self._next_id, update, time.monotonic()))
         self._next_id += 1
         self._new_data.set()
+
+    def _prune_expired(self) -> None:
+        """Spec §12: queued update content is short-lived — the queue is
+        infrastructure, not a conversation store."""
+        if self.ttl_s <= 0:
+            return
+        horizon = time.monotonic() - self.ttl_s
+        while self._q and self._q[0].enqueued_at < horizon:
+            self._q.popleft()
+            self.expired += 1
 
     # ── consumer side (Bot-API-compatible getUpdates semantics) ──────
 
@@ -99,14 +113,12 @@ class UpdateQueue:
     def depth(self) -> int:
         return len(self._q)
 
-    def max_age_s(self) -> float:
-        if not self._q:
-            return 0.0
-        return time.monotonic() - 0.0  # placeholder replaced below
-
     def stats(self) -> dict:
+        now = time.monotonic()
         return {
             "depth": len(self._q),
             "dropped_oldest": self.dropped,
+            "expired_by_ttl": self.expired,
+            "max_age_s": round(max((now - q.enqueued_at for q in self._q), default=0.0), 1),
             "consumer_offset": self._consumer_offset,
         }

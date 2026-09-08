@@ -91,6 +91,8 @@ class BotRateGuard:
         self.private: dict[int, Bucket] = {}
         self.groups: dict[int, Bucket] = {}
         self.global_writes = Bucket(cfg.global_rate, cfg.global_burst)
+        self.paid = Bucket(cfg.paid_rate, int(cfg.paid_rate))
+        self.paid_enabled: bool = False  # double opt-in (spec §8.2 §8)
         self.reads = Bucket(cfg.read_rate, max(10, int(cfg.read_rate)))
         self.egress_paused_until: float = 0.0
 
@@ -107,6 +109,16 @@ class BotRateGuard:
             b = table[chat_id] = Bucket(rate, burst, tokens=float(burst))
         return b
 
+    # set per-request by the proxy when allow_paid_broadcast=true is
+    # present AND the double opt-in allows it
+    _paid_lane: bool = False
+
+    def enter_paid_lane(self, allowed: bool) -> None:
+        self._paid_lane = allowed and self.paid_enabled
+
+    def exit_paid_lane(self) -> None:
+        self._paid_lane = False
+
     # ── admission ────────────────────────────────────────────────────
 
     def try_acquire(self, method: str, chat_id: Optional[int]) -> bool:
@@ -122,6 +134,10 @@ class BotRateGuard:
             return True
         if kind == "read":
             return self.reads.try_take(now)
+        # paid lane: only when the bot opted in AND the request carries the
+        # paid flag (checked by the proxy; here it rides the paid bucket)
+        if self._paid_lane:
+            return self.paid.try_take(now)
         chat_b = self._chat_bucket(chat_id) if chat_id is not None else None
         if chat_b is not None:
             chat_b.refill(now)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -39,6 +40,7 @@ class Proxy:
 
     async def call(self, s: BotSession, method: str, body: dict) -> Response:
         m = method.lower()
+        body = await self._resolve_username_chat(s, body)
 
         if m in GATEWAY_OWNED:
             if m == "getupdates":
@@ -52,10 +54,28 @@ class Proxy:
         chat_id = self._chat_id(body)
         kind = method_kind(m)
 
+        # paid lane (spec §8.2 §8): allow_paid_broadcast rides the 1000/s
+        # bucket ONLY with the gateway-side double opt-in; otherwise 403 —
+        # never silently over the free ceiling.
+        paid_requested = bool(body.get("allow_paid_broadcast"))
+        s.guard.enter_paid_lane(paid_requested)
+        try:
+            if paid_requested and not s.paid_broadcasts:
+                return JSONResponse(
+                    {"ok": False, "error_code": 403,
+                     "description": "allow_paid_broadcast requires the gateway-side "
+                                    "paid_broadcasts opt-in for this bot"},
+                    status_code=403,
+                )
+            return await self._admit_and_forward(s, m, method, body, chat_id, kind)
+        finally:
+            s.guard.exit_paid_lane()
+
+    async def _admit_and_forward(self, s, m, method, body, chat_id, kind) -> Response:
         # ── admission control (spec §8.2–8.3) ─────────────────────────
         waited = 0.0
         while not s.guard.try_acquire(m, chat_id):
-            if self.cfg.policy.on_limit == "reject" or kind != "write":
+            if s.effective_on_limit == "reject" or kind != "write":
                 s.synthetic_429 += 1
                 retry = max(1.0, min(s.guard.wait_time(m, chat_id), 60.0))
                 return JSONResponse(
@@ -90,6 +110,8 @@ class Proxy:
                 {"ok": False, "error_code": 502, "description": f"upstream: {e}"},
                 status_code=502,
             )
+        if kind == "write":
+            s.note_send()
 
         # learn from real 429s (highest authority, spec §8.2 §5–6)
         if resp.status_code == 429:
@@ -99,6 +121,8 @@ class Proxy:
             except Exception:
                 retry = 5.0
             s.guard.report_429(chat_id, retry)
+            s.last_429 = {"method": method, "chat_id": chat_id,
+                          "retry_after": retry, "at": time.time()}
         return Response(content=resp.content, status_code=resp.status_code,
                         media_type="application/json")
 
@@ -113,6 +137,32 @@ class Proxy:
         # they echo the _gw_internal_id they last saw, +1 style
         updates = await s.queue.pull(offset, timeout or 0.01, limit)
         return JSONResponse({"ok": True, "result": updates})
+
+    async def _resolve_username_chat(self, s: BotSession, body: dict) -> dict:
+        """@username targets resolve to numeric ids once (getChat cache,
+        spec §8.2 §4) so they land in the right per-chat bucket."""
+        cid = body.get("chat_id")
+        if not isinstance(cid, str) or not cid.startswith("@"):
+            return body
+        cached = getattr(s, "_chat_name_cache", None)
+        if cached is None:
+            cached = s._chat_name_cache = {}
+        if cid in cached:
+            body = dict(body)
+            body["chat_id"] = cached[cid]
+            return body
+        try:
+            resp = await self.client.post(f"/bot{s.token}/getChat", json={"chat_id": cid})
+            data = resp.json()
+            if data.get("ok"):
+                numeric = data["result"].get("id")
+                if isinstance(numeric, int):
+                    cached[cid] = numeric
+                    body = dict(body)
+                    body["chat_id"] = numeric
+        except Exception:
+            pass  # resolution failed — request proceeds, global bucket only
+        return body
 
     @staticmethod
     def _chat_id(body: dict) -> Optional[int]:
