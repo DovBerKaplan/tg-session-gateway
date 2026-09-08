@@ -101,8 +101,13 @@ class SessionManager:
 
     async def attach(self, alias: str, token: str, on_limit: str | None = None,
                      paid_broadcasts: bool = False) -> BotSession:
-        if alias in self.sessions:
-            return self.sessions[alias]
+        existing = self.sessions.get(alias)
+        if existing:
+            if existing.token == token:
+                return existing
+            # token rotated for this alias → swap: old poller dies, new one owns
+            await self.delete(alias)
+        
         s = BotSession(
             alias=alias,
             token=token,
@@ -124,6 +129,12 @@ class SessionManager:
         if not s:
             return False
         s.state = State.paused
+        if s.task and not s.task.done():
+            s.task.cancel()  # kill the in-flight long poll NOW, not in ≤25s
+            try:
+                await asyncio.gather(s.task, return_exceptions=True)
+            except Exception:
+                pass
         await self.store.set_paused(alias, True)
         return True
 

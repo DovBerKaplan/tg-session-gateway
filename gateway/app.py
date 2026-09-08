@@ -85,9 +85,22 @@ def build_router_from_state(cfg: Config):
     async def _call_route(request: Request, s, method: str):
         proxy = Proxy(cfg, request.app.state.mgr, request.app.state.client)
         ctype = request.headers.get("content-type", "application/json")
-        if not ctype.startswith("application/json"):
-            raw = await request.body()          # multipart / form — verbatim
+        if ctype.startswith("multipart/"):
+            raw = await request.body()          # media uploads — verbatim
             return await proxy.call(s, method, raw, ctype)
+        if ctype.startswith("application/x-www-form-urlencoded"):
+            from urllib.parse import parse_qs
+            body = await request.body()
+            parsed: dict = {}
+            for k, v in parse_qs(body.decode(), keep_blank_values=True).items():
+                val = v[0]
+                if val.lstrip("-").isdigit():
+                    parsed[k] = int(val)
+                elif val in ("true", "false"):
+                    parsed[k] = val == "true"
+                else:
+                    parsed[k] = val
+            return await proxy.call(s, method, parsed)
         return await proxy.call(s, method, await _json_body(request))
 
     @router.post("/tgapi/bot{token}/{method}")
@@ -127,6 +140,7 @@ def build_router_from_state(cfg: Config):
         return await _call_route(request, s, method)
 
     @router.get("/file/bot{token}/{path:path}")
+    @router.get("/tgapi/file/bot{token}/{path:path}")
     async def file_proxy(token: str, path: str, request: Request):
         mgr = request.app.state.mgr
         if not mgr.find_by_token(token):

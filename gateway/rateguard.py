@@ -135,10 +135,19 @@ class BotRateGuard:
         if kind == "read":
             return self.reads.try_take(now)
         # paid lane: only when the bot opted in AND the request carries the
-        # paid flag (checked by the proxy; here it rides the paid bucket)
-        if self._paid_lane:
-            return self.paid.try_take(now)
+        # paid flag. It replaces the GLOBAL BROADCAST ceiling only — the
+        # per-chat FAQ limits (1/s private, 20/min group) still apply.
         chat_b = self._chat_bucket(chat_id) if chat_id is not None else None
+        if chat_b is not None:
+            chat_b.refill(now)
+            if chat_b.paused_until > now or chat_b.tokens < 1:
+                return False  # chat-level block binds even on the paid lane
+        if self._paid_lane:
+            if not self.paid.try_take(now):
+                return False
+            if chat_b is not None:
+                chat_b.tokens -= 1
+            return True
         if chat_b is not None:
             chat_b.refill(now)
             if chat_b.paused_until > now or chat_b.tokens < 1:

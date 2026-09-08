@@ -55,11 +55,22 @@ networks:
 ```
 
 ```python
-# aiogram
-Bot(token, base_url="http://tg-gateway:8080/tgapi")
-# python-telegram-bot
-Application.builder().token(t).base_url("http://tg-gateway:8080/tgapi").build()
-# grammY / Telegraf / raw HTTP: same idea — point at the gateway
+# aiogram 3.x — Bot has NO base_url kwarg; swap the API server object:
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
+session = AiohttpSession(
+    api=TelegramAPIServer.from_base("http://tg-gateway:8080", is_local=True))
+bot = Bot(token, session=session)
+
+# python-telegram-bot — base_url is the part BEFORE {token}; note the /bot:
+app = (Application.builder()
+       .token(t)
+       .base_url("http://tg-gateway:8080/tgapi/bot")           # …/bot<token>/<method>
+       .base_file_url("http://tg-gateway:8080/file/bot")       # …/file/bot<token>/<path>
+       .build())
+
+# grammY / Telegraf / raw HTTP: point the client's apiRoot at
+# http://tg-gateway:8080/tgapi — same shape as api.telegram.org.
 ```
 
 That's the whole integration. No SDK, no protocol change — the gateway

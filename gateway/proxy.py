@@ -225,51 +225,8 @@ class Proxy:
         return None
 
 
-def build_router(cfg: Config, mgr: SessionManager, client: httpx.AsyncClient) -> APIRouter:
-    proxy = Proxy(cfg, mgr, client)
-
-    @router.post("/tgapi/bot{token}/{method}")
-    async def tgapi(token: str, method: str, request: Request):
-        s = mgr.find_by_token(token)
-        if not s:
-            return JSONResponse(
-                {"ok": False, "error_code": 404, "description": "unknown bot token"},
-                status_code=404,
-            )
-        body = await _json_body(request)
-        return await proxy.call(s, method, body)
-
-    @router.post("/bots/{alias}/{method}")
-    async def by_alias(alias: str, method: str, request: Request):
-        auth = request.headers.get("authorization", "")
-        if not cfg.app_secret or auth != f"Bearer {cfg.app_secret}":
-            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
-        s = mgr.sessions.get(alias)
-        if not s:
-            return JSONResponse(
-                {"ok": False, "error_code": 404, "description": "unknown alias"},
-                status_code=404,
-            )
-        body = await _json_body(request)
-        return await proxy.call(s, method, body)
-
-    @router.get("/file/bot{token}/{path:path}")
-    async def file_proxy(token: str, path: str):
-        s = mgr.find_by_token(token)
-        if not s:
-            return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
-        try:
-            resp = await client.get(f"/file/bot{token}/{path}")
-        except httpx.HTTPError as e:
-            return JSONResponse({"ok": False, "error_code": 502, "description": str(e)},
-                                status_code=502)
-        return Response(content=resp.content, status_code=resp.status_code,
-                        media_type=resp.headers.get("content-type", "application/octet-stream"))
-
-    return router
-
-
-async def _json_body(request: Request) -> dict:
+async def _json_body(request):
+    import json
     try:
         raw = await request.body()
         if not raw:

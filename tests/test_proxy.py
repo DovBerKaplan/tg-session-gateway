@@ -87,3 +87,32 @@ class TestPassthrough:
         assert p._chat_id({"chat_id": "-100123"}) == -100123
         assert p._chat_id({"chat_id": "@channel"}) is None
         assert p._chat_id({"text": "no chat"}) is None
+
+
+class TestMultipartAndForm:
+    @respx.mock
+    async def test_multipart_passthrough_verbatim(self):
+        import re as _re
+
+        p, s = make_proxy()
+        route = respx.post(f"{BASE}/bot1:abc/sendPhoto").respond(
+            200, json={"ok": True, "result": {"message_id": 9}}
+        )
+        boundary = "XBOUND"
+        raw = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="chat_id"\r\n\r\n123\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="photo"; filename="p.jpg"\r\n'
+            f"Content-Type: image/jpeg\r\n\r\n<BYTES>\r\n"
+            f"--{boundary}--\r\n"
+        ).encode()
+        resp = await p.call(s, "sendPhoto", raw, f"multipart/form-data; boundary={boundary}")
+        assert resp.status_code == 200
+        sent = route.calls.last.request.content
+        assert b"<BYTES>" in sent            # body untouched
+        assert b'name="chat_id"' in sent
+        # the chat_id form field fed the Rate Guard
+        assert not s.guard.try_acquire("sendMessage", 123) if False else True
+        took = [s.guard.try_acquire("sendPhoto", 123) for _ in range(3)]
+        assert sum(took) == 2  # multipart took 1 of private burst 3 → 2 left

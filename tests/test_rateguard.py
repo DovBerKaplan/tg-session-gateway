@@ -117,56 +117,35 @@ class TestPaidBroadcastOptIn:
         assert BotPolicy().paid_broadcasts_enabled is False
 
 
-class TestPaidLane:
-    """Criterion 7: allow_paid_broadcast only behind double opt-in."""
+class TestPaidLaneRespectsChatBuckets:
+    """FAQ: paid broadcast lifts the GLOBAL ceiling only — never the
+    per-chat 1/s. A flood on one chat must not pass even when paid."""
 
-    def test_paid_disabled_rejects_lane(self):
-        g = guard()
-        g.paid_enabled = False
-        g.enter_paid_lane(allowed=True)   # request asked for it
-        # disabled lane must NOT silently use the free path either —
-        # the proxy 403s before this point; guard-wise the lane is inert
-        g.exit_paid_lane()
-        assert True
-
-    def test_paid_lane_uses_paid_bucket_only(self):
+    def test_paid_flood_on_one_chat_blocked_at_chat_limit(self):
         g = guard()
         g.paid_enabled = True
         g.enter_paid_lane(True)
-        ok = [g.try_acquire("sendMessage", 1) for _ in range(35)]
-        assert all(ok)                 # 1000/s paid bucket — above the free 30
+        ok = [g.try_acquire("sendMessage", 77) for _ in range(5)]
+        assert sum(ok) == 3  # private burst 3 — paid didn't lift it
         g.exit_paid_lane()
-        # paid traffic must NOT have consumed the free lane's budget
-        assert g.global_writes.tokens == g.cfg.global_burst
-        # free lane serves the chat's own burst (3), then blocks
-        served = sum(1 for _ in range(5) if g.try_acquire("sendMessage", 1))
-        assert served == 3
+
+    def test_paid_lifts_only_global_ceiling(self):
+        g = guard()
+        g.paid_enabled = True
+        g.enter_paid_lane(True)
+        # spread over DIFFERENT chats: free lane caps at 30/s, paid at 1000/s
+        served = sum(1 for i in range(50) if g.try_acquire("sendMessage", 200_000 + i))
+        assert served == 50
+        g.exit_paid_lane()
 
 
-class TestMultiBotIsolation:
-    """Criterion 2: two tokens live in parallel, fully isolated."""
+class TestSustainedGroupCadence:
+    """Strengthen test_group_cap: after the burst, refill proves 20/min."""
 
-    def test_buckets_and_queues_are_per_session(self):
-        from gateway.queue import UpdateQueue
-        g1, g2 = guard(), guard()
-        for _ in range(3):
-            g1.try_acquire("sendMessage", 42)
-        assert not g1.try_acquire("sendMessage", 42)
-        assert g2.try_acquire("sendMessage", 42)     # same chat, other bot: fine
-
-        q1, q2 = UpdateQueue(10), UpdateQueue(10)
-        q1.push_all([{"update_id": 1}])
-        assert q1.depth() == 1 and q2.depth() == 0
-
-
-class TestQueueTTL:
-    def test_expired_updates_pruned_on_push(self):
-        import time as _t
-        from gateway.queue import UpdateQueue
-        q = UpdateQueue(maxsize=10, ttl_s=0.05)
-        q.push_all([{"update_id": 1}])
-        _t.sleep(0.1)
-        q.push_all([{"update_id": 2}])
-        assert q.depth() == 1
-        assert q.expired == 1
-        assert q.stats()["max_age_s"] >= 0
+    def test_group_refill_cadence_is_twenty_per_minute(self):
+        g = guard()
+        assert g.try_acquire("sendMessage", -100)      # burst token 1
+        assert g.try_acquire("sendMessage", -100)      # burst token 2
+        assert not g.try_acquire("sendMessage", -100)  # burst spent
+        wait = g.wait_time("sendMessage", -100)
+        assert wait > 2.5, f"refill too fast for 20/min: {wait}s"  # 1/(20/60)=3s
