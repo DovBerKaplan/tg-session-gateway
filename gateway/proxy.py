@@ -49,6 +49,11 @@ class Proxy:
         if m in GATEWAY_OWNED:
             if m == "getupdates":
                 return await self._internal_get_updates(s, body)
+            if m == "deletewebhook":
+                # Consumers call this on boot (aiogram start_polling does);
+                # the gateway already deleted the webhook when it attached
+                # the token. Answer success so drop-in consumers don't die.
+                return JSONResponse({"ok": True, "result": True})
             return JSONResponse(
                 {
                     "ok": False,

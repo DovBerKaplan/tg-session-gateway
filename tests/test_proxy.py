@@ -48,6 +48,14 @@ class TestPassthrough:
         assert resp.status_code == 200
 
     @respx.mock
+    async def test_deletewebhook_is_noop_success(self):
+        """aiogram's start_polling calls deleteWebhook on boot — a 403
+        here would kill every drop-in consumer before the first poll."""
+        p, s = make_proxy()
+        resp = await p.call(s, "deleteWebhook", {"drop_pending_updates": True})
+        assert resp.status_code == 200
+        assert b'"ok":true' in resp.body.lower()
+
     async def test_setwebhook_is_gateway_owned(self):
         p, s = make_proxy()
         resp = await p.call(s, "setWebhook", {"url": "https://x"})
