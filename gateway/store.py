@@ -56,40 +56,47 @@ class Store:
     async def connect(self) -> None:
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.executescript(_SCHEMA)
-        await self._db.commit()
+        await self.db.execute("PRAGMA journal_mode=WAL")
+        await self.db.executescript(_SCHEMA)
+        await self.db.commit()
 
     async def close(self) -> None:
         if self._db:
-            await self._db.close()
+            await self.db.close()
+
+    @property
+    def db(self) -> aiosqlite.Connection:
+        """The live connection; every method below requires connect() first."""
+        if self._db is None:
+            raise RuntimeError("Store used before connect() — call await connect() first")
+        return self._db
 
     # ── bots ─────────────────────────────────────────────────────────
 
     async def register_bot(self, alias: str, token: str) -> None:
         enc = self._fernet.encrypt(token.encode())
-        await self._db.execute(
+        await self.db.execute(
             "INSERT INTO bots (alias, token_enc) VALUES (?, ?) "
             "ON CONFLICT (alias) DO UPDATE SET token_enc = excluded.token_enc",
             (alias, enc),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def delete_bot(self, alias: str) -> bool:
-        cur = await self._db.execute("DELETE FROM bots WHERE alias = ?", (alias,))
-        await self._db.commit()
+        cur = await self.db.execute("DELETE FROM bots WHERE alias = ?", (alias,))
+        await self.db.commit()
         return cur.rowcount > 0
 
     async def set_paused(self, alias: str, paused: bool) -> None:
-        await self._db.execute("UPDATE bots SET paused = ? WHERE alias = ?", (int(paused), alias))
-        await self._db.commit()
+        await self.db.execute("UPDATE bots SET paused = ? WHERE alias = ?", (int(paused), alias))
+        await self.db.commit()
 
     async def list_bots(self) -> list[dict]:
-        async with self._db.execute("SELECT alias, telegram_offset, paused FROM bots") as cur:
+        async with self.db.execute("SELECT alias, telegram_offset, paused FROM bots") as cur:
             return [dict(r) for r in await cur.fetchall()]
 
     async def get_token(self, alias: str) -> str | None:
-        async with self._db.execute("SELECT token_enc FROM bots WHERE alias = ?", (alias,)) as cur:
+        async with self.db.execute("SELECT token_enc FROM bots WHERE alias = ?", (alias,)) as cur:
             row = await cur.fetchone()
         if not row:
             return None
@@ -102,17 +109,17 @@ class Store:
     # ── offsets (spec §6.1: survives gateway restart) ────────────────
 
     async def get_offset(self, alias: str) -> int:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT telegram_offset FROM bots WHERE alias = ?", (alias,)
         ) as cur:
             row = await cur.fetchone()
         return row["telegram_offset"] if row else 0
 
     async def save_offset(self, alias: str, offset: int) -> None:
-        await self._db.execute(
+        await self.db.execute(
             "UPDATE bots SET telegram_offset = ? WHERE alias = ?", (offset, alias)
         )
-        await self._db.commit()
+        await self.db.commit()
 
     @staticmethod
     def token_suffix(token: str) -> str:

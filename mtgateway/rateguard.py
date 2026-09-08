@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 from gateway.rateguard import Bucket, RateConfig, method_kind
 
+from .config import MTProtoRateConfig
+
 # ── Pyrogram FLOOD_WAIT parsing ────────────────────────────────────
 
 # Pyrogram raises FloodWait(seconds), FloodPremiumWait(seconds),
@@ -83,17 +85,6 @@ def parse_flood_wait(exc: Exception) -> dict | None:
     return None
 
 
-# ── MTProto-specific config ─────────────────────────────────────────
-
-
-@dataclass
-class MTProtoRateConfig:
-    flood_backoff_base: float = 1.5  # exponential multiplier
-    slowmode_respect: bool = True
-    peer_flood_cooldown: float = 300.0  # 5 min default
-    silent_rate: float = 5.0  # resolve, get_participants
-
-
 # ── Per-peer adaptive backoff state ─────────────────────────────────
 
 
@@ -109,15 +100,15 @@ class PeerBackoff:
 class MTRateGuard:
     """All pacing state for one MTProto session (bot token)."""
 
-    def __init__(self, faq: RateConfig, mtproto: MTProtoRateConfig):
-        self.faq = faq
-        self.mtproto = mtproto
+    def __init__(self, faq: RateConfig | None = None, mtproto: MTProtoRateConfig | None = None):
+        self.faq = faq or RateConfig()
+        self.mtproto = mtproto or MTProtoRateConfig()
         self.private: dict[int, Bucket] = {}
         self.groups: dict[int, Bucket] = {}
-        self.global_writes = Bucket(faq.global_rate, faq.global_burst)
-        self.reads = Bucket(faq.read_rate, max(10, int(faq.read_rate)))
-        self.silent = Bucket(mtproto.silent_rate, max(5, int(mtproto.silent_rate)))
-        self.paid = Bucket(faq.paid_rate, int(faq.paid_rate))
+        self.global_writes = Bucket(self.faq.global_rate, self.faq.global_burst)
+        self.reads = Bucket(self.faq.read_rate, max(10, int(self.faq.read_rate)))
+        self.silent = Bucket(self.mtproto.silent_rate, max(5, int(self.mtproto.silent_rate)))
+        self.paid = Bucket(self.faq.paid_rate, int(self.faq.paid_rate))
         self.paid_enabled: bool = False
         self.egress_paused_until: float = 0.0
         self._paid_lane: bool = False
