@@ -240,7 +240,7 @@ class MTSessionManager:
         """One-shot start: lock, connect, or fail (used by reconnects)."""
         s.state = SessionState.connecting
         os.makedirs(self.cfg.session_dir, mode=0o700, exist_ok=True)
-        if not self._acquire_lock_for(s):
+        if not await self._acquire_lock_for(s):
             s.state = SessionState.error
             s.last_error = (
                 f"session lock refused: another process holds '{s.alias}'. "
@@ -354,7 +354,7 @@ class MTSessionManager:
         from .rateguard import parse_flood_wait
 
         for attempt in range(1, max_attempts + 1):
-            lock_ok = s.lock is not None or self._acquire_lock_for(s)
+            lock_ok = s.lock is not None or await self._acquire_lock_for(s)
             if not lock_ok:
                 return  # refused: another owner — already logged
             try:
@@ -382,9 +382,16 @@ class MTSessionManager:
                 )
                 await asyncio.sleep(wait)
 
-    def _acquire_lock_for(self, s: MTSession) -> bool:
-        lock = SessionLock(alias=s.alias, lock_dir=self.cfg.session_dir)
-        if not lock.acquire():
+    async def _acquire_lock_for(self, s: MTSession) -> bool:
+        from .lock import make_lock
+
+        lock = make_lock(
+            s.alias,
+            self.cfg.session_dir,
+            backend=getattr(self.cfg, "lock_backend", "file"),
+            redis_url=getattr(self.cfg, "redis_url", "") or None,
+        )
+        if not await lock.acquire():
             self.sessions.pop(s.alias, None)
             return False
         s.lock = lock
@@ -454,7 +461,10 @@ class MTSessionManager:
             except Exception:
                 pass
         if s.lock:
-            s.lock.release()
+            if isinstance(s.lock, SessionLock):
+                s.lock.release()
+            else:
+                await s.lock.release()
             s.lock = None
         await self.store.delete(alias)
         return True

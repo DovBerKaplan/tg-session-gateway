@@ -73,6 +73,11 @@ class Config:
     # session files directory (inside data_dir)
     session_dir: str = ""  # computed in __post_init__
 
+    # ADR-0001: lock backend — file (default, single-host, zero-dep) or
+    # redis (multi-host lease with TTL + fencing token)
+    lock_backend: str = _env("GW_LOCK_BACKEND", "file")
+    redis_url: str = _env("GW_REDIS_URL", "")
+
     # consumer management
     max_sessions: int = _env_int("GW_MAX_SESSIONS", 50)
     consumer_timeout: float = _env_float("GW_CONSUMER_TIMEOUT", 120.0)
