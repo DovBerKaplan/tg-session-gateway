@@ -202,35 +202,37 @@ class MTSessionManager:
         self.sessions[alias] = s
 
         # Start the Pyrogram client asynchronously
-        asyncio.create_task(self._start_client(s), name=f"mt-start-{alias}")
+        asyncio.create_task(self._start_with_retries(s), name=f"mt-start-{alias}")
         return s
 
     async def _start_client(self, s: MTSession) -> None:
-        """Start a Pyrogram client with persistent session file.
-
-        Acquires a singleton lock FIRST — a second process on this
-        session fails at the filesystem and never reaches Telegram
-        (R7: AUTH_KEY_DUPLICATED prevention at the process level).
-        """
+        """One-shot start: lock, connect, or fail (used by reconnects)."""
         s.state = SessionState.connecting
-        # Session files are raw auth_key material: 0700 dir, and the
-        # .session file gets 0600 after Pyrogram creates it (below).
         os.makedirs(self.cfg.session_dir, mode=0o700, exist_ok=True)
-
-        # ── Singleton lock BEFORE any Telegram contact ────────────────
-        lock = SessionLock(alias=s.alias, lock_dir=self.cfg.session_dir)
-        if not lock.acquire():
+        if not self._acquire_lock_for(s):
             s.state = SessionState.error
             s.last_error = (
                 f"session lock refused: another process holds '{s.alias}'. "
                 "A second connection would trigger AUTH_KEY_DUPLICATED."
             )
             log.error("[%s] refusing to start — lock held by another process", s.alias)
-            # Remove from sessions dict so admin can retry after lock release
             self.sessions.pop(s.alias, None)
             return
-        s.lock = lock
+        try:
+            await self._start_client_inner(s)
+        except Exception as e:
+            s.state = SessionState.error
+            s.last_error = str(e)
+            log.error("[%s] failed to start: %s", s.alias, e)
 
+    async def _start_client_inner(self, s: MTSession) -> None:
+        """Connect a Pyrogram client with persistent session file.
+
+        Assumes the singleton lock is already held (AUTH_KEY_DUPLICATED
+        prevention, R7). Raises on failure — callers decide whether to
+        retry (auth floods) or give up.
+        """
+        s.state = SessionState.connecting
         try:
             client = PyrogramClient(
                 name=s.session_file,  # .session appended by Pyrogram
@@ -286,14 +288,59 @@ class MTSessionManager:
             asyncio.create_task(self._keep_alive(s), name=f"mt-idle-{s.alias}")
 
             # Start lock heartbeat (proves we're alive for stale detection)
-            await lock.start_heartbeat()
+            if s.lock:
+                await s.lock.start_heartbeat()
 
-        except Exception as e:
-            s.state = SessionState.error
-            s.last_error = str(e)
-            log.error("[%s] failed to start: %s", s.alias, e)
-            lock.release()
-            s.lock = None
+        except Exception:
+            # release the lock for this attempt; the retry wrapper re-acquires
+            if s.lock:
+                s.lock.release()
+                s.lock = None
+            raise
+
+    async def _start_with_retries(self, s: MTSession, max_attempts: int = 8) -> None:
+        """Start a session; on an auth FLOOD_WAIT, wait it out and retry.
+
+        Manual poking at auth floods makes them worse (every failed
+        ImportBotAuthorization can refresh the penalty). The gateway
+        owns the discipline instead: parse the required wait from
+        Telegram's answer, sleep it out plus a margin, try again —
+        with capped attempts so a permanent failure cannot spin.
+        """
+        from .rateguard import parse_flood_wait
+
+        for attempt in range(1, max_attempts + 1):
+            lock_ok = s.lock is not None or self._acquire_lock_for(s)
+            if not lock_ok:
+                return  # refused: another owner — already logged
+            try:
+                await self._start_client_inner(s)
+                return  # live (or refused permanently — inner logged it)
+            except Exception as e:
+                flood = parse_flood_wait(e)
+                if not flood or attempt == max_attempts:
+                    s.state = SessionState.error
+                    s.last_error = str(e)
+                    log.error("[%s] start failed for good (attempt %d): %s", s.alias, attempt, e)
+                    return
+                wait = float(flood["wait"]) + 60.0  # margin over the quoted window
+                s.state = SessionState.connecting
+                s.last_error = f"auth flood: retrying in {int(wait)}s (attempt {attempt})"
+                log.warning(
+                    "[%s] auth flood on start (attempt %d) — sleeping %ds before retry",
+                    s.alias,
+                    attempt,
+                    int(wait),
+                )
+                await asyncio.sleep(wait)
+
+    def _acquire_lock_for(self, s: MTSession) -> bool:
+        lock = SessionLock(alias=s.alias, lock_dir=self.cfg.session_dir)
+        if not lock.acquire():
+            self.sessions.pop(s.alias, None)
+            return False
+        s.lock = lock
+        return True
 
     def _make_update_handler(self, s: MTSession):
         """Create a Pyrogram update handler that routes to the session."""
