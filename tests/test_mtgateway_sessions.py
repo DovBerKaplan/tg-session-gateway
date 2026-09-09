@@ -135,7 +135,7 @@ class TestManagerLifecycle:
             await store.connect()
             mgr = MTSessionManager(cfg, store)
             # Mock the Pyrogram client start to avoid actual connection
-            with patch.object(MTSessionManager, "_start_client", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
                 s = await mgr.register("bot1", "123:abc")
                 assert s.alias == "bot1"
                 assert "bot1" in mgr.sessions
@@ -147,7 +147,7 @@ class TestManagerLifecycle:
             store = MTStore(d)
             await store.connect()
             mgr = MTSessionManager(cfg, store)
-            with patch.object(MTSessionManager, "_start_client", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
                 await mgr.register("bot1", "t")
                 assert await mgr.unregister("bot1") is True
                 assert "bot1" not in mgr.sessions
@@ -160,7 +160,7 @@ class TestManagerLifecycle:
             store = MTStore(d)
             await store.connect()
             mgr = MTSessionManager(cfg, store)
-            with patch.object(MTSessionManager, "_start_client", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
                 s = await mgr.register("bot1", "t")
                 assert await mgr.pause("bot1") is True
                 assert s.state == SessionState.paused
@@ -196,7 +196,7 @@ class TestPauseSending:
             store = MTStore(d)
             await store.connect()
             mgr = MTSessionManager(cfg, store)
-            with patch.object(MTSessionManager, "_start_client", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
                 s = await mgr.register("bot1", "t")
                 assert s.send_paused is False
                 assert await mgr.pause_sending("bot1") is True
