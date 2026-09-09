@@ -200,7 +200,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     status_code=404,
                 )
 
-            result = await fn(**body)
+            from .coerce import coerce_args
+
+            result = await fn(**coerce_args(body))
 
             # Clear backoff on success (positive signal)
             if chat_id is not None:
@@ -234,6 +236,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             )
         finally:
             s.guard.exit_paid_lane()
+
+    @app.post("/v1/token/bot{token}/{method}")
+    async def proxy_by_token(token: str, method: str, request: Request):
+        """Token-routed surface — same contract as the alias route, for
+        consumers (task pools) that only hold the bot token."""
+        if not _app_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        s = request.app.state.mgr.find_by_token(token)
+        if not s:
+            return JSONResponse(
+                {"ok": False, "error_code": 404, "description": "unknown bot token"},
+                status_code=404,
+            )
+        request.state.session_alias = s.alias
+        # reuse the alias route logic by delegating with the resolved alias
+        return await proxy_method(s.alias, method, request)
 
     # ── Pull updates (Bot API compat) ────────────────────────────────
 
