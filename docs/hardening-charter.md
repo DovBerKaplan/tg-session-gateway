@@ -38,7 +38,11 @@ for this repo; claims stay honest until their test exists.
 - [x] Monitoring runbook (docs/monitoring.md — catalog, alerts, on-call)
 
 
-## v0.1.0 promotion criteria (from rc1)
+## When does 0.1.0 happen? (from 0.0.3)
+
+Not by clock alone. 0.1.0 requires the rc criteria below AND at least
+one external consumer (an issue, a fork, a "works for me" — proof
+this isn't a single-workload accident).
 
 Tag v0.1.0 when the rc1 artifact has run in production for 72h with:
 - `tg_gateway_real_flood_wait_total` and `tg_gateway_real_429_total`
