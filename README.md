@@ -1,10 +1,45 @@
 # Telegram Session Gateway
 
-### Keep your Telegram bot's session alive across Docker deployments.
+> **Your bot container should be disposable. Your Telegram session shouldn't be.**
 
-Deploy new versions of your bot as many times as you want — the
-Telegram session never reconnects, never re-authenticates, and never
-eats a FloodWait.
+**1 container · 1 URL change · zero deployment downtime.**
+
+Self-hosted Bot API gateway with session persistence, rate limiting,
+FloodWait backoff, and a crash-safe update queue.
+
+```
+   deploy / crash / scale — anytime            ┌──────────────┐
+  ┌─────────┐   ┌─────────┐   ┌─────────┐      │   Telegram   │
+  │ bot v1  │ → │ bot v2  │ → │ bot v3  │      └──────▲───────┘
+  └────┬────┘   └────┬────┘   └────┬────┘             │ one session,
+       └─────────────┴─────────────┴────►  ┌──────────┴─────────┐
+                HTTP (Bot API, verbatim)    │  session gateway   │
+                                           │  · owns the poller │
+                                           │  · rate guard      │
+                                           │  · durable queue   │
+                                           └────────────────────┘
+```
+
+**Start in 30 seconds** (Bot API bots — aiogram / python-telegram-bot
+/ grammY / Telegraf):
+
+```bash
+docker run -d --name tggw -p 8080:8080 \
+  -e GW_ADMIN_SECRET=$(openssl rand -hex 16) -e GW_APP_SECRET=$(openssl rand -hex 16) \
+  -v tggw-data:/data ghcr.io/dovberkaplan/tg-session-gateway:latest
+# then the ONLY change in your bot:
+#   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
+```
+
+*(images pending public visibility — until then `git clone` +
+`docker compose up -d` works from source, see Quickstart below)*
+
+| | Direct Bot API | Local Bot API server | MTProxy | **Session Gateway** |
+|---|---|---|---|---|
+| Session lifecycle independent of app deploys | ❌ | partial | ❌ | ✅ |
+| Zero-downtime bot deploys | ❌ | ❌ | ❌ | ✅ |
+| Built-in rate guard + 429 isolation per chat | ❌ | ❌ | — | ✅ |
+| Update queue that survives kill -9 | ❌ | ❌ | — | ✅ |
 
 ## The problem
 
@@ -73,14 +108,15 @@ survive `kill -9`, and a singleton lock makes a second process fail
 **before** it ever reaches Telegram. A chaos test in CI proves all
 three: zero duplicates, zero lost updates, exactly-once replay.
 
-## Two products, one repo
+## Also: Pyrogram / MTProto bots
 
-Pick the one that matches how your bot talks to Telegram:
-
-| Your bot uses... | Use | Directory |
-|---|---|---|
-| Bot API (aiogram, python-telegram-bot, grammY, Telegraf) | **Bot API Gateway** — a drop-in `api.telegram.org` replacement (change one base URL) | `gateway/` |
-| Pyrogram / pyrofork (MTProto) | **MTProto Sidecar** — your app speaks HTTP/WS, the sidecar owns the auth_key and connection | `mtgateway/` |
+Everything above is the **Bot API gateway** (`gateway/`) — the drop-in
+`api.telegram.org` replacement, one base-URL change. If your bot runs
+on **Pyrogram/pyrofork (MTProto)**, the repo also ships an MTProto
+sidecar (`mtgateway/`): your app speaks HTTP/WebSocket, the sidecar
+owns the auth_key, connection, and update loop. Same principles, same
+rate guard — earlier in its lifecycle (one production consumer so
+far), so treat it as the younger sibling: [sidecar docs →](docs/sidecar-spec.md)
 
 Both share the same principles: a long-lived infrastructure container
 that owns the Telegram connection, enforces the official
