@@ -34,5 +34,5 @@ for this repo; claims stay honest until their test exists.
 - [x] Chaos soak in CI: 3 accounts, kill -9 with stranded locks,
       restart — zero AUTH_KEY_DUPLICATED, zero lost updates,
       exactly-once replay, ack releases (tests/test_chaos_soak.py)
-- [ ] Redis lease backend (multi-host) behind the lock interface
-- [ ] Monitoring runbook (metrics + alert rules + on-call thresholds)
+- [x] Redis lease backend behind the lock interface (ADR-0001, fencing tokens, fakeredis-tested)
+- [x] Monitoring runbook (docs/monitoring.md — catalog, alerts, on-call)

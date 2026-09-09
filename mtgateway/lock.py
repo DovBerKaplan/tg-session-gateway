@@ -15,6 +15,7 @@ import asyncio
 import atexit
 import logging
 import os
+import socket
 import time
 from dataclasses import dataclass
 
@@ -173,3 +174,107 @@ class SessionLock:
                     pass
 
         self._heartbeat_task = asyncio.create_task(_beat(), name=f"lock-hb-{self.alias}")
+
+
+# ── Redis lease backend (ADR-0001) ─────────────────────────────────
+
+
+class RedisSessionLease:
+    """Distributed lease: SET NX PX + heartbeat extension + fencing token.
+
+    Multi-host ownership (ADR-0001): crash release is automatic (TTL
+    lapse, ≤ ttl_s) — safer than file stale-detection, and the fencing
+    token (monotonic per acquisition) lets future farm mode reject a
+    thawed zombie's late writes. Lazy redis import keeps the file
+    backend dependency-free.
+    """
+
+    def __init__(self, alias: str, redis_url: str, ttl_s: float = 15.0):
+        import redis.asyncio as aioredis
+
+        self.alias = alias
+        self.ttl_s = ttl_s
+        self._r = aioredis.from_url(redis_url)
+        self._key = f"tgw:lease:{alias}"
+        self._ft_key = f"tgw:lease:{alias}:ft"
+        self._holder = f"{socket.gethostname()}:{os.getpid()}"
+        self._heartbeat_task: asyncio.Task | None = None
+        self.token: int | None = None  # fencing token, None = not held
+
+    async def acquire(self) -> bool:
+        ok = await self._r.set(self._key, self._holder, nx=True, px=int(self.ttl_s * 1000))
+        if not ok:
+            holder = await self._r.get(self._key)
+            log.error(
+                "[%s] LEASE REFUSED: held by %s (a second connection would "
+                "trigger AUTH_KEY_DUPLICATED)",
+                self.alias,
+                holder.decode() if isinstance(holder, bytes) else holder,
+            )
+            return False
+        self.token = int(await self._r.incr(self._ft_key))
+        log.info(
+            "[%s] session lease acquired (holder=%s token=%d)", self.alias, self._holder, self.token
+        )
+        return True
+
+    async def release(self) -> None:
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+        # release only OUR lease (token check via holder value)
+        current = await self._r.get(self._key)
+        if current and (current.decode() if isinstance(current, bytes) else current) == self._holder:
+            await self._r.delete(self._key)
+            log.info("[%s] session lease released", self.alias)
+        self.token = None
+
+    async def extend(self) -> None:
+        """Heartbeat: extend the TTL — only if we still own it."""
+        await self._r.expire(self._key, int(self.ttl_s * 1000))
+
+    async def start_heartbeat(self, interval: float = 5.0) -> None:
+
+        async def _beat():
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self.extend()
+                except Exception as e:
+                    log.warning("[%s] lease heartbeat failed: %s", self.alias, e)
+
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.get_event_loop().create_task(_beat())
+
+
+def make_lock(alias: str, lock_dir: str, backend: str = "file", redis_url: str | None = None):
+    """Lock factory (ADR-0001): file by default, Redis lease for multi-host.
+
+    Returns an object with the SAME async surface on both backends:
+    await acquire() -> bool, await release(), await start_heartbeat().
+    """
+    if backend == "redis":
+        if not redis_url:
+            raise ValueError("GW_LOCK_BACKEND=redis requires GW_REDIS_URL")
+        return RedisSessionLease(alias, redis_url)
+    return FileLockAdapter(SessionLock(alias=alias, lock_dir=lock_dir))
+
+
+class FileLockAdapter:
+    """Async surface over the file lock (ADR-0001 interface parity)."""
+
+    def __init__(self, lock: SessionLock):
+        self._lock = lock
+
+    async def acquire(self) -> bool:
+        return self._lock.acquire()
+
+    async def release(self) -> None:
+        self._lock.release()
+
+    async def start_heartbeat(self, interval: float = 5.0) -> None:
+        await self._lock.start_heartbeat()
+
+    @property
+    def token(self) -> None:
+        return None  # file backend has no fencing token (single-host)
