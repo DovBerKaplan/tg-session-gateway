@@ -77,20 +77,35 @@ class MTSession:
         return os.path.join(self._session_dir, f"{self.alias}.session")
 
     # E2: Idempotency — app-supplied keys prevent duplicate sends
-    _seen_idempotency_keys: dict[str, float] = field(default_factory=dict)  # key → timestamp
+    _seen_idempotency_keys: dict[str, float] = field(default_factory=dict)  # fast-path cache
+    _store: object = None  # MTStore — injected by the manager
 
-    def check_idempotency(self, key: str) -> bool:
-        """Returns True if this is a NEW key (proceed with send).
-        Returns False if the key was already seen (skip, return cached result)."""
-        if key in self._seen_idempotency_keys:
+    async def check_idempotency(self, key: str) -> bool:
+        """True = NEW key (proceed with send); False = replay (suppress).
+
+        Hardening charter: keys are persisted (SQLite) so a kill -9 in
+        the deploy window cannot double-send; the in-memory dict stays
+        only as a fast-path cache in front of the store.
+        """
+        now = time.time()
+        ts = self._seen_idempotency_keys.get(key)
+        if ts is not None and now - ts < 300:
             return False
-        self._seen_idempotency_keys[key] = time.time()
-        # Prune keys older than 5 minutes (bounded memory)
-        cutoff = time.time() - 300
-        stale = [k for k, ts in self._seen_idempotency_keys.items() if ts < cutoff]
+        if await self._idempotency_store().idempotency_seen(self.alias, key):
+            self._seen_idempotency_keys[key] = now
+            return False
+        await self._idempotency_store().idempotency_record(self.alias, key)
+        self._seen_idempotency_keys[key] = now
+        # bounded memory: drop stale cache entries
+        cutoff = now - 300
+        stale = [k for k, t in self._seen_idempotency_keys.items() if t < cutoff]
         for k in stale:
             del self._seen_idempotency_keys[k]
         return True
+
+    def _idempotency_store(self):
+        """Store handle — injected by the manager at registration."""
+        return self._store
 
     # E4: Pause sending while keeping receiving alive
     send_paused: bool = False
@@ -185,6 +200,7 @@ class MTSessionManager:
     def _create_session(self, alias: str, token: str) -> MTSession:
         s = MTSession(alias=alias, token=token)
         s._session_dir = self.cfg.session_dir
+        s._store = self.store
         s.guard = MTRateGuard(self.cfg.rate, self.cfg.mtproto_rate)
         return s
 
