@@ -1,37 +1,42 @@
-# Reddit — r/Telegram, r/TelegramBots, r/selfhosted (paste-ready, adapt per sub)
+# Reddit — phase 1: find testers, not stars (r/TelegramBots, r/docker, r/selfhosted)
 
-**Title:** I was tired of Telegram bot deployments killing the bot's session, so I separated them — open source
+The launch research is clear: problem-first DISCUSSION posts recruit
+real users; "check out my project" posts get ignored. Ask the question,
+offer the tool as your answer, ask for testers explicitly.
+
+## Post A — the question (r/TelegramBots, r/docker)
+
+**Title:** How do you handle Telegram bot deployment restarts without tripping rate limits / dropping the session?
 
 **Text:**
 
-The scenario: Telegram bot in Docker. Every `docker compose up -d`
-replaces the container, the in-process Telegram session dies, and the
-new container has to reconnect/re-auth. Do it too often and Telegram
-serves you a FloodWait (mine said 3342 seconds). Run two workers on
-one session and you risk AUTH_KEY_DUPLICATED — which can kill the
-auth_key permanently.
+Every `docker compose up -d` on my bot used to mean: container
+replaced → in-process Telegram session dies → reconnect/re-auth →
+eventually Telegram served me a FloodWait of 3342 seconds. Two
+workers on one session and you risk AUTH_KEY_DUPLICATED (permanent
+auth_key loss).
 
-So I split application lifecycle from connection lifecycle:
+I ended up separating the lifecycles: a small always-on gateway owns
+the session + polling + rate guard + a crash-safe update queue; the
+bot is a stateless container that talks to it over plain Bot API
+(one base-URL change in aiogram/PTB). Deploying the bot doesn't touch
+Telegram anymore — restart proof with real logs is in the README.
 
-    Telegram
-       ↑
-    Session Gateway (always-on: session, update loop, rate guard, durable queue)
-       ↑
-    Bot v1 → v2 → v3 (stateless, HTTP/WS to the gateway)
+Open source, self-hosted, Python:
+https://github.com/DovBerKaplan/tg-session-gateway
 
-Now deploying the bot doesn't touch Telegram at all. Restart proof
-(real logs, not a mockup) is in the README: gateway killed with 4
-sessions live → restarted → sessions restored from disk with zero
-Telegram logins, queued updates replayed exactly once.
+**Looking for testers** running Telegram bots in Docker (aiogram /
+python-telegram-bot / grammY): does this match the failure mode you
+see? What's missing for YOUR setup? Honest scope: v0.0.x, one
+production consumer, everything claimed is test-linked.
 
-- Drop-in for aiogram / python-telegram-bot / grammY (change base URL)
-- MTProto sidecar for Pyrogram bots
-- Official FAQ rate buckets + real FloodWait parsing with per-peer backoff
-- kill -9-safe: durable update queue, session persistence, singleton lock
+## Post B — lighter variant (r/selfhosted)
 
-Self-hosted, Python, MIT: https://github.com/DovBerKaplan/tg-session-gateway
+**Title:** Self-hosting a Telegram session gateway so bot deploys stop killing the connection — looking for testers
 
-Not asking for stars — asking people who run Telegram bots in Docker
-to try it and tell me what breaks. Honest status: v0.0.x, one
-production consumer so far, everything claimed is test-linked in the
-README.
+Same body, emphasize the self-hosted/compose angle.
+
+## Rules of engagement
+- One subreddit per 2-3 days; adapt, never crosspaste identical text
+- Answer every reply within the first hours (HN/Reddit algorithms weigh early engagement)
+- Feedback → issues on GitHub → visible fixes = the real growth loop
