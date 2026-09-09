@@ -269,8 +269,10 @@ class MTSessionManager:
             # the entities have been seen. Walk the bot's chats once;
             # the file session remembers them across restarts.
             try:
-                async for _ in client.get_dialogs(limit=500):
-                    pass
+                dialogs = client.get_dialogs(limit=500)
+                if dialogs is not None:
+                    async for _ in dialogs:
+                        pass
                 log.info("[%s] peer cache warmed", s.alias)
             except Exception as e:
                 log.warning("[%s] peer warm-up failed (non-fatal): %s", s.alias, e)
