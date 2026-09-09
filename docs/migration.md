@@ -37,7 +37,8 @@ gateway exposes the exact Bot API surface at `/tgapi`:
 **aiogram 3:**
 ```python
 from aiogram.client.session.aiohttp import AiohttpSession
-session = AiohttpSession(api="http://tggw:8080/tgapi")  # note: no /bot<token> suffix
+from aiogram.client.telegram import TelegramAPIServer
+session = AiohttpSession(api=TelegramAPIServer.from_base("http://tggw:8080/tgapi"))
 bot = Bot("12345:ABC", session=session)
 ```
 
@@ -141,10 +142,10 @@ the same session simultaneously — that's the exact
 will also refuse the second one, but don't rely on it across
 machines).
 
-## C. kot-style deployment (reference)
+## C. Reference deployment (multi-bot)
 
-The reference consumer is a multi-bot production deployment (private
-bot + group modbot):
+The reference consumer this was built for is a multi-bot production
+deployment (a private bot + a group-moderation bot):
 
 - gateway/sidecar container on the same Docker network as the app,
   `/data` on a named volume, backed up regularly (it holds the

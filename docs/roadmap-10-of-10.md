@@ -319,8 +319,8 @@ jobs:
 
 ## Phase 9: Battle-Testing (Week 2-4)
 
-- [ ] Deploy Bot API gateway for kot's modbot (aiogram)
-- [ ] Deploy MTProto sidecar in shadow mode alongside kot
+- [x] Deploy Bot API gateway for a real consumer (aiogram moderation bot)
+- [ ] Deploy MTProto sidecar in shadow mode alongside the consumer
 - [ ] Run for 1 week, collect metrics
 - [ ] 20+ deploys in a day → zero FloodWait
 - [ ] Publish case study
@@ -375,6 +375,6 @@ jobs:
 | Docker pulls | 0 | 100+ |
 | GitHub stars | 0 | 50+ |
 | Contributors | 1 | 3+ |
-| Production deployments | 0 | 1 (kot) |
+| Production deployments | 0 | 1 (closed-source consumer, test mode) |
 | Auth-key-duplicate incidents | untested | 0 (lock enforced) |
 | Deploy-to-ready time | untested | <1s (no Telegram on path) |
