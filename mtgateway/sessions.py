@@ -11,6 +11,8 @@ internal queue; consumers (applications) pull or subscribe via WS.
 from __future__ import annotations
 
 import asyncio
+
+from typing import TYPE_CHECKING
 import json
 import logging
 import os
@@ -78,7 +80,10 @@ class MTSession:
 
     # E2: Idempotency — app-supplied keys prevent duplicate sends
     _seen_idempotency_keys: dict[str, float] = field(default_factory=dict)  # fast-path cache
-    _store: object = None  # MTStore — injected by the manager
+    _store: "MTStore | None" = None  # injected by the manager
+
+    if TYPE_CHECKING:
+        from .store import MTStore
 
     async def check_idempotency(self, key: str) -> bool:
         """True = NEW key (proceed with send); False = replay (suppress).
@@ -132,9 +137,20 @@ class MTSession:
         )
 
     async def push_update(self, update: dict) -> None:
-        """Called by Pyrogram's RawUpdateHandler for every update."""
+        """Called by Pyrogram's RawUpdateHandler for every update.
+
+        Hardening charter: write-through persistence — unacked updates
+        survive kill -9 and replay after restart (chaos-soak proven).
+        Pull consumers ack on delivery (queue_ack); WS push stays
+        at-least-once (replayed after restart until a pull acks them).
+        """
         self._next_update_seq += 1
         update["_gw_seq"] = self._next_update_seq
+        try:
+            if self._store is not None:
+                await self._store.queue_push(self.alias, update["_gw_seq"], json.dumps(update))
+        except Exception:
+            pass  # memory path still works; persistence is best-effort
         try:
             self._update_queue.put_nowait(update)
         except asyncio.QueueFull:
@@ -300,6 +316,19 @@ class MTSessionManager:
             if state.get("pts"):
                 log.info("[%s] restored state: pts=%s qts=%s", s.alias, state["pts"], state["qts"])
 
+            # Replay unacked updates persisted before a crash/kill:
+            # the seq continues where it left off, the backlog re-enters
+            # the in-memory queue, consumers see exactly-once per ack.
+            backlog = await self.store.queue_pull(s.alias, offset=0, limit=5000)
+            if backlog:
+                max_seq = max(u["_gw_seq"] for u in backlog)
+                s._next_update_seq = max(s._next_update_seq, max_seq)
+                for u in backlog:
+                    s._update_queue.put_nowait(u)
+                log.info(
+                    "[%s] replayed %d unacked updates (seq→%d)", s.alias, len(backlog), max_seq
+                )
+
             # Keep the client running (idle in a task)
             asyncio.create_task(self._keep_alive(s), name=f"mt-idle-{s.alias}")
 
@@ -339,7 +368,11 @@ class MTSessionManager:
                     s.last_error = str(e)
                     log.error("[%s] start failed for good (attempt %d): %s", s.alias, attempt, e)
                     return
-                wait = float(flood["wait"]) + 60.0  # margin over the quoted window
+                # margin over the quoted window + jitter (charter: never below
+                # the quoted wait; stagger so instances don't retry in lockstep)
+                from .rateguard import jittered
+
+                wait = jittered(float(flood["wait"]) + 60.0)
                 s.state = SessionState.connecting
                 s.last_error = f"auth flood: retrying in {int(wait)}s (attempt {attempt})"
                 log.warning(
@@ -395,7 +428,9 @@ class MTSessionManager:
             if s.state == SessionState.live:
                 log.warning("[%s] disconnected from Telegram, reconnecting", s.alias)
                 s.state = SessionState.connecting
-                await asyncio.sleep(1)
+                from .rateguard import jittered
+
+                await asyncio.sleep(jittered(1.0, cap_extra=1.0))
                 await self._start_client(s)
         except asyncio.CancelledError:
             pass
