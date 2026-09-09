@@ -264,6 +264,17 @@ class MTSessionManager:
             me = await client.get_me()
             log.info("[%s] live as @%s (id=%s)", s.alias, me.username, me.id)
 
+            # Warm the peer cache: a fresh session holds no access
+            # hashes, so first sends fail with "Peer id invalid" until
+            # the entities have been seen. Walk the bot's chats once;
+            # the file session remembers them across restarts.
+            try:
+                async for _ in client.get_dialogs(limit=500):
+                    pass
+                log.info("[%s] peer cache warmed", s.alias)
+            except Exception as e:
+                log.warning("[%s] peer warm-up failed (non-fatal): %s", s.alias, e)
+
             # Restore update state from disk
             state = await self.store.get_state(s.alias)
             if state.get("pts"):
@@ -413,6 +424,13 @@ class MTSessionManager:
 
     def get(self, alias: str) -> MTSession | None:
         return self.sessions.get(alias)
+
+    def find_by_token(self, token: str) -> MTSession | None:
+        """Token-routed lookup — consumers that only hold a token."""
+        for s in self.sessions.values():
+            if s.token == token:
+                return s
+        return None
 
     def all_stats(self) -> list[dict]:
         return [s.stats() for s in self.sessions.values()]
