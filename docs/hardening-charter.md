@@ -36,3 +36,14 @@ for this repo; claims stay honest until their test exists.
       exactly-once replay, ack releases (tests/test_chaos_soak.py)
 - [x] Redis lease backend behind the lock interface (ADR-0001, fencing tokens, fakeredis-tested)
 - [x] Monitoring runbook (docs/monitoring.md — catalog, alerts, on-call)
+
+
+## v0.1.0 promotion criteria (from rc1)
+
+Tag v0.1.0 when the rc1 artifact has run in production for 72h with:
+- `tg_gateway_real_flood_wait_total` and `tg_gateway_real_429_total`
+  flat (zero real rate errors)
+- zero session drops (session_state never 0 for >2m)
+- zero unexplained container restarts
+- queue depths returning to ~0 (no stuck consumers)
+Any incident resets the window — that is the point of the charter.

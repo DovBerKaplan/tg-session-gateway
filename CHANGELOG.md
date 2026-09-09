@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adherence to [Semantic Versioning](https://semver.org/).
 
+## [0.1.0-rc1] — 2026-09-09
+
+Release candidate: the complete hardening charter (docs/hardening-charter.md),
+every box closed with tests. v0.1.0 promotes after the soak window —
+see the promotion criteria in docs/hardening-charter.md.
+
+### Added (since 0.0.2)
+- Hardening charter + ADR-0001 (lock backends decision).
+- Redis lease backend: SET NX PX, TTL auto-release on crash,
+  heartbeat extension, monotonic fencing tokens (fakeredis-tested);
+  file backend remains the zero-dependency default — behavior
+  unchanged for single-host deployments.
+- Chaos soak in CI: kill -9 with stranded locks → restart → zero
+  AUTH_KEY_DUPLICATED, zero lost updates, exactly-once replay.
+- Sidecar update-queue persistence: write-through on push, replay
+  after restart, ack-on-pull (WS stays at-least-once).
+- Persisted idempotency keys (no double sends across kill -9).
+- Additive-only jitter on every retry/backoff wait (never below the
+  quoted flood wait — property-tested).
+- Monitoring runbook: metric catalog, Prometheus alert rules,
+  on-call actions, lease counters.
+
+### Fixed
+- Non-dict raw updates crashed the sidecar handler on EVERY such
+  update ('str does not support item assignment') — live finding on
+  production deploy; now dropped cleanly with a regression test.
+
 ## [0.0.2] — 2026-09-09
 
 First real-traffic milestone: the sidecar carried live MTProto sessions
