@@ -81,8 +81,8 @@ Telegram Data Centers
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Language | Python 3.12 | Same as kot; Pyrogram/pyrofork is the MTProto engine |
-| MTProto library | pyrofork | Kot already uses it; battle-tested fork of Pyrogram |
+| Language | Python 3.12 | Matches the target deployment; Pyrogram/pyrofork is the MTProto engine |
+| MTProto library | pyrofork | Battle-tested fork of Pyrogram, already proven in production use |
 | Consumer API | HTTP + WebSocket | HTTP for request/response; WS for push updates |
 | Update delivery | Push (WS) primary, Pull (HTTP) fallback | WS = zero-latency; HTTP pull for compatibility |
 | Rate limiting | In-memory token buckets | Sub-millisecond overhead; no external dependency |
@@ -161,7 +161,7 @@ POST /sessions/{alias}/upload
 
 ### 2.3 Pyrogram Method Coverage (Priority Order)
 
-Phase 1 must proxy these methods (kot's actual usage):
+Phase 1 must proxy these methods (the target deployment's actual usage):
 
 | Priority | Method | Used by |
 |---|---|---|
@@ -353,9 +353,9 @@ FloodWait.
 
 ---
 
-## 7. Migration Path for kot
+## 7. Migration Path for the Consumer Project
 
-### What changes in kot
+### What changes in the consumer
 
 The transport layer: Pyrogram client calls → HTTP calls to the gateway.
 
@@ -373,9 +373,9 @@ async with httpx.AsyncClient(base_url="http://tg-mtproto:8080/v1") as http:
 ```
 
 A thin `GatewayClient` class can wrap this to maintain a Pyrogram-like
-API surface, minimizing the diff in kot's handlers.
+API surface, minimizing the diff in the consumer's handlers.
 
-### What does NOT change in kot
+### What does NOT change in the consumer
 
 - All handler logic
 - All business logic
@@ -386,14 +386,14 @@ API surface, minimizing the diff in kot's handlers.
 
 ### Migration steps
 
-1. Deploy the gateway alongside kot (gateway is a new service)
-2. Register kot's bot tokens with the gateway
-3. Create a `GatewayClient` class in kot (thin HTTP wrapper)
+1. Deploy the gateway alongside the consumer (gateway is a new service)
+2. Register the consumer's bot tokens with the gateway
+3. Create a `GatewayClient` class in the consumer (thin HTTP wrapper)
 4. Replace `client.send_message(...)` with `gateway.send_message(...)`
    throughout (mechanical, find-and-replace)
 5. Replace update handlers: point them at the gateway's WS/push
-6. Remove direct Pyrogram from kot's Docker image
-7. Test: deploy kot 15 times in 20 minutes → zero FloodWait
+6. Remove direct Pyrogram from the consumer's Docker image
+7. Test: deploy the app 15 times in 20 minutes → zero FloodWait
 
 ---
 
