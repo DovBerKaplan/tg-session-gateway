@@ -224,7 +224,10 @@ class RedisSessionLease:
             self._heartbeat_task = None
         # release only OUR lease (token check via holder value)
         current = await self._r.get(self._key)
-        if current and (current.decode() if isinstance(current, bytes) else current) == self._holder:
+        if (
+            current
+            and (current.decode() if isinstance(current, bytes) else current) == self._holder
+        ):
             await self._r.delete(self._key)
             log.info("[%s] session lease released", self.alias)
         self.token = None
