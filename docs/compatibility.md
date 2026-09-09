@@ -5,6 +5,7 @@
 | Library | Version Tested | Status | Notes |
 |---|---|---|---|
 | Pyrogram | 2.0.106 | Tested | Primary target; used in CI |
+| Pyrogram | 2.3.x (2.3.69) | Tested in production use | First real consumer runs 2.3.69 inside the sidecar — sessions, sends, edits, inline keyboards verified live |
 | pyrofork | latest | Assumed compatible | Fork of Pyrogram; same Client API. Add to CI when stable version pinned |
 | Telethon | — | Not supported | Different session format, different Client construction. Planned for V2 |
 

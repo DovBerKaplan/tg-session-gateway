@@ -1,6 +1,6 @@
 [project]
 name = "tg-session-gateway"
-version = "0.0.1"
+version = "0.0.2"
 description = "Long-lived Telegram Bot API session gateway — deploy your bot without dropping the session"
 readme = "README.md"
 requires-python = ">=3.11"
