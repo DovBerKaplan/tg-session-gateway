@@ -11,8 +11,6 @@ internal queue; consumers (applications) pull or subscribe via WS.
 from __future__ import annotations
 
 import asyncio
-
-from typing import TYPE_CHECKING
 import json
 import logging
 import os
@@ -20,6 +18,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from pyrogram import Client as PyrogramClient
 from pyrogram.handlers import RawUpdateHandler
@@ -80,7 +79,7 @@ class MTSession:
 
     # E2: Idempotency — app-supplied keys prevent duplicate sends
     _seen_idempotency_keys: dict[str, float] = field(default_factory=dict)  # fast-path cache
-    _store: "MTStore | None" = None  # injected by the manager
+    _store: MTStore | None = None  # injected by the manager
 
     if TYPE_CHECKING:
         from .store import MTStore
