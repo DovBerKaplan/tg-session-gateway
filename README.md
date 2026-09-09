@@ -199,6 +199,22 @@ docker compose up -d          # builds + starts on 127.0.0.1:8080
 curl -s localhost:8080/healthz
 ```
 
+**Then live the aha moment** (any bot token from @BotFather, ~2 min):
+
+```bash
+# 1. register the bot — the gateway becomes its single Telegram owner
+curl -X POST localhost:8080/admin/bots -H "Authorization: Bearer $GW_ADMIN_SECRET" \
+     -H 'Content-Type: application/json' -d '{"alias":"mybot","token":"<TOKEN>"}'
+
+# 2. point your bot's base URL at the gateway (aiogram example)
+#    AiohttpSession(api=TelegramAPIServer.from_base("http://<host>:8080/tgapi"))
+
+# 3. deploy "new versions" all you like, then prove it:
+docker restart <your-bot-container>      # bot restarts...
+curl -s -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/status
+# mybot → live, session never blinked, no re-auth, queue intact
+```
+
 Pre-built multi-arch images (amd64/arm64), published on every version tag:
 
 ```bash
