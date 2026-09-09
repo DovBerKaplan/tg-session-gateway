@@ -29,7 +29,7 @@ for this repo; claims stay honest until their test exists.
 - [x] Lock-before-connect, tested two-process
 - [x] Auth-flood retry discipline (wait + margin, capped attempts)
 - [x] Persistent update queue (SQLite WAL, restart replay, tested)
-- [ ] Idempotency keys persisted (survive kill -9) — in progress
+- [x] Idempotency keys persisted (survive kill -9)
 - [ ] Jitter on every backoff/retry loop
 - [ ] Chaos soak in CI: N accounts, kill -9 storm, zero
       AUTH_KEY_DUPLICATED, zero lost tasks
