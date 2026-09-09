@@ -209,3 +209,16 @@ class BotRateGuard:
             "egress_paused_for_s": round(max(0.0, self.egress_paused_until - now), 1),
         }
         return empty
+
+
+def jittered(base: float, cap_extra: float = 60.0) -> float:
+    """Additive-only jitter for retry/backoff waits (hardening charter).
+
+    Never returns BELOW `base` — for rate/flood waits a shorter sleep
+    is another violation, not a speedup. Adds uniform(0, min(cap, 10%
+    of base)) so coordinated workers de-synchronize without long waits
+    stretching absurdly.
+    """
+    import random
+
+    return base + random.uniform(0.0, min(cap_extra, base * 0.1))

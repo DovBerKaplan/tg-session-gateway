@@ -161,3 +161,27 @@ class TestSustainedGroupCadence:
         assert not g.try_acquire("sendMessage", -100)  # burst spent
         wait = g.wait_time("sendMessage", -100)
         assert wait > 2.5, f"refill too fast for 20/min: {wait}s"  # 1/(20/60)=3s
+
+
+class TestJittered:
+    """Charter: additive-only jitter — never below the required wait."""
+
+    def test_never_below_base(self):
+        from gateway.rateguard import jittered
+
+        for _ in range(200):
+            v = jittered(3342.0)
+            assert v >= 3342.0, "a flood wait below the quoted value is another strike"
+
+    def test_cap_and_fraction(self):
+        from gateway.rateguard import jittered
+
+        for _ in range(200):
+            assert jittered(10.0, cap_extra=60.0) <= 11.0  # 10% of base
+            assert jittered(500.0, cap_extra=60.0) <= 560.0  # cap wins
+
+    def test_mtgateway_same_contract(self):
+        from mtgateway.rateguard import jittered
+
+        for _ in range(100):
+            assert 5.0 <= jittered(5.0, cap_extra=1.0) <= 6.0

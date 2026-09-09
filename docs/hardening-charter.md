@@ -30,8 +30,9 @@ for this repo; claims stay honest until their test exists.
 - [x] Auth-flood retry discipline (wait + margin, capped attempts)
 - [x] Persistent update queue (SQLite WAL, restart replay, tested)
 - [x] Idempotency keys persisted (survive kill -9)
-- [ ] Jitter on every backoff/retry loop
-- [ ] Chaos soak in CI: N accounts, kill -9 storm, zero
-      AUTH_KEY_DUPLICATED, zero lost tasks
+- [x] Jitter on every backoff/retry loop (additive-only, never below the required wait — tested)
+- [x] Chaos soak in CI: 3 accounts, kill -9 with stranded locks,
+      restart — zero AUTH_KEY_DUPLICATED, zero lost updates,
+      exactly-once replay, ack releases (tests/test_chaos_soak.py)
 - [ ] Redis lease backend (multi-host) behind the lock interface
 - [ ] Monitoring runbook (metrics + alert rules + on-call thresholds)
