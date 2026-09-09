@@ -99,10 +99,12 @@ Design rules the code enforces — with the tests that prove them
   ack path as fresh code and keep the tests green before upgrading.
 
 **Status, plainly:** the Bot API gateway is a working prototype with
-the tests above. The MTProto sidecar is earlier — the lock, rate guard
-and HTTP façade are implemented and unit-tested, but it has not carried
-production traffic. Do not put someone else's production on either
-half yet; the sidecar least of all.
+the tests above. The MTProto sidecar is newer but has carried real
+traffic: four live sessions against production Telegram (sends, edits,
+inline keyboards), session-restore across restarts verified, and a
+rolling-deploy test with zero re-auths and zero FloodWaits — in test
+mode, for one consumer. Not yet proven at scale or with strangers'
+production; treat it as exactly that.
 
 **Single-loop assumption.** The rate guards keep all state in-process
 (single asyncio loop). Do not front the gateway with a multi-worker

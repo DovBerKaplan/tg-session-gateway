@@ -37,6 +37,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from . import __version__
 from .config import Config
 from .rateguard import parse_flood_wait
 from .sessions import ConsumerHandle, MTSession, MTSessionManager, SessionState
@@ -73,7 +74,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         await mgr.shutdown()
         await store.close()
 
-    app = FastAPI(title="MTProto Session Gateway", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="MTProto Session Gateway", version=__version__, lifespan=lifespan)
 
     def _app_authed(request: Request | WebSocket) -> bool:
         return request.headers.get("authorization") == f"Bearer {cfg.app_secret}"

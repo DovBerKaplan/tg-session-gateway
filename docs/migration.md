@@ -142,7 +142,19 @@ the same session simultaneously — that's the exact
 will also refuse the second one, but don't rely on it across
 machines).
 
-## C. Reference deployment (multi-bot)
+## C. Partial adoption: sidecar for sends, own clients for receiving
+
+A staged path that works today: point your **task/worker sends** at the
+sidecar (token-routed surface `POST /v1/token/bot{token}/{method}` —
+kwargs like `reply_markup` and `InputMedia` serialize over JSON), while
+your in-process clients keep **receiving**. Bots may hold multiple
+concurrent sessions, so the two planes do not conflict. To also stop
+re-authing on every deploy, move your receive clients to persistent
+file sessions (a mounted dir) with one-owner-per-file locks (heartbeat
++ stale reclaim + release-on-SIGTERM) — the same rules this gateway
+enforces. Your update handlers stay untouched.
+
+## D. Reference deployment (multi-bot)
 
 The reference consumer this was built for is a multi-bot production
 deployment (a private bot + a group-moderation bot):
