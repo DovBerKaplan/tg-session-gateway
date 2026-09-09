@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
@@ -44,6 +45,11 @@ CREATE TABLE IF NOT EXISTS admin_audit (
     action   TEXT NOT NULL,
     alias    TEXT NOT NULL,
     detail   TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key      TEXT PRIMARY KEY,
+    alias    TEXT NOT NULL,
+    seen_at  REAL NOT NULL
 );
 """
 
@@ -189,6 +195,32 @@ class MTStore:
         ) as cur:
             row = await cur.fetchone()
         return row["n"] if row else 0
+
+    # ── idempotency (E2: survives kill -9 — duplicate sends must not) ──
+
+    IDEMPOTENCY_TTL_S = 300.0
+
+    async def idempotency_seen(self, alias: str, key: str) -> bool:
+        """True when the key was already recorded (a replayed send)."""
+        row = await self.db.execute_fetchall(
+            "SELECT 1 FROM idempotency_keys WHERE key = ? AND seen_at > ?",
+            (key, time.time() - self.IDEMPOTENCY_TTL_S),
+        )
+        return bool(row)
+
+    async def idempotency_record(self, alias: str, key: str) -> None:
+        await self.db.execute(
+            "INSERT OR REPLACE INTO idempotency_keys (key, alias, seen_at) VALUES (?, ?, ?)",
+            (key, alias, time.time()),
+        )
+        await self.db.commit()
+
+    async def idempotency_cleanup(self) -> None:
+        await self.db.execute(
+            "DELETE FROM idempotency_keys WHERE seen_at < ?",
+            (time.time() - self.IDEMPOTENCY_TTL_S,),
+        )
+        await self.db.commit()
 
     # ── admin audit trail (append-only) ───────────────────────────────
 

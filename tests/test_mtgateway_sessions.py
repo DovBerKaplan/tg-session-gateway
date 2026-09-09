@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import time
 from unittest.mock import AsyncMock, patch
 
 from mtgateway.config import Config
@@ -170,21 +171,39 @@ class TestManagerLifecycle:
 
 
 class TestIdempotency:
-    """E2: App-supplied idempotency keys prevent duplicate sends."""
+    """E2: App-supplied idempotency keys prevent duplicate sends.
+    Persisted through the store (see TestIdempotencyPersistence);
+    here the session-level async API with a temp store."""
 
-    def test_first_key_accepted(self):
-        s = MTSession(alias="bot1", token="t")
-        assert s.check_idempotency("send-001") is True
+    def _session_with_store(self, tmpdir):
+        import asyncio
 
-    def test_duplicate_key_rejected(self):
-        s = MTSession(alias="bot1", token="t")
-        s.check_idempotency("send-001")
-        assert s.check_idempotency("send-001") is False
+        from mtgateway.store import MTStore
 
-    def test_different_keys_both_accepted(self):
         s = MTSession(alias="bot1", token="t")
-        assert s.check_idempotency("send-001") is True
-        assert s.check_idempotency("send-002") is True
+        s._store = MTStore(str(tmpdir))
+        asyncio.run(s._store.connect())
+        return s
+
+    def test_first_key_accepted(self, tmp_path):
+        import asyncio
+
+        s = self._session_with_store(tmp_path)
+        assert asyncio.run(s.check_idempotency("send-001")) is True
+
+    def test_duplicate_key_rejected(self, tmp_path):
+        import asyncio
+
+        s = self._session_with_store(tmp_path)
+        asyncio.run(s.check_idempotency("send-001"))
+        assert asyncio.run(s.check_idempotency("send-001")) is False
+
+    def test_different_keys_both_accepted(self, tmp_path):
+        import asyncio
+
+        s = self._session_with_store(tmp_path)
+        assert asyncio.run(s.check_idempotency("send-001")) is True
+        assert asyncio.run(s.check_idempotency("send-002")) is True
 
 
 class TestPauseSending:
@@ -231,3 +250,38 @@ class TestDeployToFirstMessageSLO:
         stats = s.stats()
         assert "deploy_to_first_message_s" in stats
         assert stats["deploy_to_first_message_s"] is None  # not yet sent
+
+
+class TestIdempotencyPersistence:
+    """Hardening charter: keys survive kill -9 — no double sends."""
+
+    async def test_key_survives_restart(self, tmp_path):
+        from mtgateway.store import MTStore
+
+        store = MTStore(str(tmp_path / "s"))
+        await store.connect()
+        # first process lifetime: key recorded
+        assert await store.idempotency_seen("bot1", "k1") is False
+        await store.idempotency_record("bot1", "k1")
+        assert await store.idempotency_seen("bot1", "k1") is True
+        await store.close()
+
+        # "restart": a NEW store instance on the same dir still sees it
+        store2 = MTStore(str(tmp_path / "s"))
+        await store2.connect()
+        assert await store2.idempotency_seen("bot1", "k1") is True
+        assert await store2.idempotency_seen("bot1", "k2") is False
+        await store2.close()
+
+    async def test_ttl_expiry_frees_keys(self, tmp_path):
+        from mtgateway.store import MTStore
+
+        store = MTStore(str(tmp_path / "s2"))
+        await store.connect()
+        await store.idempotency_record("bot1", "old")
+        # age it past the TTL
+        await store.db.execute("UPDATE idempotency_keys SET seen_at = ?", (time.time() - 400,))
+        await store.db.commit()
+        await store.idempotency_cleanup()
+        assert await store.idempotency_seen("bot1", "old") is False
+        await store.close()

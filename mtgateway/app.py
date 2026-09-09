@@ -132,7 +132,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         # ── E2: Idempotency check (app-supplied key prevents duplicate sends)
         idem_key = body.pop("_idempotency_key", None)
-        if idem_key and not s.check_idempotency(idem_key):
+        if idem_key and not await s.check_idempotency(idem_key):
             return JSONResponse(
                 {
                     "ok": True,
