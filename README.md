@@ -1,13 +1,86 @@
-# TG Session Gateway
+# Telegram Session Gateway
 
-**Deploy your Telegram bot without dropping its session or tripping rate limits.**
+### Keep your Telegram bot's session alive across Docker deployments.
 
-Two products, one repo. Pick the one that matches your bot's protocol:
+Deploy new versions of your bot as many times as you want — the
+Telegram session never reconnects, never re-authenticates, and never
+eats a FloodWait.
+
+## The problem
+
+Every Telegram bot in Docker eventually hits this:
+
+```
+docker compose up -d          # deploy v2
+        ↓
+bot container replaced        # the process that held the session is GONE
+        ↓
+Telegram session dies         # disconnect → re-auth → AUTH flood risk
+        ↓
+FloodWait / downtime          # "A wait of 3342 seconds is required"
+```
+
+The session and the app live in the same process — so every deploy
+restarts Telegram too. Multi-worker setups make it worse: two
+processes open the same session → `AUTH_KEY_DUPLICATED` → the
+auth_key can be invalidated **permanently**.
+
+## The fix: separate the lifecycles
+
+```
+        BEFORE                          AFTER
+┌─────────────────┐           ┌──────────────────────┐
+│  Bot container  │           │   Bot container(s)   │
+│  ├ session      │           │  └ business logic    │
+│  ├ update loop  │           └─────────┬────────────┘
+│  ├ rate limits  │                     │ HTTP / WS
+│  └ your code    │           ┌─────────▼────────────┐
+└─────────────────┘           │  Telegram Session     │
+                              │  Gateway              │
+  deploy = all dies           │  ├ session (persisted)│
+                              │  ├ update loop        │
+                              │  ├ rate guard         │
+                              │  └ durable queue      │
+                              └─────────┬────────────┘
+                                        │
+                                   Telegram
+                          deploy the bot — Telegram never notices
+```
+
+## Proof (real output, not a mockup)
+
+Four live bot sessions. The gateway container is killed and restarted —
+the deploy scenario. Count the Telegram logins after the restart:
+
+```
+$ curl .../v1/admin/status          # BEFORE
+  private → live   movies → live   raw → live   trending → live
+
+$ docker restart tg-mtgateway       # "deploy"
+
+$ docker logs tg-mtgateway
+  MTProto gateway up — restored 4 session(s)
+  [private]  live as @...  (id=8473414404)
+  [movies]   live as @...  (id=8999546714)
+  [raw]      live as @...  (id=8890815097)
+  [trending] live as @...  (id=8443277244)
+
+  Telegram logins performed: 0        # ← sessions restored from disk
+```
+
+Sessions persist to disk (SQLite WAL + session files), unacked updates
+survive `kill -9`, and a singleton lock makes a second process fail
+**before** it ever reaches Telegram. A chaos test in CI proves all
+three: zero duplicates, zero lost updates, exactly-once replay.
+
+## Two products, one repo
+
+Pick the one that matches how your bot talks to Telegram:
 
 | Your bot uses... | Use | Directory |
 |---|---|---|
-| Bot API (aiogram, python-telegram-bot, grammY, Telegraf) | **Bot API Gateway** | `gateway/` |
-| Pyrogram / pyrofork (MTProto) | **MTProto Sidecar** | `mtgateway/` |
+| Bot API (aiogram, python-telegram-bot, grammY, Telegraf) | **Bot API Gateway** — a drop-in `api.telegram.org` replacement (change one base URL) | `gateway/` |
+| Pyrogram / pyrofork (MTProto) | **MTProto Sidecar** — your app speaks HTTP/WS, the sidecar owns the auth_key and connection | `mtgateway/` |
 
 Both share the same principles: a long-lived infrastructure container
 that owns the Telegram connection, enforces the official
