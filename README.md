@@ -24,7 +24,7 @@ Drop-in `api.telegram.org` replacement for HTTP Bot API bots.
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 session = AiohttpSession(
-    api=TelegramAPIServer.from_base("http://tg-gateway:8080", is_local=True))
+    api=TelegramAPIServer.from_base("http://tg-gateway:8080/tgapi"))
 bot = Bot(token, session=session)
 
 # python-telegram-bot
