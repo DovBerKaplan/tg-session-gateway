@@ -163,3 +163,53 @@ class TestChaosSoak:
                 await store3.close()
 
         asyncio.run(scenario())
+
+
+class TestNonDictUpdates:
+    """Live finding: Pyrogram hands str/bytes for unparsed updates —
+    the handler must drop them, never crash (was: 'str' object does
+    not support item assignment on every real update)."""
+
+    async def test_str_update_dropped_not_crashing(self, tmp_path):
+        import asyncio as aio
+
+        class StrEmittingClient:
+            def __init__(self, **kw):
+                self.raw_handler = None
+
+            def add_handler(self, h, group=0):
+                self.raw_handler = h
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def get_me(self):
+                return SimpleNamespace(username="s", id=1)
+
+            def get_dialogs(self, limit=500):
+                return None
+
+        mgr, store = await _manager_on(str(tmp_path / "nd"))
+        import mtgateway.sessions as ms
+
+        orig = ms.PyrogramClient
+        ms.PyrogramClient = StrEmittingClient
+        try:
+            await mgr.register("bot1", "t")
+            await aio.sleep(0.2)
+            s = mgr.sessions["bot1"]
+            client = s.client
+            # str AND bytes updates — both must be silently dropped
+            await client.raw_handler.callback(client, "raw-unparsed", [], [])
+            await client.raw_handler.callback(client, b"\x01\x02", [], [])
+            assert s._update_queue.empty(), "non-dict updates must not enqueue"
+            # dict updates keep flowing
+            await client.raw_handler.callback(client, {"update_id": 7}, [], [])
+            assert s._update_queue.qsize() == 1
+        finally:
+            ms.PyrogramClient = orig
+            await mgr.shutdown()
+            await store.close()

@@ -407,14 +407,20 @@ class MTSessionManager:
         return handler
 
     def _serialize_update(self, update) -> dict | None:
-        """Convert a Pyrogram update object to a JSON-serializable dict."""
+        """Convert a Pyrogram update object to a JSON-serializable dict.
+
+        Non-dict payloads (Pyrogram hands raw str/bytes for updates it
+        did not parse) are DROPPED — consumers need dicts, and wrapping
+        them caused live 'str does not support item assignment' errors
+        in push_update. None ⇒ the handler skips the update.
+        """
         try:
             if isinstance(update, dict):
                 return update
             if hasattr(update, "to_dict"):
-                return update.to_dict()
-            # Fallback: try JSON round-trip
-            return json.loads(json.dumps(update, default=str))
+                d = update.to_dict()
+                return d if isinstance(d, dict) else None
+            return None
         except Exception:
             return None
 
