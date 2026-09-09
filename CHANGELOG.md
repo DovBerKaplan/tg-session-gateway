@@ -4,11 +4,12 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adherence to [Semantic Versioning](https://semver.org/).
 
-## [0.1.0-rc1] — 2026-09-09
+## [0.0.3] — 2026-09-09
 
-Release candidate: the complete hardening charter (docs/hardening-charter.md),
-every box closed with tests. v0.1.0 promotes after the soak window —
-see the promotion criteria in docs/hardening-charter.md.
+The complete hardening charter (docs/hardening-charter.md), every box
+closed with tests. Still honest about what this is: ONE production
+consumer, ~24h of real traffic, zero external users. 0.1.0 comes when
+the charter's promotion criteria hold AND someone else has run it.
 
 ### Added (since 0.0.2)
 - Hardening charter + ADR-0001 (lock backends decision).
