@@ -276,13 +276,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         limit = int(body.get("limit", 100) or 100)
 
         if timeout == 0:
-            # Non-blocking: return whatever is queued
+            # Non-blocking: return whatever is queued; delivery = ack
             updates: list = []
             while not s._update_queue.empty() and len(updates) < limit:
                 try:
                     updates.append(s._update_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
+            await request.app.state.store.queue_ack(
+                s.alias, max((u["_gw_seq"] for u in updates), default=0)
+            )
             return JSONResponse({"ok": True, "result": updates})
 
         # Long-poll: wait for updates up to timeout
@@ -295,6 +298,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 except asyncio.QueueEmpty:
                     break
             if updates:
+                await request.app.state.store.queue_ack(
+                    s.alias, max((u["_gw_seq"] for u in updates), default=0)
+                )
                 return JSONResponse({"ok": True, "result": updates})
             remaining = deadline - time.monotonic()
             if remaining <= 0:

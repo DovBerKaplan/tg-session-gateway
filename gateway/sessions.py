@@ -259,10 +259,14 @@ class SessionManager:
                     if retry:
                         s.real_429 += 1
                         s.guard.report_429(None, float(retry))
-                        await asyncio.sleep(float(retry) + 1)
+                        from .rateguard import jittered
+
+                        await asyncio.sleep(jittered(float(retry) + 1.0))
                         continue
                     log.warning("[%s] getUpdates error: %s", s.alias, desc)
-                    await asyncio.sleep(backoff)
+                    from .rateguard import jittered
+
+                    await asyncio.sleep(jittered(backoff))
                     backoff = min(backoff * 2, self.cfg.poll_backoff_max)
                     continue
                 backoff = 1.0
@@ -285,7 +289,9 @@ class SessionManager:
                 s.state = State.error
                 s.last_error = str(e)
                 log.warning("[%s] poller error: %s — backing off", s.alias, e)
-                await asyncio.sleep(backoff)
+                from .rateguard import jittered
+
+                await asyncio.sleep(jittered(backoff))
                 backoff = min(backoff * 2, self.cfg.poll_backoff_max)
                 s.state = State.live
 
