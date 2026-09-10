@@ -1,6 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
-pyrogram>=2.0
+pyrofork>=2.3.69  # the maintained fork consumers run; plain pyrogram 2.0.106 flattens <blockquote expandable>
 aiosqlite>=0.20
 cryptography>=42.0
 pydantic>=2.6
