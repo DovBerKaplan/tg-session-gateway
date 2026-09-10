@@ -1,4 +1,4 @@
-fastapi>=0.110
+fastapi>=0.141.1
 uvicorn[standard]>=0.29
 pyrofork>=2.3.69  # the maintained fork consumers run; plain pyrogram 2.0.106 flattens <blockquote expandable>
 aiosqlite>=0.20
