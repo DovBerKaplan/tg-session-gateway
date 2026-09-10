@@ -5,7 +5,8 @@
 | Library | Version Tested | Status | Notes |
 |---|---|---|---|
 | Pyrogram | 2.0.106 | Tested | Primary target; used in CI |
-| Pyrogram | 2.3.x (2.3.69) | Tested in production use | First real consumer runs 2.3.69 inside the sidecar — sessions, sends, edits, inline keyboards verified live |
+| pyrofork | 2.3.69 | **Required** — the sidecar's dependency | The sidecar MUST run the same fork+version as consumers: plain `pyrogram` 2.0.106 flattens `<blockquote expandable>` (and any 2.3.x entity) to plain text. Pinned in requirements |
+| Pyrogram | 2.0.106 | Legacy | Works for basic sends; drops blockquote-expandable entities — not recommended |
 | pyrofork | latest | Assumed compatible | Fork of Pyrogram; same Client API. Add to CI when stable version pinned |
 | Telethon | — | Not supported | Different session format, different Client construction. Planned for V2 |
 
