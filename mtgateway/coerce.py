@@ -13,6 +13,7 @@ from typing import Any
 from pyrogram.types import (
     ForceReply,
     InlineKeyboardButton,
+    InlineKeyboardButtonBuy,
     InlineKeyboardMarkup,
     InputMediaDocument,
     InputMediaPhoto,
@@ -40,7 +41,9 @@ def _coerce(value: Any) -> Any:
         return value
 
     if "inline_keyboard" in value:
-        rows = [[_button(b) for b in row] for row in value["inline_keyboard"]]
+        rows: list[list[InlineKeyboardButton | InlineKeyboardButtonBuy]] = [
+            [_button(b) for b in row] for row in value["inline_keyboard"]
+        ]
         return InlineKeyboardMarkup(inline_keyboard=rows)
     if "type" in value and value.get("type") in _MEDIA_TYPES and "media" in value:
         cls = _MEDIA_TYPES[value["type"]]
