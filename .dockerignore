@@ -1,0 +1,15 @@
+**/__pycache__
+**/*.pyc
+tests/
+docs/
+.git/
+.venv
+data/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.github/
+*.md
+!README.md
+LICENSE
+Makefile

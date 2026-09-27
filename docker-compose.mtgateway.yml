@@ -1,0 +1,44 @@
+# MTProto Session Gateway — its OWN lifecycle, never in a consumer's compose.
+# Spec §5: separate project name, external network, dedicated volume.
+name: tg-mtgateway
+
+services:
+  mtgateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mtgateway
+    image: tg-mtgateway:latest
+    container_name: tg-mtgateway
+    labels:
+      tg.gateway: "true"
+      tg.gateway.type: "mtproto"
+    restart: unless-stopped
+    environment:
+      GW_ADMIN_SECRET: ${GW_ADMIN_SECRET:?set in .env}
+      GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}
+      GW_API_ID: ${GW_API_ID:?set in .env}
+      GW_API_HASH: ${GW_API_HASH:?set in .env}
+      GW_FERNET_KEY: ${GW_FERNET_KEY:-}
+      GW_ON_LIMIT: ${GW_ON_LIMIT:-queue}
+      GW_METRICS: ${GW_METRICS:-true}
+    volumes:
+      - tg-mtgateway-data:/data
+    networks:
+      - tg-gateway-net
+    ports:
+      - "127.0.0.1:8081:8080"   # admin/API on loopback only
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  tg-gateway-net:
+    name: tg-gateway-net
+    external: true
+
+volumes:
+  tg-mtgateway-data:
+    name: tg-mtgateway-data
