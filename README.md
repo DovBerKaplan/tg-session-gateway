@@ -1,5 +1,7 @@
 # Telegram Session Gateway
 
+> Extracted from production bot deployments that kept losing sessions. [Origin →](ORIGIN.md)
+
 > **Bot API only.** Manages sessions for **bot tokens** — it is not a
 > user-account client and has no user login (no phone/SMS/code flow
 > anywhere). Not for hijacking sessions: it protects YOUR OWN bot's
