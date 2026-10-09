@@ -320,6 +320,54 @@ beyond controlled debugging.
 - `/healthz` — process is alive
 - `/readyz` — storage available; does not require all bots `live`
 
+### 10.4 Auto Typing Indicator
+
+While the consumer has not answered a user action yet, the gateway keeps
+a `sendChatAction {action: "typing"}` heartbeat alive for that chat, so
+the user sees "typing..." from the moment they act until the bot replies.
+
+**Trigger — any user action awaiting a reply:** `message`,
+`edited_message`, `callback_query` (button press; chat taken from
+`callback_query.message`). Private chats only by default
+(`GW_TYPING_PRIVATE_ONLY=true`); groups and channels get neither the
+indicator nor the timeout notice. A new action in the same chat
+refreshes the deadline. A per-beat settings read means admin changes
+apply to running sessions immediately.
+
+**Rate-limit honesty:** beats go straight upstream without consuming
+Rate Guard tokens (the indicator must never steal capacity from the
+consumer's real reply), but each beat first reads the guard. A
+hard-paused chat (real 429 `retry_after`, paused bot egress) stops the
+session outright — the bot cannot answer, so it must not pretend to
+type; a merely drained bucket skips one beat and resumes on refill.
+
+**Stop signals** (first one wins):
+
+| Signal | Effect |
+|---|---|
+| Any consumer write to that chat (`sendMessage`, `editMessageText`, ...) | Loop stops before the reply goes upstream |
+| `answerCallbackQuery` matching the button press that started the session | Loop stops — answering IS the reply |
+| `sendChatAction {action: "cancel"}` (gateway extension) | Full stop; answered locally, nothing forwarded |
+| `sendChatAction {action: "cancel_timeout"}` (gateway extension) | Timeout notice suppressed for this chat; typing continues until a stop signal |
+| Bot pause / drain / delete / shutdown | All typing tasks cancelled |
+| Timeout (`GW_TYPING_TIMEOUT`, default 30s) | Loop stops; private chats get one English notice (`GW_TYPING_TIMEOUT_TEXT`) |
+
+**Settings — three layers**, resolved per beat: per-bot override →
+runtime global → env boot defaults.
+
+- env: `GW_TYPING_ENABLED=true`, `GW_TYPING_PRIVATE_ONLY=true`,
+  `GW_TYPING_INTERVAL=4.5`, `GW_TYPING_TIMEOUT=30`,
+  `GW_TYPING_TIMEOUT_TEXT`
+- Global (all existing sessions, live):
+  `POST /admin/settings/typing {"timeout_s": 60}` (partial body; null
+  fields unchanged) and `GET /admin/settings/typing`
+- Per bot (null fields inherit the global):
+  `POST /admin/bots/{alias}/typing {"enabled": false}`
+
+`/admin/status` shows each bot's effective settings, which fields are
+overridden, and the number of active typing chats;
+`/metrics` exports `tg_gateway_typing_active{alias}`.
+
 ---
 
 ## 11. Integration with Existing Projects
@@ -360,6 +408,7 @@ Per bot:
 - Number of private chats / groups with empty buckets
 - Real 429 count vs synthetic 429 count
 - Time from consumer deploy to resumed processing
+- Active auto-typing chats (`tg_gateway_typing_active`)
 
 Alert if real 429 > 0 at a steady rate, or if the update queue crosses
 a threshold.

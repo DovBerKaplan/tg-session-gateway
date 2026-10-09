@@ -66,6 +66,25 @@ class Proxy:
         chat_id = self._chat_id(body)
         kind = method_kind(m)
 
+        # ── auto-typing bookkeeping (spec §10.4) ──────────────────────
+        # The consumer's reply — or an explicit control — ends the
+        # indicator before anything goes upstream.
+        if m == "sendchataction":
+            action = str(body.get("action", "")).lower()
+            if action == "cancel":
+                self.mgr.typing.stop(s, chat_id)
+                return JSONResponse({"ok": True, "result": True})
+            if action == "cancel_timeout":
+                self.mgr.typing.cancel_timeout(s, chat_id)
+                return JSONResponse({"ok": True, "result": True})
+            # any other action: the consumer drives the indicator itself
+            self.mgr.typing.stop(s, chat_id)
+        elif m == "answercallbackquery":
+            # answering the button press IS the reply to that action
+            self.mgr.typing.stop_by_callback_id(s, body.get("callback_query_id"))
+        elif kind == "write" and chat_id is not None:
+            self.mgr.typing.stop(s, chat_id)
+
         # paid lane (spec §8.2 §8): allow_paid_broadcast rides the 1000/s
         # bucket ONLY with the gateway-side double opt-in; otherwise 403 —
         # never silently over the free ceiling.
@@ -158,6 +177,9 @@ class Proxy:
                 chat_id = int(m.group(1))
         except Exception:
             pass
+        # multipart write (sendPhoto, documents...) is the reply —
+        # stop the auto-typing loop for that chat first
+        self.mgr.typing.stop(s, chat_id)
         if not s.guard.try_acquire(method, chat_id):
             s.synthetic_429 += 1
             retry = max(1, min(s.guard.wait_time(method, chat_id), 60))
