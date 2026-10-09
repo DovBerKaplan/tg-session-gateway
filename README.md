@@ -214,8 +214,9 @@ Design rules the code enforces — with the tests that prove them
 - **Updates survive kills.** The update queue is SQLite-WAL-persisted;
   unacked updates replay after a gateway restart, and consumer offsets
   resume.
-  *Test: restart-with-unacked-updates
-  (`tests/test_integration_gateway.py`).*
+  *Tests: restart-with-unacked-updates
+  (`tests/test_integration_gateway.py`), kill -9 interleavings
+  (`tests/test_restart_semantics.py`).*
 - **App deploys never touch Telegram.** The gateway/sidecar lives in
   its own Compose project; `docker compose down` on your app cannot
   kill the Telegram session.
@@ -227,6 +228,34 @@ Design rules the code enforces — with the tests that prove them
   *Test: replica overlap (`tests/test_integration_gateway.py`).*
   NOTE: the offset contract is subtle — until v0.1, treat the queue
   ack path as fresh code and keep the tests green before upgrading.
+
+### Restart semantics (kill -9 mid-FloodWait)
+
+What exactly happens when the process dies mid-backoff — a worker
+waiting out a FLOOD_WAIT (retry at T+30s) takes kill -9 and the
+supervisor restarts it before T+30s. Pinned by
+`tests/test_restart_semantics.py`:
+
+- **The pending retry belongs to the consumer, not the gateway.** On a
+  real 429/FLOOD_WAIT the gateway answers with `retry_after` and keeps
+  no outbound retry queue. The guard's preventive chat pause is
+  in-memory and dies with the process — after a restart the chat is
+  unpaused, and if the consumer retries before Telegram's own window
+  elapses, Telegram re-issues FLOOD_WAIT and the guard re-learns.
+  Telegram is the authority; the pause is an optimization.
+- **Queued updates are durable and duplicate-free across the crash.**
+  Every queue push commits synchronously to SQLite-WAL — safe against
+  process death (`kill -9`); `synchronous=NORMAL` trades machine
+  power-loss durability for speed. On restart only unacked updates
+  replay, and the persisted consumer offset floors delivery: even a
+  Telegram redelivery that raced the kill cannot re-deliver an update
+  the consumer already acked. Unacked updates replay at-least-once —
+  ack early if you need at-most-once side effects.
+- **The file lock arbitrates the old/new overlap.** A dead holder's
+  lock is reclaimed immediately (PID liveness check), so a fast
+  supervisor restart is the normal path, not a 60s wait; the heartbeat
+  window only bounds a frozen holder or PID reuse
+  (`tests/test_session_lock.py`).
 
 **Status, plainly:** the Bot API gateway is a working prototype with
 the tests above. The MTProto sidecar is newer but has carried real
