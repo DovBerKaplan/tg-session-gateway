@@ -11,6 +11,20 @@ now answers "is the bot alive?" visually, and honestly — the indicator
 stops the moment the bot actually cannot respond.
 
 ### Added
+- `genkey` container subcommand (`docker run --rm <image> genkey`):
+  prints a fresh Fernet key — the documented way to create
+  GW_FERNET_KEY without a local python+cryptography install.
+- Container preflight (gateway/preflight.py): the image now follows the
+  postgres contract instead of nginx — GW_FERNET_KEY is required
+  (no more silently generating a key inside the container, which dies
+  with it and leaves every stored token undecryptable), and /data must
+  be a mounted volume (GW_ALLOW_EPHEMERAL_DATA=1 opts in for throwaway
+  demos). deploy/install.sh now generates GW_FERNET_KEY into .env
+  alongside the other secrets.
+- Docker Hub mirror (dovberkaplan/tg-session-gateway{,-mtproto}) in the
+  release workflow: same tags as GHCR, shorter pull command; GHCR stays
+  the source of truth. Skipped cleanly until DOCKERHUB_USERNAME /
+  DOCKERHUB_TOKEN repo secrets are configured.
 - Auto typing indicator for hosted Bot API bots (spec §10.4): from the
   moment a user acts (message / edited_message / callback_query —
   private chats only by default) until the consumer answers, stops it
@@ -26,6 +40,11 @@ stops the moment the bot actually cannot respond.
   changes apply to running sessions immediately. New metric
   `tg_gateway_typing_active{alias}`.
 - Full-lifecycle tests for the above (tests/test_typing.py).
+
+### Changed
+- `latest` image tag moves only on stable version tags — never on
+  pre-releases (v1.2.3-rc1) or manual workflow runs. README examples
+  now pin the version (`0.0.4`) instead of `latest`.
 
 ### Fixed
 - `POST /admin/bots/{alias}/paid` no longer skips the admin-secret

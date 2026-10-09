@@ -24,12 +24,23 @@ FloodWait backoff, and a crash-safe update queue.
 / grammY / Telegraf):
 
 ```bash
+# one-time: the token-encryption key. The image refuses to invent
+# secrets inside the container (they'd die with it) — postgres, not nginx
+docker run --rm dovberkaplan/tg-session-gateway:0.0.4 genkey
+
 docker run -d --name tggw -p 8080:8080 \
-  -e GW_ADMIN_SECRET=$(openssl rand -hex 16) -e GW_APP_SECRET=$(openssl rand -hex 16) \
-  -v tggw-data:/data ghcr.io/dovberkaplan/tg-session-gateway:latest
+  -e GW_ADMIN_SECRET=$(openssl rand -hex 16) \
+  -e GW_APP_SECRET=$(openssl rand -hex 16) \
+  -e GW_FERNET_KEY=$(docker run --rm dovberkaplan/tg-session-gateway:0.0.4 genkey) \
+  -v tggw-data:/data \
+  dovberkaplan/tg-session-gateway:0.0.4
 # then the ONLY change in your bot:
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
+
+Pin the version tag (`0.0.4`). `latest` exists but moves only on stable
+releases — never pre-releases. Identical tags live on GHCR
+(`ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}`).
 
 *(images pending public visibility — until then `git clone` +
 `docker compose up -d` works from source, see Quickstart below)*
@@ -261,11 +272,14 @@ curl -s -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/status
 # mybot → live, session never blinked, no re-auth, queue intact
 ```
 
-Pre-built multi-arch images (amd64/arm64), published on every version tag:
+Pre-built multi-arch images (amd64/arm64). Docker Hub is the short pull
+command; GHCR is the source of truth with identical tags. Pin the
+version — `latest` moves only on stable releases, never pre-releases:
 
 ```bash
-docker pull ghcr.io/dovberkaplan/tg-session-gateway:latest      # Bot API gateway
-docker pull ghcr.io/dovberkaplan/tg-session-gateway-mtproto:latest  # MTProto sidecar
+docker pull dovberkaplan/tg-session-gateway:0.0.4              # Bot API gateway
+docker pull dovberkaplan/tg-session-gateway-mtproto:0.0.4      # MTProto sidecar
+# same tags on ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}
 ```
 
 For a server install with the external network, dedicated volume and

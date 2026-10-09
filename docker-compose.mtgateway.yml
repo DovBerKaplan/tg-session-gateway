@@ -18,7 +18,7 @@ services:
       GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}
       GW_API_ID: ${GW_API_ID:?set in .env}
       GW_API_HASH: ${GW_API_HASH:?set in .env}
-      GW_FERNET_KEY: ${GW_FERNET_KEY:-}
+      GW_FERNET_KEY: ${GW_FERNET_KEY:?set in .env}
       GW_ON_LIMIT: ${GW_ON_LIMIT:-queue}
       GW_METRICS: ${GW_METRICS:-true}
     volumes:
