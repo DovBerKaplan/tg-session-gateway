@@ -3,11 +3,11 @@
 import httpx
 import respx
 
-from gateway.config import Config
+from gateway.config import Config, TypingConfig
 from gateway.proxy import Proxy
 from gateway.queue import UpdateQueue
 from gateway.rateguard import BotRateGuard
-from gateway.sessions import BotSession
+from gateway.sessions import BotSession, SessionManager
 
 BASE = "https://api.telegram.org"
 
@@ -18,6 +18,8 @@ def make_proxy(on_limit="reject") -> tuple[Proxy, BotSession]:
     cfg.policy = Config().policy
     cfg.policy.on_limit = on_limit
     cfg.rate = Config().rate
+    cfg.typing = TypingConfig()
+    client = httpx.AsyncClient(base_url=BASE)
     s = BotSession(
         alias="t",
         token="1:abc",
@@ -25,7 +27,9 @@ def make_proxy(on_limit="reject") -> tuple[Proxy, BotSession]:
         guard=BotRateGuard(cfg.rate, on_limit),
         on_limit=None if on_limit == "queue" else on_limit,
     )
-    return Proxy(cfg, s, httpx.AsyncClient(base_url=BASE)), s
+    mgr = SessionManager(cfg, None, client)  # store unused on the proxy path
+    mgr.sessions["t"] = s
+    return Proxy(cfg, mgr, client), s
 
 
 class TestPassthrough:

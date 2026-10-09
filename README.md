@@ -146,6 +146,16 @@ app = (Application.builder()
 
 That's the whole integration. The gateway speaks the Bot API verbatim.
 
+Bots also get an auto typing indicator for free: from the moment a user
+messages or presses a button (private chats by default) until your app
+answers, the gateway keeps a `typing...` heartbeat alive — honestly,
+because it stops the moment that chat is rate-paused by a real 429, and
+on timeout it tells the user (in English) that the bot is having
+provider trouble. Control it per bot or gateway-wide via the admin API;
+your app can stop it with `sendChatAction {"action": "cancel"}` or
+suppress just the timeout notice with `"cancel_timeout"`.
+[Details →](docs/spec.md#104-auto-typing-indicator)
+
 [Full documentation →](docs/spec.md)
 
 ## MTProto Sidecar
