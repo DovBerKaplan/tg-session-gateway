@@ -26,6 +26,10 @@ jobs:
     name: Build & Publish Images
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # secrets cannot be referenced from step-level `if` (workflow fails
+    # validation) — collapse them into one job-level env flag instead
+    env:
+      DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +47,7 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Log in to Docker Hub (mirror)
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: env.DOCKERHUB_MIRROR == 'true'
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Set up buildx
@@ -79,7 +83,7 @@ jobs:
       # ── Docker Hub mirror — same tags, short pull command ──────────
       # Skipped (not failed) when the repo has no Docker Hub secrets.
       - name: Extract metadata (Docker Hub mirror)
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: env.DOCKERHUB_MIRROR == 'true'
         id: meta-mirror
         uses: docker/metadata-action@v5
         with:
@@ -91,7 +95,7 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
 
       - name: Build and push (Docker Hub mirror)
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: env.DOCKERHUB_MIRROR == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
