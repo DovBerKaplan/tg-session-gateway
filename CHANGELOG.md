@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adherence to [Semantic Versioning](https://semver.org/).
 
+## [0.0.4] — 2026-10-09
+
+First consumer-facing behavior on top of the hardened core: the gateway
+now answers "is the bot alive?" visually, and honestly — the indicator
+stops the moment the bot actually cannot respond.
+
+### Added
+- Auto typing indicator for hosted Bot API bots (spec §10.4): from the
+  moment a user acts (message / edited_message / callback_query —
+  private chats only by default) until the consumer answers, stops it
+  explicitly, or a configurable timeout elapses. The loop re-sends
+  `sendChatAction` without consuming Rate Guard tokens but stops on
+  hard-paused chats (real 429 `retry_after` — no fake typing when the
+  bot cannot answer). Timeout sends one English provider-issue notice,
+  private chats only. Gateway extensions: `sendChatAction` with
+  `action=cancel` (full stop) and `action=cancel_timeout` (suppress the
+  notice, keep typing). Three-layer settings — env boot defaults,
+  live gateway-wide `POST /admin/settings/typing`, per-bot
+  `POST /admin/bots/{alias}/typing` overrides — resolved per beat, so
+  changes apply to running sessions immediately. New metric
+  `tg_gateway_typing_active{alias}`.
+- Full-lifecycle tests for the above (tests/test_typing.py).
+
+### Fixed
+- `POST /admin/bots/{alias}/paid` no longer skips the admin-secret
+  check (it was the only admin route without one).
+
 ## [0.0.3] — 2026-09-09
 
 The complete hardening charter (docs/hardening-charter.md), every box

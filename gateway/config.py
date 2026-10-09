@@ -58,6 +58,29 @@ class BotPolicy:
     paid_broadcasts_enabled: bool = _env_bool("GW_PAID_BROADCASTS", False)
 
 
+DEFAULT_TYPING_TIMEOUT_TEXT = (
+    "⚠️ Sorry, this bot is temporarily unavailable due to a problem "
+    "on the provider side. Please try again later."
+)
+
+
+@dataclass
+class TypingConfig:
+    """Auto typing indicator (spec §10.4) — boot defaults from env.
+
+    Runtime resolution is three-layered, per beat: per-bot override →
+    runtime global (mutable via /admin/settings/typing) → these values.
+    """
+
+    enabled: bool = _env_bool("GW_TYPING_ENABLED", True)
+    # private chats only by default — groups/channels get neither the
+    # indicator nor the timeout notice
+    private_only: bool = _env_bool("GW_TYPING_PRIVATE_ONLY", True)
+    interval_s: float = _env_float("GW_TYPING_INTERVAL", 4.5)  # < Telegram's ~5s display
+    timeout_s: float = _env_float("GW_TYPING_TIMEOUT", 30.0)
+    timeout_text: str = _env("GW_TYPING_TIMEOUT_TEXT", DEFAULT_TYPING_TIMEOUT_TEXT)
+
+
 @dataclass
 class Config:
     # network / lifecycle
@@ -82,6 +105,7 @@ class Config:
 
     rate: RateConfig = field(default_factory=RateConfig)
     policy: BotPolicy = field(default_factory=BotPolicy)
+    typing: TypingConfig = field(default_factory=TypingConfig)
 
     def validate(self) -> None:
         missing = [

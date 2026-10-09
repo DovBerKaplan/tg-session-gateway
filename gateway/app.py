@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .admin import RegisterBot, SetPaid, SetPush
+from .admin import RegisterBot, SetPaid, SetPush, SetTyping
 from .config import Config
 from .sessions import SessionManager
 from .store import Store
@@ -90,6 +90,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             lines.append(f"tg_gateway_queue_persistent{{{labels}}} {1 if q['persistent'] else 0}")
             lines.append(f"tg_gateway_real_429_total{{{labels}}} {s.real_429}")
             lines.append(f"tg_gateway_synthetic_429_total{{{labels}}} {s.synthetic_429}")
+            lines.append(
+                f"tg_gateway_typing_active{{{labels}}} "
+                f"{request.app.state.mgr.typing.active_count(s.alias)}"
+            )
         return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     return app
@@ -231,9 +235,13 @@ def build_admin_router_lazy(cfg: Config):
     async def status(request: Request):
         if not _authed(request):
             return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        mgr = request.app.state.mgr
         return {
             "ok": True,
-            "bots": [s.public_status() for s in request.app.state.mgr.sessions.values()],
+            "bots": [
+                {**s.public_status(), "typing": mgr.typing.status_for(s)}
+                for s in mgr.sessions.values()
+            ],
         }
 
     @router.post("/admin/bots/{alias}/pause")
@@ -295,6 +303,50 @@ def build_admin_router_lazy(cfg: Config):
         s.guard.paid_enabled = body.enabled
         await request.app.state.store.audit("set_paid", alias, f"enabled={body.enabled}")
         return {"ok": True, "paid_broadcasts": s.paid_broadcasts}
+
+    @router.post("/admin/bots/{alias}/typing")
+    async def set_bot_typing(alias: str, body: SetTyping, request: Request):
+        """Per-bot auto-typing overrides (spec §10.4) — null fields
+        inherit the runtime global settings."""
+        if not _authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        mgr = request.app.state.mgr
+        s = mgr.sessions.get(alias)
+        if not s:
+            return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
+        for name, value in body.model_dump(exclude_unset=True).items():
+            setattr(s, f"typing_{name}", value)
+        await request.app.state.store.audit(
+            "set_typing",
+            alias,
+            ", ".join(f"{k}={v}" for k, v in body.model_dump(exclude_unset=True).items())
+            or "reset-all",
+        )
+        return {"ok": True, "typing": mgr.typing.status_for(s)}
+
+    @router.get("/admin/settings/typing")
+    async def get_typing_settings(request: Request):
+        if not _authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        return {
+            "ok": True,
+            "settings": request.app.state.mgr.typing.settings.snapshot(),
+        }
+
+    @router.post("/admin/settings/typing")
+    async def set_typing_settings(body: SetTyping, request: Request):
+        """Gateway-wide auto-typing settings (spec §10.4) — applies live
+        to every running bot session; fields left null stay unchanged."""
+        if not _authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        mgr = request.app.state.mgr
+        settings = mgr.typing.update_settings(body)
+        await request.app.state.store.audit(
+            "set_typing_global",
+            "global",
+            ", ".join(f"{k}={v}" for k, v in body.model_dump(exclude_unset=True).items()),
+        )
+        return {"ok": True, "settings": settings}
 
     @router.get("/admin/audit")
     async def audit_log(request: Request):

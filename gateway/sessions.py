@@ -21,6 +21,7 @@ from .config import Config
 from .queue import UpdateQueue
 from .rateguard import BotRateGuard
 from .store import Store
+from .typing import TypingManager
 
 log = logging.getLogger("gateway.session")
 
@@ -54,6 +55,13 @@ class BotSession:
     # per-bot overrides (§8.3/§10.2) — fall back to gateway defaults
     on_limit: str | None = None
     paid_broadcasts: bool = False
+    # auto-typing overrides (spec §10.4) — None inherits the runtime
+    # global layer (see TypingManager.effective)
+    typing_enabled: bool | None = None
+    typing_private_only: bool | None = None
+    typing_interval_s: float | None = None
+    typing_timeout_s: float | None = None
+    typing_timeout_text: str | None = None
     # rolling send meter (§13: sends/s vs the 30/s ceiling)
     _send_times: deque = field(default_factory=lambda: deque(maxlen=200))
 
@@ -98,6 +106,7 @@ class SessionManager:
         self.store = store
         self.client = client
         self.sessions: dict[str, BotSession] = {}
+        self.typing = TypingManager(cfg, client)
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -136,6 +145,7 @@ class SessionManager:
         if not s:
             return False
         s.state = State.paused
+        self.typing.stop_all(s)  # a paused bot is not typing
         if s.task and not s.task.done():
             s.task.cancel()  # kill the in-flight long poll NOW, not in ≤25s
             try:
@@ -161,6 +171,7 @@ class SessionManager:
         if not s:
             return False
         s.state = State.draining
+        self.typing.stop_all(s)  # no new work arrives — stop pretending
         return True
 
     async def delete(self, alias: str) -> bool:
@@ -168,6 +179,7 @@ class SessionManager:
         if not s:
             return False
         s.state = State.draining
+        self.typing.stop_all(s)
         for t in (s.task, s.push_task):
             if t and not t.done():
                 t.cancel()
@@ -190,6 +202,7 @@ class SessionManager:
     async def shutdown(self) -> None:
         for alias, s in list(self.sessions.items()):
             s.state = State.draining
+            self.typing.stop_all(s)
             for t in (s.task, s.push_task):
                 if t and not t.done():
                     t.cancel()
@@ -276,6 +289,10 @@ class SessionManager:
                     s.queue.push_all(updates)
                     offset = max(u["update_id"] for u in updates)
                     await self.store.save_offset(s.alias, offset)
+                    # auto typing indicator (spec §10.4) — every user
+                    # action opens/refreshes a session; covers both pull
+                    # and push consumers
+                    self.typing.on_updates(s, updates)
                     if s.push_url:
                         # official webhook shape: ONE Update per POST, body = the
                         # Update object itself — webhook libraries connect as-is

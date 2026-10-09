@@ -201,6 +201,30 @@ class BotRateGuard:
             self.egress_paused_until = max(self.egress_paused_until, now + retry_after)
             self.global_writes.pause(retry_after, now)
 
+    def chat_send_state(self, chat_id: int | None) -> str:
+        """Read-only probe for the auto-typing loop (spec §10.4): would a
+        write to this chat be admitted right now?
+
+        - "paused" — hard-blocked: real 429 retry_after on this chat, or
+          the whole bot egress is paused. The bot cannot answer at all,
+          so it must not pretend to type.
+        - "empty" — bucket momentarily drained (e.g. 1/s private cap);
+          a queued reply goes out as soon as it refills.
+        - "ok" — a write would be admitted immediately.
+
+        Never charges tokens; the only state touched is passive refill.
+        """
+        now = time.monotonic()
+        if now < self.egress_paused_until:
+            return "paused"
+        wait = self.global_writes.next_available(now)
+        if chat_id is not None:
+            b = self._chat_bucket(chat_id)
+            if b.paused_until > now:
+                return "paused"
+            wait = max(wait, b.next_available(now))
+        return "ok" if wait <= 0.0 else "empty"
+
     def snapshot(self) -> dict:
         now = time.monotonic()
         empty = {
