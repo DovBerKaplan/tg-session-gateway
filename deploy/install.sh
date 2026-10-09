@@ -21,13 +21,17 @@ docker network inspect tg-gateway-net >/dev/null 2>&1 || docker network create t
 if [ ! -f .env ]; then
   ADMIN=$(openssl rand -hex 24)
   APP=$(openssl rand -hex 24)
+  # urlsafe-base64 of 32 bytes — a valid Fernet key (GW_FERNET_KEY)
+  FERNET=$(openssl rand -base64 32 | tr '+/' '-_')
   cat > .env <<EOF
 GW_ADMIN_SECRET=$ADMIN
 GW_APP_SECRET=$APP
+GW_FERNET_KEY=$FERNET
 EOF
   chmod 600 .env
   echo "generated secrets in $INSTALL_DIR/.env — save them:"
-  echo "  GW_ADMIN_SECRET / GW_APP_SECRET"
+  echo "  GW_ADMIN_SECRET / GW_APP_SECRET / GW_FERNET_KEY"
+  echo "(losing GW_FERNET_KEY loses every stored bot token)"
 fi
 
 docker compose up -d --build
