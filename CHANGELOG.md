@@ -11,6 +11,14 @@ now answers "is the bot alive?" visually, and honestly — the indicator
 stops the moment the bot actually cannot respond.
 
 ### Added
+- Restart-semantics tests + README section (closes #19): kill -9
+  mid-FloodWait backoff is pinned end to end — the pending retry is
+  the consumer's (guard pause is in-memory and recomputed on boot,
+  Telegram re-throttles as the authority), queued updates are durable
+  and duplicate-free across the crash (persisted consumer offset
+  floors delivery against redelivery races), and the session lock
+  reclaims a dead holder immediately (PID check, not the 60s
+  heartbeat window).
 - `genkey` container subcommand (`docker run --rm <image> genkey`):
   prints a fresh Fernet key — the documented way to create
   GW_FERNET_KEY without a local python+cryptography install.
