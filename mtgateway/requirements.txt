@@ -1,8 +1,8 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
+fastapi>=0.142.2
+uvicorn[standard]>=0.54.0
 pyrofork>=2.3.69  # the maintained fork consumers run; plain pyrogram 2.0.106 flattens <blockquote expandable>
 aiosqlite>=0.20
-cryptography>=42.0
-pydantic>=2.6
+cryptography>=50.0.2
+pydantic>=2.13.5
 # tgcrypto: optional C-accelerated crypto (install manually if build tools available)
 # pip install tgcrypto
