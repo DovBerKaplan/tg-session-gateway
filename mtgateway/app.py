@@ -429,6 +429,31 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await request.app.state.store.audit("drain", alias)
         return {"ok": ok}
 
+    @app.post("/v1/admin/sessions/{alias}/restart")
+    async def admin_restart(alias: str, request: Request):
+        """Escalation rung 1: reconnect ONE session (never the process).
+        Clears the retry cooldown; terminal (quarantined) sessions are
+        refused — a revoked key needs unregister + re-auth instead."""
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        s = request.app.state.mgr.get(alias)
+        if not s:
+            return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
+        if s.terminal_error:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": 409,
+                    "description": "session quarantined (terminal error) — "
+                    "unregister and re-register instead",
+                },
+                status_code=409,
+            )
+        ok = await request.app.state.mgr.restart_session(alias)
+        if ok:
+            await request.app.state.store.audit("restart", alias)
+        return {"ok": ok}
+
     @app.delete("/v1/admin/sessions/{alias}")
     async def admin_delete(alias: str, request: Request):
         if not _admin_authed(request):
