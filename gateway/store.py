@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS chat_backoff (
     paused_until REAL NOT NULL,  -- wall clock
     PRIMARY KEY (alias, chat_id)
 );
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    alias    TEXT NOT NULL,
+    key      TEXT NOT NULL,
+    state    TEXT NOT NULL DEFAULT 'pending',  -- pending | done
+    seen_at  REAL NOT NULL,
+    PRIMARY KEY (alias, key)
+);
 """
 
 
@@ -184,6 +191,50 @@ class Store:
         except Exception as e:
             log.warning("load_backoffs(%s) failed: %s", alias, e)
             return []
+
+    # ── send idempotency (spec E2 — Idempotency-Key header) ─────────
+
+    IDEMPOTENCY_TTL_S = 300.0
+    STALE_PENDING_S = 60.0  # a claim older than this died mid-send
+
+    async def idempotency_claim(self, alias: str, key: str) -> str:
+        """'claimed'/'reclaimed' (proceed with the send) or 'replay'
+        (a completed send with this key exists — suppress). Atomic."""
+        now = time.time()
+        await self.db.execute(
+            "DELETE FROM idempotency_keys WHERE alias = ? AND key = ? AND seen_at < ?",
+            (alias, key, now - self.IDEMPOTENCY_TTL_S),
+        )
+        cur = await self.db.execute(
+            "INSERT INTO idempotency_keys (alias, key, state, seen_at) "
+            "VALUES (?, ?, 'pending', ?) ON CONFLICT(alias, key) DO NOTHING",
+            (alias, key, now),
+        )
+        await self.db.commit()
+        if cur.rowcount == 1:
+            return "claimed"
+        cur = await self.db.execute(
+            "UPDATE idempotency_keys SET seen_at = ? "
+            "WHERE alias = ? AND key = ? AND state = 'pending' AND seen_at < ?",
+            (now, alias, key, now - self.STALE_PENDING_S),
+        )
+        await self.db.commit()
+        return "reclaimed" if cur.rowcount == 1 else "replay"
+
+    async def idempotency_finish(self, alias: str, key: str) -> None:
+        await self.db.execute(
+            "UPDATE idempotency_keys SET state = 'done', seen_at = ? WHERE alias = ? AND key = ?",
+            (time.time(), alias, key),
+        )
+        await self.db.commit()
+
+    async def idempotency_fail(self, alias: str, key: str) -> None:
+        """The send failed — release the claim so retries pass."""
+        await self.db.execute(
+            "DELETE FROM idempotency_keys WHERE alias = ? AND key = ? AND state = 'pending'",
+            (alias, key),
+        )
+        await self.db.commit()
 
     # ── admin audit trail (append-only) ───────────────────────────────
 

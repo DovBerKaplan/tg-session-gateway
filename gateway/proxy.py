@@ -38,7 +38,12 @@ class Proxy:
         self.client = client
 
     async def call(
-        self, s: BotSession, method: str, body, content_type: str = "application/json"
+        self,
+        s: BotSession,
+        method: str,
+        body,
+        content_type: str = "application/json",
+        idem_key: str | None = None,
     ) -> Response:
         m = method.lower()
         raw = None if isinstance(body, dict) else body  # multipart/form passthrough
@@ -66,6 +71,22 @@ class Proxy:
         chat_id = self._chat_id(body)
         kind = method_kind(m)
 
+        # ── spec E2: Idempotency-Key header (writes only) ─────────────
+        # Atomic claim; a FAILED send releases the key — only a
+        # completed send suppresses replays.
+        idem_active = bool(idem_key) and kind == "write"
+        if idem_active:
+            verdict = await self.mgr.store.idempotency_claim(s.alias, idem_key or "")
+            if verdict == "replay":
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "result": None,
+                        "idempotent_replay": True,
+                        "description": "duplicate send suppressed (Idempotency-Key already seen)",
+                    }
+                )
+
         # ── auto-typing bookkeeping (spec §10.4) ──────────────────────
         # The consumer's reply — or an explicit control — ends the
         # indicator before anything goes upstream.
@@ -92,6 +113,8 @@ class Proxy:
         s.guard.enter_paid_lane(paid_requested)
         try:
             if paid_requested and not s.paid_broadcasts:
+                if idem_active:
+                    await self.mgr.store.idempotency_fail(s.alias, idem_key or "")
                 return JSONResponse(
                     {
                         "ok": False,
@@ -101,7 +124,13 @@ class Proxy:
                     },
                     status_code=403,
                 )
-            return await self._admit_and_forward(s, m, method, body, chat_id, kind)
+            resp = await self._admit_and_forward(s, m, method, body, chat_id, kind)
+            if idem_active:
+                if resp.status_code < 400:
+                    await self.mgr.store.idempotency_finish(s.alias, idem_key or "")
+                else:
+                    await self.mgr.store.idempotency_fail(s.alias, idem_key or "")
+            return resp
         finally:
             s.guard.exit_paid_lane()
 

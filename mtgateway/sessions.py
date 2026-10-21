@@ -132,28 +132,32 @@ class MTSession:
     if TYPE_CHECKING:
         from .store import MTStore
 
-    async def check_idempotency(self, key: str) -> bool:
-        """True = NEW key (proceed with send); False = replay (suppress).
+    async def check_idempotency(self, key: str) -> str:
+        """'claimed' / 'reclaimed' (proceed with the send) or 'replay'
+        (suppress — a completed send with this key exists).
 
-        Hardening charter: keys are persisted (SQLite) so a kill -9 in
-        the deploy window cannot double-send; the in-memory dict stays
-        only as a fast-path cache in front of the store.
+        The STORE decides atomically (INSERT ON CONFLICT): two
+        concurrent requests with the same key cannot both pass, and a
+        failed send releases its key instead of suppressing the retry.
+        The in-memory dict stays a fast-path cache for finished keys.
         """
         now = time.time()
         ts = self._seen_idempotency_keys.get(key)
         if ts is not None and now - ts < 300:
-            return False
-        if await self._idempotency_store().idempotency_seen(self.alias, key):
+            return "replay"
+        verdict = await self._idempotency_store().idempotency_claim(self.alias, key)
+        if verdict == "replay":
             self._seen_idempotency_keys[key] = now
-            return False
-        await self._idempotency_store().idempotency_record(self.alias, key)
-        self._seen_idempotency_keys[key] = now
         # bounded memory: drop stale cache entries
         cutoff = now - 300
         stale = [k for k, t in self._seen_idempotency_keys.items() if t < cutoff]
         for k in stale:
             del self._seen_idempotency_keys[k]
-        return True
+        return verdict
+
+    def note_idempotency_done(self, key: str) -> None:
+        """Cache a finished key (suppresses replays without a store hit)."""
+        self._seen_idempotency_keys[key] = time.time()
 
     def _idempotency_store(self):
         """Store handle — injected by the manager at registration."""
@@ -161,6 +165,26 @@ class MTSession:
 
     # E4: Pause sending while keeping receiving alive
     send_paused: bool = False
+
+    async def prune_expired_updates(self, ttl_s: float) -> int:
+        """GW_UPDATE_TTL_S, finally enforced: drain the in-memory queue,
+        drop what aged out, re-put the rest in order."""
+        if ttl_s <= 0:
+            return 0
+        cutoff = time.time() - ttl_s
+        kept, dropped = [], 0
+        while True:
+            try:
+                u = self._update_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if u.get("_gw_enqueued_at", 0) < cutoff:
+                dropped += 1
+            else:
+                kept.append(u)
+        for u in kept:
+            self._update_queue.put_nowait(u)
+        return dropped
 
     def add_consumer(self, handle: ConsumerHandle) -> None:
         self._consumers.append(handle)
@@ -197,9 +221,20 @@ class MTSession:
         """
         self._next_update_seq += 1
         update["_gw_seq"] = self._next_update_seq
+        update["_gw_enqueued_at"] = time.time()
+        try:
+            payload = json.dumps(update)
+        except (TypeError, ValueError) as e:
+            # poison update: capture for inspection instead of losing it
+            if self._store is not None:
+                await self._store.dead_letter(
+                    self.alias, repr(update)[:10000], f"unserializable: {e}"
+                )
+            log.error("[%s] unserializable update captured to dead letters: %s", self.alias, e)
+            return
         if self._store is not None:
             try:
-                await self._store.queue_push(self.alias, update["_gw_seq"], json.dumps(update))
+                await self._store.queue_push(self.alias, update["_gw_seq"], payload)
             except Exception as e:
                 self.persist_failures += 1
                 log.error(
@@ -282,6 +317,9 @@ class MTSessionManager:
         s._session_dir = self.cfg.session_dir
         s._store = self.store
         s._health = getattr(self, "health", None)
+        # GW_UPDATE_QUEUE_MAX is finally wired (was hardcoded 5000)
+        policy = getattr(self.cfg, "policy", None)
+        s._update_queue = asyncio.Queue(maxsize=getattr(policy, "update_queue_max", 5000))
         s.guard = MTRateGuard(self.cfg.rate, self.cfg.mtproto_rate)
         return s
 
