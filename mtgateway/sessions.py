@@ -107,6 +107,11 @@ class MTSession:
     _stop_supervisor: bool = False
     reconnects: int = 0
     start_attempts: int = 0
+    # active liveness + dead-man switch (metrics/alerts feed)
+    _last_ping_at: float = 0.0
+    last_ping_ok_at: float = 0.0
+    last_update_at: float = 0.0  # wall clock of the last update received
+    idempotency_claims: int = 0
 
     # Update routing: in-memory queue + optional WS consumers
     _update_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=5000))
@@ -148,6 +153,8 @@ class MTSession:
         verdict = await self._idempotency_store().idempotency_claim(self.alias, key)
         if verdict == "replay":
             self._seen_idempotency_keys[key] = now
+        else:
+            self.idempotency_claims += 1
         # bounded memory: drop stale cache entries
         cutoff = now - 300
         stale = [k for k, t in self._seen_idempotency_keys.items() if t < cutoff]
@@ -222,6 +229,7 @@ class MTSession:
         self._next_update_seq += 1
         update["_gw_seq"] = self._next_update_seq
         update["_gw_enqueued_at"] = time.time()
+        self.last_update_at = time.time()
         try:
             payload = json.dumps(update)
         except (TypeError, ValueError) as e:
@@ -297,6 +305,13 @@ class MTSession:
             "reconnects": self.reconnects,
             "start_attempts": self.start_attempts,
             "persist_failures": self.persist_failures,
+            "idempotency_claims": self.idempotency_claims,
+            "seconds_since_last_update": round(time.time() - self.last_update_at, 1)
+            if self.last_update_at
+            else None,
+            "seconds_since_ping_ok": round(time.monotonic() - self.last_ping_ok_at, 1)
+            if self.last_ping_ok_at
+            else None,
             "deploy_to_first_message_s": round(self.deploy_to_first_message_s, 2)
             if self.deploy_to_first_message_s
             else None,
@@ -368,12 +383,33 @@ class MTSessionManager:
         from .rateguard import jittered, parse_flood_wait
 
         backoff = 1.0
+        ping_interval = 60.0  # active liveness (half-open detection)
         try:
             while not s._stop_supervisor and not s.terminal_error:
                 if s.state in (SessionState.paused, SessionState.draining):
                     await asyncio.sleep(2.0)
                     continue
                 if s.client is not None and s.client.is_connected and s.state == SessionState.live:
+                    # ACTIVE liveness: is_connected lies through half-open
+                    # TCP (NAT/firewall silently dropped the flow) — ping
+                    # Telegram for real; a stuck ping forces a reconnect.
+                    if time.monotonic() - s._last_ping_at > ping_interval:
+                        s._last_ping_at = time.monotonic()
+                        try:
+                            await asyncio.wait_for(s.client.get_me(), timeout=10.0)
+                            s.last_ping_ok_at = time.monotonic()
+                        except Exception as e:
+                            log.warning(
+                                "[%s] liveness ping stuck (%s) — half-open suspected, "
+                                "forcing reconnect",
+                                s.alias,
+                                e,
+                            )
+                            try:
+                                await asyncio.wait_for(s.client.stop(), timeout=10.0)
+                            except Exception:
+                                pass
+                            continue
                     await asyncio.sleep(5.0)  # healthy — watch for disconnects
                     continue
                 if time.monotonic() < s.next_retry_at:

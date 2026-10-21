@@ -1,0 +1,106 @@
+# Prometheus alert rules for tg-session-gateway (both planes).
+#
+# Scraping: point your Prometheus at each plane's /metrics:
+#   - Bot API gateway:  tg-gateway:8080/metrics
+#   - MTProto sidecar:  tg-mtgateway:8080/metrics
+# Metric names are identical across planes; the plane label is "bot"
+# for the gateway-level gauges and "mt" for the sidecar's.
+#
+# Wire into an existing Prometheus (e.g. the KOT stack):
+#   rule_files: ["alerts.yml"]  # copy or mount this file
+# See docs/alerting.md for the runbook behind each alert.
+
+groups:
+  - name: tg-session-gateway
+    rules:
+      - alert: TGSessionNotLive
+        expr: time() - max by (alias) (tg_gateway_session_state == bool) > 0 or max by (alias) (tg_gateway_session_state) == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "session {{ $labels.alias }} not live for >5m"
+          runbook: "docs/alerting.md#session-not-live"
+
+      - alert: TGSessionQuarantined
+        expr: max by (alias) (tg_gateway_session_terminal) == 1
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "session {{ $labels.alias }} quarantined (revoked/duplicated key) — admin action required"
+          runbook: "docs/alerting.md#session-quarantined"
+
+      - alert: TGNoUpdatesReceived
+        expr: tg_gateway_seconds_since_last_update > 1800
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "no update received for {{ $labels.alias }} in >30m (dead-man switch)"
+          runbook: "docs/alerting.md#no-updates"
+
+      - alert: TGLivenessPingStuck
+        expr: tg_gateway_seconds_since_ping_ok > 120
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "liveness ping for {{ $labels.alias }} not confirming for >2m"
+          runbook: "docs/alerting.md#ping-stuck"
+
+      - alert: TGStorageDegraded
+        expr: tg_gateway_storage_degraded == 1
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "storage degraded ({{ $labels.plane }} plane) — persistence failing or DB quarantined"
+          runbook: "docs/alerting.md#storage-degraded"
+
+      - alert: TGPersistFailures
+        expr: increase(tg_gateway_persist_failures_total[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "update persistence is failing — unacked updates now die with the process"
+          runbook: "docs/alerting.md#persist-failures"
+
+      - alert: TGCorruptRows
+        expr: increase(tg_gateway_corrupt_rows_total[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "corrupt queue rows skipped — inspect the DB"
+          runbook: "docs/alerting.md#corrupt-rows"
+
+      - alert: TGQueueDepthHigh
+        expr: tg_gateway_update_queue_depth > 1000
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "update queue for {{ $labels.alias }} above 1000 for 10m — consumer dead or slow"
+          runbook: "docs/alerting.md#queue-depth"
+
+      - alert: TGQueueAgeHigh
+        expr: tg_gateway_queue_max_age_seconds > 600
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "oldest queued update for {{ $labels.alias }} is >10m old"
+          runbook: "docs/alerting.md#queue-depth"
+
+      - alert: TGFloodWaitStorm
+        expr: increase(tg_gateway_real_flood_wait_total[10m]) > 10
+        labels: {severity: warning}
+        annotations:
+          summary: "repeated real FLOOD_WAIT for {{ $labels.alias }} — sending pattern needs attention"
+          runbook: "docs/alerting.md#flood-storm"
+
+      - alert: TGReconnectFlapping
+        expr: increase(tg_gateway_session_reconnects_total[10m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "session {{ $labels.alias }} reconnected >5 times in 10m"
+          runbook: "docs/alerting.md#reconnect-flapping"
+
+      - alert: TGLoopWedged
+        expr: tg_gateway_loop_lag_seconds > 5
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "event loop lag {{ $value }}s on {{ $labels.plane }} plane — the process serves nothing"
+          runbook: "docs/alerting.md#loop-wedged"
