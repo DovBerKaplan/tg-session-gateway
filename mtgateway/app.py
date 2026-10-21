@@ -28,6 +28,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -36,6 +37,8 @@ from typing import Any
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+
+from gateway.dbhealth import StorageHealth, maintenance_loop
 
 from . import __version__
 from .config import Config
@@ -59,18 +62,61 @@ class SetPaid(BaseModel):
 def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg or Config()
     cfg.validate()
-    store = MTStore(cfg.data_dir, cfg.fernet_key)
+    health = StorageHealth()
+    store = MTStore(
+        cfg.data_dir,
+        cfg.fernet_key,
+        durability=cfg.storage.durability,
+        backups_dir=cfg.backups_dir,
+        health=health,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await store.connect()
-        mgr = MTSessionManager(cfg, store)
+        mgr = MTSessionManager(cfg, store, health=health)
         app.state.store = store
         app.state.mgr = mgr
         app.state.cfg = cfg
+        app.state.storage_health = health
+
+        async def _state_persist_loop() -> None:
+            while True:
+                await asyncio.sleep(60.0)
+                try:
+                    await mgr.persist_states()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # best-effort snapshot
+                    log.warning("state persist pass failed: %s", e)
+
+        state_task = asyncio.create_task(_state_persist_loop(), name="mt-state-persist")
+        import glob as _glob
+
+        maint_task = asyncio.create_task(
+            maintenance_loop(
+                cfg.storage.maintenance_interval_s,
+                db_paths=[store.path],
+                backups_dir=cfg.backups_dir,
+                health=health,
+                keep=cfg.storage.backup_keep,
+                backup_interval_s=cfg.storage.backup_interval_s,
+                audit_retention_sql=(
+                    "DELETE FROM admin_audit WHERE CAST(strftime('%s', ts) AS REAL) < ?"
+                ),
+                audit_retention_days=cfg.storage.audit_retention_days,
+                encrypted=sorted(_glob.glob(os.path.join(cfg.session_dir, "*.session"))),
+                fernet=store._fernet,
+            ),
+            name="mt-maintenance",
+        )
         restored = await mgr.restore_all()
         log.info("MTProto gateway up — restored %d session(s)", restored)
         yield
+        for t in (state_task, maint_task):
+            t.cancel()
+        await asyncio.gather(state_task, maint_task, return_exceptions=True)
+        await mgr.persist_states()  # final snapshot before exit
         await mgr.shutdown()
         await store.close()
 
@@ -509,9 +555,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     async def readyz(request: Request):
         try:
             await request.app.state.store.list_sessions()
-            return {"ok": True}
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+        health = getattr(request.app.state, "storage_health", None)
+        if health is not None and health.degraded_reason:
+            return JSONResponse({"ok": False, "storage": health.snapshot()}, status_code=503)
+        return {"ok": True}
 
     # ── Prometheus metrics ───────────────────────────────────────────
 

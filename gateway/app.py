@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import httpx
@@ -12,6 +14,7 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .admin import RegisterBot, SetPaid, SetPush, SetTyping
 from .config import Config
+from .dbhealth import StorageHealth, maintenance_loop
 from .sessions import SessionManager
 from .store import Store
 
@@ -26,22 +29,47 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg or Config()
     cfg.validate()
 
-    store = Store(cfg.data_dir, cfg.fernet_key)
+    health = StorageHealth()
+    store = Store(
+        cfg.data_dir,
+        cfg.fernet_key,
+        durability=cfg.storage.durability,
+        backups_dir=cfg.backups_dir,
+        health=health,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await store.connect()
         client = httpx.AsyncClient(base_url=cfg.upstream, timeout=60.0)
-        mgr = SessionManager(cfg, store, client)
+        mgr = SessionManager(cfg, store, client, health=health)
         app.state.store, app.state.client, app.state.mgr, app.state.cfg = (
             store,
             client,
             mgr,
             cfg,
         )
+        app.state.storage_health = health
+        maint_task = asyncio.create_task(
+            maintenance_loop(
+                cfg.storage.maintenance_interval_s,
+                db_paths=[store.path, os.path.join(cfg.data_dir, "queue.db")],
+                backups_dir=cfg.backups_dir,
+                health=health,
+                keep=cfg.storage.backup_keep,
+                backup_interval_s=cfg.storage.backup_interval_s,
+                audit_retention_sql=(
+                    "DELETE FROM admin_audit WHERE CAST(strftime('%s', ts) AS REAL) < ?"
+                ),
+                audit_retention_days=cfg.storage.audit_retention_days,
+            ),
+            name="gw-maintenance",
+        )
         restored = await mgr.restore_all()
         log.info("gateway up — restored %d bot session(s)", restored)
         yield
+        maint_task.cancel()
+        await asyncio.gather(maint_task, return_exceptions=True)
         await mgr.shutdown()
         await client.aclose()
         await store.close()
@@ -60,9 +88,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     async def readyz(request: Request):
         try:
             await request.app.state.store.list_bots()
-            return {"ok": True}
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+        health = getattr(request.app.state, "storage_health", None)
+        if health is not None and health.degraded_reason:
+            return JSONResponse({"ok": False, "storage": health.snapshot()}, status_code=503)
+        return {"ok": True}
 
     @app.get("/metrics")
     async def metrics(request: Request):

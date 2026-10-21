@@ -10,9 +10,12 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import time
 
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
+
+from .dbhealth import StorageHealth, check_or_quarantine, pragma_statements
 
 log = logging.getLogger("gateway.store")
 
@@ -30,14 +33,30 @@ CREATE TABLE IF NOT EXISTS admin_audit (
     alias    TEXT NOT NULL,
     detail   TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS chat_backoff (
+    alias        TEXT NOT NULL,
+    chat_id      INTEGER NOT NULL,
+    paused_until REAL NOT NULL,  -- wall clock
+    PRIMARY KEY (alias, chat_id)
+);
 """
 
 
 class Store:
-    def __init__(self, data_dir: str, fernet_key: str | None = None):
+    def __init__(
+        self,
+        data_dir: str,
+        fernet_key: str | None = None,
+        durability: str = "normal",
+        backups_dir: str | None = None,
+        health: StorageHealth | None = None,
+    ):
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
         self.path = os.path.join(data_dir, "gateway.db")
+        self.durability = durability
+        self.backups_dir = backups_dir
+        self.health = health
         self._db: aiosqlite.Connection | None = None
         self._fernet = self._load_fernet(fernet_key)
 
@@ -60,9 +79,13 @@ class Store:
         return Fernet(generated)
 
     async def connect(self) -> None:
+        # boot gate: a corrupt DB is quarantined (and a backup restored,
+        # if one exists) instead of crashing the process into a loop
+        check_or_quarantine(self.path, self.backups_dir, self.health)
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA journal_mode=WAL")
+        for stmt in pragma_statements(self.durability):
+            await self.db.execute(stmt)
         await self.db.executescript(_SCHEMA)
         await self.db.commit()
 
@@ -126,6 +149,41 @@ class Store:
             "UPDATE bots SET telegram_offset = ? WHERE alias = ?", (offset, alias)
         )
         await self.db.commit()
+
+    # ── FLOOD_WAIT backoff ledger ────────────────────────────────────
+    # The guard's chat pause is in-memory; a restart mid-FLOOD_WAIT used
+    # to forget it and immediately hammer Telegram again. The ledger
+    # persists the pause so the rebooted gateway waits it out instead.
+
+    async def save_backoff(self, alias: str, chat_id: int | None, until: float) -> None:
+        if chat_id is None:  # bot-wide egress pause: single well-known row
+            chat_id = 0
+        try:
+            await self.db.execute(
+                "INSERT INTO chat_backoff (alias, chat_id, paused_until) VALUES (?, ?, ?) "
+                "ON CONFLICT(alias, chat_id) DO UPDATE SET paused_until = excluded.paused_until",
+                (alias, chat_id, until),
+            )
+            await self.db.commit()
+        except Exception as e:  # ledger is best-effort, never blocks sends
+            log.warning("save_backoff(%s,%s) failed: %s", alias, chat_id, e)
+
+    async def load_backoffs(self, alias: str) -> list[tuple[int, float]]:
+        """Active (chat_id, paused_until) rows; expired ones are pruned."""
+        try:
+            now = time.time()
+            await self.db.execute(
+                "DELETE FROM chat_backoff WHERE alias = ? AND paused_until <= ?", (alias, now)
+            )
+            await self.db.commit()
+            async with self.db.execute(
+                "SELECT chat_id, paused_until FROM chat_backoff WHERE alias = ?", (alias,)
+            ) as cur:
+                rows = await cur.fetchall()
+            return [(r["chat_id"], r["paused_until"]) for r in rows]
+        except Exception as e:
+            log.warning("load_backoffs(%s) failed: %s", alias, e)
+            return []
 
     # ── admin audit trail (append-only) ───────────────────────────────
 
