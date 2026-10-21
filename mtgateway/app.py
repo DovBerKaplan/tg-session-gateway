@@ -81,14 +81,30 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         app.state.storage_health = health
 
         async def _state_persist_loop() -> None:
+            """Every 60s: state snapshots, idempotency cleanup (the
+            table grows unbounded otherwise — cleanup existed but was
+            never called), and queue TTL enforcement (GW_UPDATE_TTL_S)."""
+            ttl = getattr(cfg.policy, "update_ttl_s", 3600.0)
             while True:
                 await asyncio.sleep(60.0)
                 try:
                     await mgr.persist_states()
+                    await store.idempotency_cleanup()
+                    cutoff = time.time() - ttl
+                    for s in mgr.sessions.values():
+                        dropped_mem = await s.prune_expired_updates(ttl)
+                        dropped_db = await store.queue_ttl_cleanup(s.alias, cutoff)
+                        if dropped_mem or dropped_db:
+                            log.info(
+                                "[%s] TTL pruned %d in-memory / %d persisted update(s)",
+                                s.alias,
+                                dropped_mem,
+                                dropped_db,
+                            )
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:  # best-effort snapshot
-                    log.warning("state persist pass failed: %s", e)
+                except Exception as e:  # best-effort housekeeping
+                    log.warning("housekeeping pass failed: %s", e)
 
         state_task = asyncio.create_task(_state_persist_loop(), name="mt-state-persist")
         import glob as _glob
@@ -176,17 +192,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         elif not isinstance(chat_id, int):
             chat_id = None
 
-        # ── E2: Idempotency check (app-supplied key prevents duplicate sends)
+        # ── E2: Idempotency (app-supplied key prevents duplicate sends).
+        # Atomic claim; a FAILED send releases the key (retry allowed),
+        # only a completed send suppresses replays.
         idem_key = body.pop("_idempotency_key", None)
-        if idem_key and not await s.check_idempotency(idem_key):
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "result": None,
-                    "idempotent_replay": True,
-                    "description": "duplicate send suppressed (idempotency key already seen)",
-                }
-            )
+        if idem_key:
+            verdict = await s.check_idempotency(idem_key)
+            if verdict == "replay":
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "result": None,
+                        "idempotent_replay": True,
+                        "description": "duplicate send suppressed (idempotency key already seen)",
+                    }
+                )
 
         # ── E4: Check send-paused state
         if s.send_paused and method.lower() not in (
@@ -251,6 +271,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
             result = await fn(**coerce_args(body))
 
+            # the send completed — the key now suppresses replays
+            if idem_key:
+                await request.app.state.store.idempotency_finish(s.alias, idem_key)
+                s.note_idempotency_done(idem_key)
+
             # Clear backoff on success (positive signal)
             if chat_id is not None:
                 s.guard.clear_peer_backoff(chat_id)
@@ -260,6 +285,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
             return JSONResponse({"ok": True, "result": _serialize(result)})
         except Exception as e:
+            # the send FAILED — release the claim so a retry with the
+            # same key is not suppressed
+            if idem_key:
+                try:
+                    await request.app.state.store.idempotency_fail(s.alias, idem_key)
+                except Exception:
+                    pass
             # Check for FLOOD_WAIT
             flood = parse_flood_wait(e)
             if flood:
@@ -320,6 +352,27 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         timeout = min(float(body.get("timeout", 0) or 0), 50.0)
         limit = int(body.get("limit", 100) or 100)
+        offset = body.get("offset")
+
+        if offset is not None:
+            # Bot API semantics (offset mode): offset = the FIRST update
+            # the consumer wants back; everything strictly below is
+            # acked. Delivery does NOT ack — the store is the source of
+            # truth, so a consumer crash before processing replays the
+            # batch on the next pull. Old delivery=ack behavior stays
+            # for clients that send no offset.
+            offset = int(offset)
+            store = request.app.state.store
+            await store.queue_ack(s.alias, offset - 1)
+            deadline = time.monotonic() + max(timeout, 0.0)
+            while True:
+                snapshot = await store.queue_pull(s.alias, offset - 1, limit)
+                if snapshot:
+                    return JSONResponse({"ok": True, "result": snapshot})
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return JSONResponse({"ok": True, "result": []})
+                await asyncio.sleep(min(remaining, 0.2))
 
         if timeout == 0:
             # Non-blocking: return whatever is queued; delivery = ack
@@ -499,6 +552,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if ok:
             await request.app.state.store.audit("restart", alias)
         return {"ok": ok}
+
+    @app.get("/v1/admin/sessions/{alias}/deadletters")
+    async def admin_list_dead_letters(alias: str, request: Request):
+        """Inspect poison updates (unserializable payloads captured
+        instead of vanishing)."""
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        if not request.app.state.mgr.get(alias):
+            return JSONResponse({"ok": False, "error_code": 404}, status_code=404)
+        rows = await request.app.state.store.list_dead_letters(alias)
+        return {"ok": True, "dead_letters": rows}
+
+    @app.delete("/v1/admin/sessions/{alias}/deadletters")
+    async def admin_clear_dead_letters(alias: str, request: Request):
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        n = await request.app.state.store.clear_dead_letters(alias)
+        await request.app.state.store.audit("deadletters_clear", alias, f"count={n}")
+        return {"ok": True, "cleared": n}
 
     @app.delete("/v1/admin/sessions/{alias}")
     async def admin_delete(alias: str, request: Request):

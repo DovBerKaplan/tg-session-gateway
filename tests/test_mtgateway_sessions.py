@@ -204,25 +204,35 @@ class TestIdempotency:
         asyncio.run(s._store.connect())
         return s
 
-    def test_first_key_accepted(self, tmp_path):
+    def test_first_key_claimed(self, tmp_path):
         import asyncio
 
         s = self._session_with_store(tmp_path)
-        assert asyncio.run(s.check_idempotency("send-001")) is True
+        assert asyncio.run(s.check_idempotency("send-001")) == "claimed"
 
-    def test_duplicate_key_rejected(self, tmp_path):
+    def test_completed_key_replayed_until_released(self, tmp_path):
         import asyncio
 
         s = self._session_with_store(tmp_path)
-        asyncio.run(s.check_idempotency("send-001"))
-        assert asyncio.run(s.check_idempotency("send-001")) is False
+        assert asyncio.run(s.check_idempotency("send-001")) == "claimed"
+        asyncio.run(s._store.idempotency_finish("bot1", "send-001"))
+        s.note_idempotency_done("send-001")
+        assert asyncio.run(s.check_idempotency("send-001")) == "replay"
 
-    def test_different_keys_both_accepted(self, tmp_path):
+    def test_failed_send_releases_key(self, tmp_path):
         import asyncio
 
         s = self._session_with_store(tmp_path)
-        assert asyncio.run(s.check_idempotency("send-001")) is True
-        assert asyncio.run(s.check_idempotency("send-002")) is True
+        assert asyncio.run(s.check_idempotency("send-001")) == "claimed"
+        asyncio.run(s._store.idempotency_fail("bot1", "send-001"))
+        assert asyncio.run(s.check_idempotency("send-001")) == "claimed"
+
+    def test_different_keys_both_claimed(self, tmp_path):
+        import asyncio
+
+        s = self._session_with_store(tmp_path)
+        assert asyncio.run(s.check_idempotency("send-001")) == "claimed"
+        assert asyncio.run(s.check_idempotency("send-002")) == "claimed"
 
 
 class TestPauseSending:
