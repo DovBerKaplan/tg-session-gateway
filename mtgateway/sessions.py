@@ -729,7 +729,8 @@ class MTSessionManager:
         if removed:
             log.info("boot janitor: removed %d stale lock(s)", removed)
         count = 0
-        for row in await self.store.list_sessions():
+        rows = await self.store.list_sessions()
+        for row in rows:
             token = await self.store.get_token(row["alias"])
             if not token:
                 continue
@@ -737,6 +738,11 @@ class MTSessionManager:
             if row["paused"]:
                 s.state = SessionState.paused
             count += 1
+            # stagger supervisor starts (thundering herd on boot)
+            if row is not rows[-1]:
+                from .rateguard import jittered
+
+                await asyncio.sleep(jittered(0.25, cap_extra=0.5))
         return count
 
     async def shutdown(self) -> None:

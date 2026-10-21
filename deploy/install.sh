@@ -17,6 +17,17 @@ cd "$INSTALL_DIR"
 # external network — consumers join it, the gateway never joins theirs
 docker network inspect tg-gateway-net >/dev/null 2>&1 || docker network create tg-gateway-net
 
+# autoheal: Docker's `restart:` policy NEVER restarts an unhealthy
+# container — only a crashed one. docker-autoheal closes that gap for
+# anything labeled autoheal=true (both gateway planes carry the label).
+if ! docker ps -a --filter name=tg-autoheal --format '{{.Names}}' | grep -q .; then
+  docker run -d --name tg-autoheal \
+    --restart=unless-stopped \
+    -v /var/run/docker.sock:/var/run/docker.sock:ro \
+    willfarrell/autoheal:latest \
+    >/dev/null && echo "autoheal watchdog deployed (container: tg-autoheal)"
+fi
+
 # secrets
 if [ ! -f .env ]; then
   ADMIN=$(openssl rand -hex 24)

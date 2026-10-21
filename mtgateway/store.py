@@ -199,6 +199,14 @@ class MTStore:
         )
         await self.db.commit()
 
+    async def verify_tokens(self) -> list[str]:
+        """Boot probe: aliases whose stored token cannot be decrypted."""
+        bad = []
+        for row in await self.list_sessions():
+            if await self.get_token(row["alias"]) is None:
+                bad.append(row["alias"])
+        return bad
+
     # ── update state (pts/qts/date/seq) ──────────────────────────────
 
     async def get_state(self, alias: str) -> dict:
