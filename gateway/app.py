@@ -15,6 +15,7 @@ from . import __version__
 from .admin import RegisterBot, SetPaid, SetPush, SetTyping
 from .config import Config
 from .dbhealth import StorageHealth, maintenance_loop
+from .loophealth import LoopBeat
 from .sessions import SessionManager
 from .store import Store
 
@@ -50,6 +51,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             cfg,
         )
         app.state.storage_health = health
+        beat = LoopBeat()
+        beat.start()
+        app.state.loop_beat = beat
         maint_task = asyncio.create_task(
             maintenance_loop(
                 cfg.storage.maintenance_interval_s,
@@ -70,6 +74,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         yield
         maint_task.cancel()
         await asyncio.gather(maint_task, return_exceptions=True)
+        await beat.stop()
         await mgr.shutdown()
         await client.aclose()
         await store.close()
@@ -81,19 +86,35 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.include_router(build_admin_router_lazy(cfg))
 
     @app.get("/healthz")
-    async def healthz():
-        return {"ok": True, "version": __version__}
+    async def healthz(request: Request):
+        """Liveness: the process AND its event loop (beat lag)."""
+        beat = getattr(request.app.state, "loop_beat", None)
+        lag = round(beat.lag_s, 2) if beat else 0
+        return {
+            "ok": True if beat is None else beat.alive,
+            "version": __version__,
+            "loop_lag_s": lag,
+        }
 
     @app.get("/readyz")
     async def readyz(request: Request):
         try:
             await request.app.state.store.list_bots()
+            # write probe: catches full/read-only/locked storage
+            await request.app.state.store.db.execute("BEGIN IMMEDIATE")
+            await request.app.state.store.db.execute("ROLLBACK")
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
         health = getattr(request.app.state, "storage_health", None)
         if health is not None and health.degraded_reason:
             return JSONResponse({"ok": False, "storage": health.snapshot()}, status_code=503)
-        return {"ok": True}
+        mgr = request.app.state.mgr
+        states = {a: s.state.value for a, s in mgr.sessions.items()}
+        return {
+            "ok": True,
+            "sessions": states,
+            "live": sum(1 for v in states.values() if v == "live"),
+        }
 
     @app.get("/metrics")
     async def metrics(request: Request):
@@ -125,6 +146,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 f"tg_gateway_typing_active{{{labels}}} "
                 f"{request.app.state.mgr.typing.active_count(s.alias)}"
             )
+            lines.append(f"tg_gateway_persist_failures_total{{{labels}}} {health.persist_failures}")
+            lines.append(f"tg_gateway_corrupt_rows_total{{{labels}}} {health.corrupt_rows}")
+            lines.append(f"tg_gateway_queue_max_age_seconds{{{labels}}} {q.get('max_age_s', 0)}")
+            if getattr(s.queue, "_unloaded_backlog", 0):
+                lines.append(f"tg_gateway_backlog_unloaded{{{labels}}} {s.queue._unloaded_backlog}")
+        lines.append(
+            f'tg_gateway_storage_degraded{{plane="bot"}} {1 if health.degraded_reason else 0}'
+        )
+        beat = getattr(request.app.state, "loop_beat", None)
+        if beat is not None:
+            lines.append(f'tg_gateway_loop_lag_seconds{{plane="bot"}} {round(beat.lag_s, 2)}')
         return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     return app

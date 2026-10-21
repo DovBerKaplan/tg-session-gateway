@@ -48,6 +48,9 @@ def _boot_id() -> str:
 HOSTNAME = socket.gethostname()
 BOOT_ID = _boot_id()
 
+# metrics feed: stale locks reclaimed (acquire path + boot janitor)
+LOCK_METRICS = {"reclaims": 0}
+
 
 @dataclass
 class SessionLock:
@@ -88,6 +91,7 @@ class SessionLock:
                 log.warning("[%s] removing stale lock (holder dead + no heartbeat)", self.alias)
                 try:
                     os.unlink(self._lock_path)
+                    LOCK_METRICS["reclaims"] += 1
                 except FileNotFoundError:
                     pass
             else:
@@ -232,6 +236,7 @@ def sweep_lock_dir(lock_dir: str) -> int:
             try:
                 os.unlink(probe._lock_path)
                 removed += 1
+                LOCK_METRICS["reclaims"] += 1
                 log.warning("janitor: removed stale lock %s", name)
             except OSError:
                 pass

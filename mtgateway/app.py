@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from gateway.dbhealth import StorageHealth, maintenance_loop
+from gateway.loophealth import LoopBeat
 
 from . import __version__
 from .config import Config
@@ -106,6 +107,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 except Exception as e:  # best-effort housekeeping
                     log.warning("housekeeping pass failed: %s", e)
 
+        beat = LoopBeat()
+        beat.start()
+        app.state.loop_beat = beat
         state_task = asyncio.create_task(_state_persist_loop(), name="mt-state-persist")
         import glob as _glob
 
@@ -132,6 +136,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         for t in (state_task, maint_task):
             t.cancel()
         await asyncio.gather(state_task, maint_task, return_exceptions=True)
+        await beat.stop()
         await mgr.persist_states()  # final snapshot before exit
         await mgr.shutdown()
         await store.close()
@@ -620,19 +625,36 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     # ── Health endpoints ─────────────────────────────────────────────
 
     @app.get("/healthz")
-    async def healthz():
-        return {"ok": True}
+    async def healthz(request: Request):
+        """Liveness: the PROCESS and its event loop. A wedged loop has
+        a PID but serves nothing — the beat lag exposes it."""
+        beat = getattr(request.app.state, "loop_beat", None)
+        if beat is None:
+            return {"ok": True}
+        return {"ok": beat.alive, "loop_lag_s": round(beat.lag_s, 2)}
 
     @app.get("/readyz")
     async def readyz(request: Request):
+        """Readiness: storage READABLE and WRITABLE (a full/read-only
+        disk fails here, not at 3am), no storage degradation, and a
+        session-liveness picture for the operator."""
         try:
             await request.app.state.store.list_sessions()
+            # write probe: BEGIN IMMEDIATE catches ENOSPC/EROFS/locked
+            await request.app.state.store.db.execute("BEGIN IMMEDIATE")
+            await request.app.state.store.db.execute("ROLLBACK")
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
         health = getattr(request.app.state, "storage_health", None)
         if health is not None and health.degraded_reason:
             return JSONResponse({"ok": False, "storage": health.snapshot()}, status_code=503)
-        return {"ok": True}
+        mgr = request.app.state.mgr
+        states = {a: s.state.value for a, s in mgr.sessions.items()}
+        return {
+            "ok": True,
+            "sessions": states,
+            "live": sum(1 for v in states.values() if v == "live"),
+        }
 
     # ── Prometheus metrics ───────────────────────────────────────────
 
@@ -656,6 +678,40 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if slo:
                 lines.append(f"tg_gateway_deploy_to_first_message_seconds{{{labels}}} {slo:.2f}")
             lines.append(f"tg_gateway_send_paused{{{labels}}} {1 if s.send_paused else 0}")
+            lines.append(f"tg_gateway_session_reconnects_total{{{labels}}} {s.reconnects}")
+            lines.append(f"tg_gateway_session_start_attempts_total{{{labels}}} {s.start_attempts}")
+            lines.append(f"tg_gateway_session_terminal{{{labels}}} {1 if s.terminal_error else 0}")
+            lines.append(f"tg_gateway_idempotency_claims_total{{{labels}}} {s.idempotency_claims}")
+            lines.append(f"tg_gateway_persist_failures_total{{{labels}}} {s.persist_failures}")
+            if s.last_update_at:
+                lines.append(
+                    f"tg_gateway_seconds_since_last_update{{{labels}}} "
+                    f"{round(time.time() - s.last_update_at, 1)}"
+                )
+            if s.last_ping_ok_at:
+                lines.append(
+                    f"tg_gateway_seconds_since_ping_ok{{{labels}}} "
+                    f"{round(time.monotonic() - s.last_ping_ok_at, 1)}"
+                )
+        # plane-level gauges
+        health = getattr(request.app.state, "storage_health", None)
+        if health is not None:
+            lines.append(
+                f'tg_gateway_persist_failures_total{{plane="mt"}} {health.persist_failures}'
+            )
+            lines.append(f'tg_gateway_corrupt_rows_total{{plane="mt"}} {health.corrupt_rows}')
+            lines.append(
+                f'tg_gateway_quarantined_files_total{{plane="mt"}} {health.quarantined_files}'
+            )
+            lines.append(
+                f'tg_gateway_storage_degraded{{plane="mt"}} {1 if health.degraded_reason else 0}'
+            )
+        from .lock import LOCK_METRICS
+
+        lines.append(f'tg_gateway_lock_reclaims_total{{plane="mt"}} {LOCK_METRICS["reclaims"]}')
+        beat = getattr(request.app.state, "loop_beat", None)
+        if beat is not None:
+            lines.append(f'tg_gateway_loop_lag_seconds{{plane="mt"}} {round(beat.lag_s, 2)}')
         return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     return app
