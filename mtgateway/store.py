@@ -15,7 +15,12 @@ import time
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
 
-from gateway.dbhealth import StorageHealth, check_or_quarantine, pragma_statements
+from gateway.dbhealth import (
+    StorageHealth,
+    check_or_quarantine,
+    ensure_schema_async,
+    pragma_statements,
+)
 
 log = logging.getLogger("mtgateway.store")
 
@@ -113,6 +118,7 @@ class MTStore:
             await self.db.execute(stmt)
         await self.db.executescript(_SCHEMA)
         await self._migrate_idempotency()
+        await ensure_schema_async(self.db, 1, {}, self.path, self.backups_dir)
         await self.db.commit()
 
     async def _migrate_idempotency(self) -> None:
