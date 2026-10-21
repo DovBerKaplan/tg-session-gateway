@@ -75,6 +75,7 @@ class UpdateQueue:
         self._bot_alias = bot_alias
         self._durability = durability
         self._health = health
+        self._unloaded_backlog = 0  # rows beyond the reload cap (metric)
 
         if persist_path:
             self._init_db(persist_path)
@@ -155,6 +156,13 @@ class UpdateQueue:
                 (self._bot_alias, self._consumer_offset),
             )
             self._db.commit()
+            # backlog beyond the reload cap stays durable but invisible
+            # in memory — surface it instead of pretending it's loaded
+            total = self._db.execute(
+                "SELECT COUNT(*) FROM update_queue WHERE bot_alias = ? AND update_id > ?",
+                (self._bot_alias, self._consumer_offset),
+            ).fetchone()[0]
+            self._unloaded_backlog = max(0, total - len(rows))
 
             if rows:
                 log.info(
