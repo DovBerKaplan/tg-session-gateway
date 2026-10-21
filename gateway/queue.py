@@ -25,6 +25,8 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+from .dbhealth import StorageHealth, pragma_statements
+
 log = logging.getLogger("gateway.queue")
 
 
@@ -57,6 +59,8 @@ class UpdateQueue:
         ttl_s: float = 3600.0,
         persist_path: str | None = None,
         bot_alias: str = "",
+        durability: str = "normal",
+        health: StorageHealth | None = None,
     ):
         self.maxsize = maxsize
         self.overflow = overflow
@@ -69,6 +73,8 @@ class UpdateQueue:
         self.expired = 0
         self._db: sqlite3.Connection | None = None
         self._bot_alias = bot_alias
+        self._durability = durability
+        self._health = health
 
         if persist_path:
             self._init_db(persist_path)
@@ -77,10 +83,17 @@ class UpdateQueue:
 
     def _init_db(self, path: str) -> None:
         """Open SQLite WAL and create schema. Load unacked updates."""
+        from .dbhealth import check_or_quarantine
+
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        backups_dir = os.path.join(os.path.dirname(path) or ".", "backups")
+        check_or_quarantine(path, backups_dir, self._health)
         self._db = sqlite3.connect(path)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
+        for stmt in pragma_statements(self._durability):
+            try:
+                self._db.execute(stmt)
+            except sqlite3.Error:  # journal_mode returns a row; others are set-only
+                pass
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS update_queue (
@@ -122,7 +135,15 @@ class UpdateQueue:
             ).fetchall()
 
             for uid, ujson, _ts in rows:
-                update = json.loads(ujson)
+                try:
+                    update = json.loads(ujson)
+                except (ValueError, TypeError) as e:
+                    # one corrupt row must not skip the REST of the
+                    # backlog (the old blanket except did exactly that)
+                    if self._health:
+                        self._health.corrupt_rows += 1
+                    log.error("[%s] corrupt queue row %d skipped: %s", self._bot_alias, uid, e)
+                    continue
                 # Use wall-clock for reloaded items (monotonic resets on boot)
                 enqueued = time.monotonic() - (time.time() - _ts)
                 self._q.append(QueuedUpdate(uid, update, enqueued))
@@ -145,18 +166,22 @@ class UpdateQueue:
         except Exception as e:
             log.warning("[%s] failed to reload from SQLite: %s", self._bot_alias, e)
 
-    def _persist_push(self, uid: int, update: dict) -> None:
-        if not self._db:
+    def _persist_push_batch(self, rows: list[tuple[int, dict]]) -> None:
+        """One transaction per poll batch — a single commit instead of
+        one fsync per update (the loop-blocking amplification)."""
+        if not self._db or not rows:
             return
         try:
-            self._db.execute(
+            self._db.executemany(
                 "INSERT OR IGNORE INTO update_queue (bot_alias, update_id, update_json, enqueued_at) "
                 "VALUES (?, ?, ?, ?)",
-                (self._bot_alias, uid, json.dumps(update), time.time()),
+                [(self._bot_alias, uid, json.dumps(u), time.time()) for uid, u in rows],
             )
             self._db.commit()
-        except Exception as e:
-            log.warning("[%s] persist push failed for %d: %s", self._bot_alias, uid, e)
+        except sqlite3.Error as e:
+            log.warning("[%s] persist batch failed (%d updates): %s", self._bot_alias, len(rows), e)
+            if self._health:
+                self._health.note_persist_failure(f"queue.push:{self._bot_alias}", e)
 
     def _persist_ack(self, last_seen: int) -> None:
         if not self._db:
@@ -172,8 +197,10 @@ class UpdateQueue:
                 (self._bot_alias, last_seen),
             )
             self._db.commit()
-        except Exception as e:
+        except sqlite3.Error as e:
             log.warning("[%s] persist ack failed at %d: %s", self._bot_alias, last_seen, e)
+            if self._health:
+                self._health.note_persist_failure(f"queue.ack:{self._bot_alias}", e)
 
     def _persist_cleanup(self, cutoff_wall: float) -> None:
         """Remove TTL-expired entries from SQLite."""
@@ -202,17 +229,21 @@ class UpdateQueue:
 
     def push_all(self, updates: list[dict]) -> None:
         self._prune_expired()
+        persisted: list[tuple[int, dict]] = []
         for u in updates:
-            self._push(u)
+            r = self._push(u)
+            if r is not None:
+                persisted.append(r)
+        self._persist_push_batch(persisted)
 
-    def _push(self, update: dict) -> None:
+    def _push(self, update: dict) -> tuple[int, dict] | None:
         uid = update.get("update_id")
         if uid is None:
             uid = (self._q[-1].update_id + 1) if self._q else self._consumer_offset + 1
             update = dict(update)
             update["update_id"] = uid
         if uid in self._seen_ids:
-            return  # Telegram redelivered — already queued
+            return None  # Telegram redelivered — already queued
         if len(self._q) >= self.maxsize:
             if self.overflow == "reject_new":
                 raise Overflow()
@@ -221,8 +252,8 @@ class UpdateQueue:
             self.dropped += 1
         self._q.append(QueuedUpdate(uid, update, time.monotonic()))
         self._seen_ids.add(uid)
-        self._persist_push(uid, update)
         self._new_data.set()
+        return uid, update
 
     def _prune_expired(self) -> None:
         """Spec §12: queued update content is short-lived."""
@@ -245,6 +276,9 @@ class UpdateQueue:
         exactly as aiogram/PTB/grammY send it (Telegram Bot API docs).
         Everything strictly below offset is acknowledged and dropped."""
         if offset is not None:
+            # NOTE: kept on the loop on purpose — sqlite3 connections are
+            # thread-bound (check_same_thread), so to_thread would break
+            # every ack. The batch-commit change already bounds the cost.
             self.ack(offset - 1)
         deadline = time.monotonic() + timeout
         while True:

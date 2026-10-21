@@ -52,6 +52,17 @@ class PolicyConfig:
 
 
 @dataclass
+class StorageConfig:
+    """DB durability + maintenance knobs (gateway.dbhealth)."""
+
+    durability: str = _env("GW_DURABILITY", "normal")  # normal | full
+    maintenance_interval_s: float = _env_float("GW_MAINTENANCE_INTERVAL_S", 3600.0)
+    backup_interval_s: float = _env_float("GW_BACKUP_INTERVAL_S", 86400.0)
+    backup_keep: int = _env_int("GW_BACKUP_KEEP", 5)
+    audit_retention_days: int = _env_int("GW_AUDIT_RETENTION_DAYS", 30)
+
+
+@dataclass
 class Config:
     # network
     host: str = _env("GW_HOST", "0.0.0.0")
@@ -88,9 +99,11 @@ class Config:
     rate: RateConfig = field(default_factory=RateConfig)
     mtproto_rate: MTProtoRateConfig = field(default_factory=MTProtoRateConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
 
     def __post_init__(self):
         self.session_dir = os.path.join(self.data_dir, "sessions")
+        self.backups_dir = os.path.join(self.data_dir, "backups")
 
     def validate(self) -> None:
         missing = [
@@ -107,3 +120,5 @@ class Config:
             raise SystemExit(f"Missing required env: {', '.join(missing)}")
         if self.policy.on_limit not in ("queue", "reject"):
             raise SystemExit("GW_ON_LIMIT must be 'queue' or 'reject'")
+        if self.storage.durability not in ("normal", "full"):
+            raise SystemExit("GW_DURABILITY must be 'normal' or 'full'")
