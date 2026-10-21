@@ -142,6 +142,16 @@ class Store:
             log.error("cannot decrypt token for %s (wrong GW_FERNET_KEY?)", alias)
             return None
 
+    async def verify_tokens(self) -> list[str]:
+        """Boot probe: aliases whose stored token cannot be decrypted
+        with the current GW_FERNET_KEY. Used to surface as a silent
+        per-bot skip (get_token -> None); now it's loud."""
+        bad = []
+        for row in await self.list_bots():
+            if await self.get_token(row["alias"]) is None:
+                bad.append(row["alias"])
+        return bad
+
     # ── offsets (spec §6.1: survives gateway restart) ────────────────
 
     async def get_offset(self, alias: str) -> int:

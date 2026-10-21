@@ -16,6 +16,7 @@ from .admin import RegisterBot, SetPaid, SetPush, SetTyping
 from .config import Config
 from .dbhealth import StorageHealth, maintenance_loop
 from .loophealth import LoopBeat
+from .safemode import RestartTracker
 from .sessions import SessionManager
 from .store import Store
 
@@ -69,7 +70,30 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             ),
             name="gw-maintenance",
         )
-        restored = await mgr.restore_all()
+        # crash-loop guard: too many boots in the window → SAFE MODE
+        # (nothing auto-connects; admin must ack) — an overlapping
+        # connect storm is worse than staying down
+        tracker = RestartTracker(os.path.join(cfg.data_dir, "boot_history.json"))
+        safe_mode, boots = tracker.record_boot()
+        app.state.restart_tracker = tracker
+        app.state.safe_mode = safe_mode
+        if safe_mode:
+            log.critical(
+                "SAFE MODE: %d boots in the last %ds — sessions stay on disk, "
+                "nothing auto-connects. Ack via POST /admin/safe_mode/ack.",
+                boots,
+                int(tracker.window_s),
+            )
+            restored = 0
+        else:
+            restored = await mgr.restore_all()
+        bad_tokens = await store.verify_tokens()
+        if bad_tokens:
+            log.critical(
+                "GW_FERNET_KEY cannot decrypt tokens for: %s "
+                "(wrong key? those bots will not start)",
+                ", ".join(bad_tokens),
+            )
         log.info("gateway up — restored %d bot session(s)", restored)
         yield
         maint_task.cancel()
@@ -108,6 +132,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         health = getattr(request.app.state, "storage_health", None)
         if health is not None and health.degraded_reason:
             return JSONResponse({"ok": False, "storage": health.snapshot()}, status_code=503)
+        if getattr(request.app.state, "safe_mode", False):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "safe_mode": True,
+                    "description": "crash-loop safe mode — ack via POST /admin/safe_mode/ack",
+                },
+                status_code=503,
+            )
         mgr = request.app.state.mgr
         states = {a: s.state.value for a, s in mgr.sessions.items()}
         return {
@@ -411,6 +444,20 @@ def build_admin_router_lazy(cfg: Config):
             ", ".join(f"{k}={v}" for k, v in body.model_dump(exclude_unset=True).items()),
         )
         return {"ok": True, "settings": settings}
+
+    @router.post("/admin/safe_mode/ack")
+    async def safe_mode_ack(request: Request):
+        """Leave crash-loop safe mode: clear the boot history and
+        restore all sessions now."""
+        if not _authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        tracker = getattr(request.app.state, "restart_tracker", None)
+        if tracker is not None:
+            tracker.clear()
+        request.app.state.safe_mode = False
+        restored = await request.app.state.mgr.restore_all()
+        await request.app.state.store.audit("safe_mode_ack", "global", f"restored={restored}")
+        return {"ok": True, "safe_mode": False, "restored": restored}
 
     @router.get("/admin/audit")
     async def audit_log(request: Request):
