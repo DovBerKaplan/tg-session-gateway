@@ -40,6 +40,7 @@ from pydantic import BaseModel
 
 from gateway.dbhealth import StorageHealth, maintenance_loop
 from gateway.loophealth import LoopBeat
+from gateway.safemode import RestartTracker
 
 from . import __version__
 from .config import Config
@@ -130,7 +131,23 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             ),
             name="mt-maintenance",
         )
-        restored = await mgr.restore_all()
+        tracker = RestartTracker(os.path.join(cfg.data_dir, "boot_history.json"))
+        safe_mode, boots = tracker.record_boot()
+        app.state.restart_tracker = tracker
+        app.state.safe_mode = safe_mode
+        if safe_mode:
+            log.critical(
+                "SAFE MODE: %d boots in the last %ds — sessions stay on disk, "
+                "nothing auto-connects. Ack via POST /v1/admin/safe-mode/ack.",
+                boots,
+                int(tracker.window_s),
+            )
+            restored = 0
+        else:
+            restored = await mgr.restore_all()
+        bad_tokens = await store.verify_tokens()
+        if bad_tokens:
+            log.critical("GW_FERNET_KEY cannot decrypt tokens for: %s", ", ".join(bad_tokens))
         log.info("MTProto gateway up — restored %d session(s)", restored)
         yield
         for t in (state_task, maint_task):
@@ -558,6 +575,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await request.app.state.store.audit("restart", alias)
         return {"ok": ok}
 
+    @app.post("/v1/admin/safe-mode/ack")
+    async def admin_safe_mode_ack(request: Request):
+        """Leave crash-loop safe mode: clear boot history, restore now."""
+        if not _admin_authed(request):
+            return JSONResponse({"ok": False, "error_code": 401}, status_code=401)
+        tracker = getattr(request.app.state, "restart_tracker", None)
+        if tracker is not None:
+            tracker.clear()
+        request.app.state.safe_mode = False
+        restored = await request.app.state.mgr.restore_all()
+        await request.app.state.store.audit("safe_mode_ack", "global", f"restored={restored}")
+        return {"ok": True, "safe_mode": False, "restored": restored}
+
     @app.get("/v1/admin/sessions/{alias}/deadletters")
     async def admin_list_dead_letters(alias: str, request: Request):
         """Inspect poison updates (unserializable payloads captured
@@ -648,6 +678,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         health = getattr(request.app.state, "storage_health", None)
         if health is not None and health.degraded_reason:
             return JSONResponse({"ok": False, "storage": health.snapshot()}, status_code=503)
+        if getattr(request.app.state, "safe_mode", False):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "safe_mode": True,
+                    "description": "crash-loop safe mode — ack via POST /v1/admin/safe-mode/ack",
+                },
+                status_code=503,
+            )
         mgr = request.app.state.mgr
         states = {a: s.state.value for a, s in mgr.sessions.items()}
         return {

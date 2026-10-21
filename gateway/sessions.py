@@ -213,7 +213,8 @@ class SessionManager:
     async def restore_all(self) -> int:
         """Gateway restart: rebuild sessions from the store (spec §9.2)."""
         n = 0
-        for row in await self.store.list_bots():
+        rows = await self.store.list_bots()
+        for row in rows:
             token = await self.store.get_token(row["alias"])
             if not token:
                 continue
@@ -221,6 +222,12 @@ class SessionManager:
             if row["paused"]:
                 s.state = State.paused
             n += 1
+            # stagger poller starts — a big restore used to open every
+            # long-poll in the same instant (thundering herd on boot)
+            if row is not rows[-1]:
+                from .rateguard import jittered
+
+                await asyncio.sleep(jittered(0.25, cap_extra=0.5))
         return n
 
     async def shutdown(self) -> None:

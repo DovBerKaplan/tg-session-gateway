@@ -12,7 +12,9 @@ services:
     labels:
       tg.gateway: "true"
       tg.gateway.type: "mtproto"
+      autoheal: "true"           # docker-autoheal restarts unhealthy (docker itself never does)
     restart: unless-stopped
+    stop_grace_period: 30s       # drain in-flight + snapshot state + release locks
     environment:
       GW_ADMIN_SECRET: ${GW_ADMIN_SECRET:?set in .env}
       GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}

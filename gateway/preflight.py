@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 _GENKEY_HINT = (
     "Generate one outside the container:\n"
@@ -49,3 +50,24 @@ def preflight(fernet_key: str | None, data_dir: str) -> None:
             "container-local storage silently loses them on restart.\n"
             "Set GW_ALLOW_EPHEMERAL_DATA=1 to run anyway (throwaway demos only)."
         )
+    # free space: a full disk turns every persist into silent data loss
+    min_free_gb = float(os.environ.get("GW_MIN_FREE_GB", "1"))
+    try:
+        import shutil
+
+        free_gb = shutil.disk_usage(data_dir).free / 1024**3
+        if free_gb < min_free_gb:
+            sys.exit(
+                f"less than {min_free_gb}GB free on {data_dir} "
+                f"({free_gb:.2f}GB) — set GW_MIN_FREE_GB to override"
+            )
+    except OSError as e:
+        sys.exit(f"cannot stat {data_dir}: {e}")
+    # writability probe: catches read-only mounts BEFORE boot
+    probe = os.path.join(data_dir, ".preflight-probe")
+    try:
+        with open(probe, "w") as f:
+            f.write(str(time.time()))
+        os.unlink(probe)
+    except OSError as e:
+        sys.exit(f"{data_dir} is not writable ({e}) — check the mount")
