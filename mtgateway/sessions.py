@@ -6,6 +6,14 @@ so importBotAuthorization is called exactly once per token's lifetime.
 
 Update routing: Pyrogram's handler callbacks push updates into the
 internal queue; consumers (applications) pull or subscribe via WS.
+
+Lifecycle: one supervisor task per session owns it for life — initial
+start, disconnect reconnects, retryable failures with exponential
+backoff, auth-flood wait-outs, and terminal quarantine (revoked keys
+never re-burn). The supervisor is the ONLY path that starts a client,
+and it reuses a lock this process already holds (a reconnect never
+fights its own lock — the pre-supervisor bug where a disconnect
+permanently dropped the session).
 """
 
 from __future__ import annotations
@@ -24,11 +32,41 @@ from pyrogram import Client as PyrogramClient
 from pyrogram.handlers import RawUpdateHandler
 
 from .config import Config
-from .lock import SessionLock
+from .lock import FileLockAdapter, RedisSessionLease
 from .rateguard import MTRateGuard
 from .store import MTStore
 
 log = logging.getLogger("mtgateway.sessions")
+
+# Errors that mean the session itself is dead/revoked/duplicated.
+# Retrying any of these only makes Telegram burn the session harder —
+# quarantine and demand admin action instead.
+_TERMINAL_MARKERS = (
+    "AUTH_KEY_DUPLICATED",
+    "AUTH_KEY_INVALID",
+    "AuthKeyUnregistered",
+    "AuthKeyInvalid",
+    "SessionDuplicated",
+    "SESSION_REVOKED",
+    "SessionRevoked",
+    "ACCESS_TOKEN_EXPIRED",
+    "ACCESS_TOKEN_INVALID",
+    "UNAUTHORIZED",
+)
+
+
+def classify_start_error(e: Exception) -> str:
+    """Bucket a start/connect failure: 'flood' (wait it out), 'terminal'
+    (quarantine — the session is revoked/duplicated), 'retry' (transient
+    network/generic — exponential backoff)."""
+    from .rateguard import parse_flood_wait
+
+    if parse_flood_wait(e):
+        return "flood"
+    msg = str(e)
+    if any(m in msg for m in _TERMINAL_MARKERS):
+        return "terminal"
+    return "retry"
 
 
 class SessionState(str, Enum):
@@ -62,6 +100,14 @@ class MTSession:
     synthetic_429: int = 0
     last_flood_wait: dict = field(default_factory=dict)
 
+    # supervisor state (the manager's _supervise task owns the lifecycle)
+    start_task: asyncio.Task | None = None
+    terminal_error: bool = False  # quarantined — admin action required
+    next_retry_at: float = 0.0  # monotonic gate for the next attempt
+    _stop_supervisor: bool = False
+    reconnects: int = 0
+    start_attempts: int = 0
+
     # Update routing: in-memory queue + optional WS consumers
     _update_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=5000))
     _consumers: list = field(default_factory=list)
@@ -69,7 +115,7 @@ class MTSession:
 
     # Rolling update: track which consumer is active
     active_consumer: str | None = None
-    lock: SessionLock | None = None  # singleton enforcement (R7)
+    lock: FileLockAdapter | RedisSessionLease | None = None  # singleton enforcement (R7)
 
     _session_dir: str = "/data/sessions"  # overridden by manager
 
@@ -198,6 +244,9 @@ class MTSession:
             "last_flood_wait": self.last_flood_wait or None,
             "last_error": self.last_error[:200],
             "send_paused": self.send_paused,
+            "terminal_error": self.terminal_error,
+            "reconnects": self.reconnects,
+            "start_attempts": self.start_attempts,
             "deploy_to_first_message_s": round(self.deploy_to_first_message_s, 2)
             if self.deploy_to_first_message_s
             else None,
@@ -220,51 +269,136 @@ class MTSessionManager:
         return s
 
     async def register(self, alias: str, token: str) -> MTSession:
-        """Register a bot session and start its Pyrogram client."""
+        """Register a bot session; its supervisor starts the client."""
         if alias in self.sessions:
             existing = self.sessions[alias]
-            if existing.token == token:
+            if existing.token == token and existing.start_task and not existing.start_task.done():
                 return existing
-            # Token rotated: tear down old, start new
+            # Token rotated (or supervisor dead): tear down old, start new
             await self.unregister(alias)
 
         await self.store.register(alias, token)
         s = self._create_session(alias, token)
         self.sessions[alias] = s
 
-        # Start the Pyrogram client asynchronously
-        asyncio.create_task(self._start_with_retries(s), name=f"mt-start-{alias}")
+        s.start_task = asyncio.create_task(self._supervise(s), name=f"mt-sup-{alias}")
+        s.start_task.add_done_callback(self._supervisor_done_cb(alias))
         return s
 
-    async def _start_client(self, s: MTSession) -> None:
-        """One-shot start: lock, connect, or fail (used by reconnects)."""
-        s.state = SessionState.connecting
-        os.makedirs(self.cfg.session_dir, mode=0o700, exist_ok=True)
-        if not await self._acquire_lock_for(s):
-            s.state = SessionState.error
-            s.last_error = (
-                f"session lock refused: another process holds '{s.alias}'. "
-                "A second connection would trigger AUTH_KEY_DUPLICATED."
-            )
-            log.error("[%s] refusing to start — lock held by another process", s.alias)
-            self.sessions.pop(s.alias, None)
-            return
+    @staticmethod
+    def _supervisor_done_cb(alias: str):
+        def _cb(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                log.error("[%s] supervisor task crashed: %s", alias, exc)
+
+        return _cb
+
+    # ── the supervisor — owns one session for life ───────────────────
+
+    async def _supervise(self, s: MTSession) -> None:
+        """Initial start, reconnects, retries, quarantine — the ONLY
+        path that starts a client.
+
+        - reuses a lock this process already holds (reconnects never
+          fight their own lock)
+        - flood → sleep out the quoted window; retryable → exponential
+          backoff (capped); terminal (revoked/duplicated key) →
+          quarantine and exit
+        - lock refused by a foreign holder → error + cooldown retry
+          (the session stays registered and visible)
+        """
+        from .rateguard import jittered, parse_flood_wait
+
+        backoff = 1.0
         try:
-            await self._start_client_inner(s)
-        except Exception as e:
+            while not s._stop_supervisor and not s.terminal_error:
+                if s.state in (SessionState.paused, SessionState.draining):
+                    await asyncio.sleep(2.0)
+                    continue
+                if s.client is not None and s.client.is_connected and s.state == SessionState.live:
+                    await asyncio.sleep(5.0)  # healthy — watch for disconnects
+                    continue
+                if time.monotonic() < s.next_retry_at:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                if not (s.lock is not None and s.lock.held):
+                    acquired = await self._acquire_lock_for(s)
+                    if not acquired:
+                        s.state = SessionState.error
+                        s.next_retry_at = time.monotonic() + 60.0  # don't hammer the holder
+                        continue
+
+                was_live = s.connected_since > 0.0
+                s.state = SessionState.connecting
+                s.start_attempts += 1
+                try:
+                    await self._start_client_inner(s)
+                    backoff = 1.0
+                    if was_live:
+                        s.reconnects += 1
+                        log.info("[%s] reconnected", s.alias)
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    kind = classify_start_error(e)
+                    if kind == "terminal":
+                        s.state = SessionState.error
+                        s.terminal_error = True
+                        s.last_error = f"terminal (quarantined): {e}"
+                        log.critical(
+                            "[%s] session quarantined — key revoked/duplicated, "
+                            "admin action required: %s",
+                            s.alias,
+                            e,
+                        )
+                        continue
+                    if kind == "flood":
+                        flood = parse_flood_wait(e) or {}
+                        wait = jittered(float(flood.get("wait", 60.0)) + 60.0)
+                        s.state = SessionState.connecting
+                        s.last_error = f"auth flood: retrying in {int(wait)}s"
+                        log.warning(
+                            "[%s] auth flood on start — sleeping %ds before retry",
+                            s.alias,
+                            int(wait),
+                        )
+                        s.next_retry_at = time.monotonic() + wait
+                        continue
+                    # retryable (network/generic): exponential backoff
+                    s.state = SessionState.error
+                    s.last_error = f"start failed (retry in {int(backoff)}s): {e}"
+                    log.warning("[%s] start failed (retry in %.0fs): %s", s.alias, backoff, e)
+                    s.next_retry_at = time.monotonic() + backoff
+                    backoff = min(backoff * 2, 300.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # supervisor bug or broken client — park visibly
             s.state = SessionState.error
-            s.last_error = str(e)
-            log.error("[%s] failed to start: %s", s.alias, e)
+            s.last_error = f"supervisor crashed: {e}"
+            log.error("[%s] supervisor crashed (session parked in error state): %s", s.alias, e)
 
     async def _start_client_inner(self, s: MTSession) -> None:
         """Connect a Pyrogram client with persistent session file.
 
         Assumes the singleton lock is already held (AUTH_KEY_DUPLICATED
-        prevention, R7). Raises on failure — callers decide whether to
-        retry (auth floods) or give up.
+        prevention, R7). Raises on failure — the supervisor classifies
+        and decides what happens next.
         """
         s.state = SessionState.connecting
         try:
+            # Best-effort cleanup of a disconnected previous client
+            old = s.client
+            if old is not None:
+                try:
+                    await old.stop()
+                except Exception:
+                    pass
+
             client = PyrogramClient(
                 name=s.session_file,  # .session appended by Pyrogram
                 api_id=self.cfg.api_id,
@@ -328,59 +462,14 @@ class MTSessionManager:
                     "[%s] replayed %d unacked updates (seq→%d)", s.alias, len(backlog), max_seq
                 )
 
-            # Keep the client running (idle in a task)
-            asyncio.create_task(self._keep_alive(s), name=f"mt-idle-{s.alias}")
-
             # Start lock heartbeat (proves we're alive for stale detection)
             if s.lock:
                 await s.lock.start_heartbeat()
 
         except Exception:
-            # release the lock for this attempt; the retry wrapper re-acquires
-            if s.lock:
-                s.lock.release()
-                s.lock = None
+            # release the lock for this attempt; the supervisor re-acquires
+            await self._release_lock(s)
             raise
-
-    async def _start_with_retries(self, s: MTSession, max_attempts: int = 8) -> None:
-        """Start a session; on an auth FLOOD_WAIT, wait it out and retry.
-
-        Manual poking at auth floods makes them worse (every failed
-        ImportBotAuthorization can refresh the penalty). The gateway
-        owns the discipline instead: parse the required wait from
-        Telegram's answer, sleep it out plus a margin, try again —
-        with capped attempts so a permanent failure cannot spin.
-        """
-        from .rateguard import parse_flood_wait
-
-        for attempt in range(1, max_attempts + 1):
-            lock_ok = s.lock is not None or await self._acquire_lock_for(s)
-            if not lock_ok:
-                return  # refused: another owner — already logged
-            try:
-                await self._start_client_inner(s)
-                return  # live (or refused permanently — inner logged it)
-            except Exception as e:
-                flood = parse_flood_wait(e)
-                if not flood or attempt == max_attempts:
-                    s.state = SessionState.error
-                    s.last_error = str(e)
-                    log.error("[%s] start failed for good (attempt %d): %s", s.alias, attempt, e)
-                    return
-                # margin over the quoted window + jitter (charter: never below
-                # the quoted wait; stagger so instances don't retry in lockstep)
-                from .rateguard import jittered
-
-                wait = jittered(float(flood["wait"]) + 60.0)
-                s.state = SessionState.connecting
-                s.last_error = f"auth flood: retrying in {int(wait)}s (attempt {attempt})"
-                log.warning(
-                    "[%s] auth flood on start (attempt %d) — sleeping %ds before retry",
-                    s.alias,
-                    attempt,
-                    int(wait),
-                )
-                await asyncio.sleep(wait)
 
     async def _acquire_lock_for(self, s: MTSession) -> bool:
         from .lock import make_lock
@@ -392,10 +481,26 @@ class MTSessionManager:
             redis_url=getattr(self.cfg, "redis_url", "") or None,
         )
         if not await lock.acquire():
-            self.sessions.pop(s.alias, None)
+            # The session STAYS registered — the operator must see it.
+            # (Popping here used to make every lock refusal permanent.)
+            s.last_error = (
+                f"session lock refused: another process holds '{s.alias}'. "
+                "A second connection would trigger AUTH_KEY_DUPLICATED."
+            )
+            log.error("[%s] refusing to start — lock held by another process", s.alias)
             return False
         s.lock = lock
         return True
+
+    async def _release_lock(self, s: MTSession) -> None:
+        """Release the session lock with the backend's async surface."""
+        lock, s.lock = s.lock, None
+        if lock is None:
+            return
+        try:
+            await lock.release()
+        except Exception as e:
+            log.warning("[%s] lock release failed: %s", s.alias, e)
 
     def _make_update_handler(self, s: MTSession):
         """Create a Pyrogram update handler that routes to the session."""
@@ -431,23 +536,11 @@ class MTSessionManager:
         except Exception:
             return None
 
-    async def _keep_alive(self, s: MTSession) -> None:
-        """Keep the Pyrogram client running; detect disconnects."""
-        try:
-            while s.client and s.client.is_connected:
-                await asyncio.sleep(5)
-            # Client disconnected
-            if s.state == SessionState.live:
-                log.warning("[%s] disconnected from Telegram, reconnecting", s.alias)
-                s.state = SessionState.connecting
-                from .rateguard import jittered
-
-                await asyncio.sleep(jittered(1.0, cap_extra=1.0))
-                await self._start_client(s)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            log.error("[%s] keep_alive error: %s", s.alias, e)
+    async def _stop_supervisor_task(self, s: MTSession) -> None:
+        s._stop_supervisor = True
+        if s.start_task is not None and not s.start_task.done():
+            s.start_task.cancel()
+            await asyncio.gather(s.start_task, return_exceptions=True)
 
     async def unregister(self, alias: str) -> bool:
         """Stop a session and remove it. Releases the singleton lock."""
@@ -455,17 +548,13 @@ class MTSessionManager:
         if not s:
             return False
         s.state = SessionState.draining
+        await self._stop_supervisor_task(s)
         if s.client:
             try:
                 await s.client.stop()
             except Exception:
                 pass
-        if s.lock:
-            if isinstance(s.lock, SessionLock):
-                s.lock.release()
-            else:
-                await s.lock.release()
-            s.lock = None
+        await self._release_lock(s)
         await self.store.delete(alias)
         return True
 
@@ -510,8 +599,25 @@ class MTSessionManager:
         await asyncio.sleep(2)
         return True
 
+    async def restart_session(self, alias: str) -> bool:
+        """Escalation rung 1: reconnect one session (not the process).
+        Clears quarantine only for non-terminal errors; terminal ones
+        still require unregister + re-auth."""
+        s = self.sessions.get(alias)
+        if not s:
+            return False
+        if s.terminal_error:
+            return False  # revoked key — a restart cannot fix it
+        s.next_retry_at = 0.0  # supervisor reconnects on its next beat
+        return True
+
     async def restore_all(self) -> int:
         """Gateway restart: restore all sessions from the store."""
+        from .lock import sweep_lock_dir
+
+        removed = sweep_lock_dir(self.cfg.session_dir)
+        if removed:
+            log.info("boot janitor: removed %d stale lock(s)", removed)
         count = 0
         for row in await self.store.list_sessions():
             token = await self.store.get_token(row["alias"])
@@ -524,17 +630,16 @@ class MTSessionManager:
         return count
 
     async def shutdown(self) -> None:
-        """Graceful shutdown: stop all clients, release all locks."""
+        """Graceful shutdown: stop supervisors and clients, release locks."""
         for alias, s in list(self.sessions.items()):
             s.state = SessionState.draining
+            await self._stop_supervisor_task(s)
             if s.client:
                 try:
                     await s.client.stop()
                 except Exception:
                     pass
-            if s.lock:
-                s.lock.release()
-                s.lock = None
+            await self._release_lock(s)
         log.info("all MTProto sessions shut down (locks released)")
 
     def get(self, alias: str) -> MTSession | None:

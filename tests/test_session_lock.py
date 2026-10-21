@@ -101,7 +101,6 @@ class TestLockInSessionManager:
     async def test_session_with_lock_refused(self):
         """R7: Second sidecar on the same session fails at the lock,
         never reaches Telegram."""
-        from unittest.mock import AsyncMock
 
         from mtgateway.config import Config
         from mtgateway.sessions import MTSessionManager
@@ -125,16 +124,23 @@ class TestLockInSessionManager:
             other_lock.acquire()
 
             mgr = MTSessionManager(cfg, store)
-            with __import__("unittest").mock.patch.object(
-                MTSessionManager, "_start_client", new=AsyncMock()
-            ):
-                # _start_client is mocked, but the lock check is inside it
-                # so we test it directly
-                s = mgr._create_session("bot1", "t")
-                lock = SessionLock(alias="bot1", lock_dir=cfg.session_dir)
-                assert lock.acquire() is False  # refused!
+            # The supervisor hits the foreign lock: error + cooldown —
+            # but the session STAYS registered and visible (the old
+            # code popped it, making every refusal permanent).
+            import asyncio
+
+            await mgr.register("bot1", "t")
+            await asyncio.sleep(0.1)
+            s_in_mgr = mgr.sessions.get("bot1")
+            assert s_in_mgr is not None, "lock refusal must not drop the session"
+            assert s_in_mgr.state.value == "error"
+            assert "lock" in s_in_mgr.last_error
+            # a direct second acquire is still refused
+            lock = SessionLock(alias="bot1", lock_dir=cfg.session_dir)
+            assert lock.acquire() is False  # refused!
 
             other_lock.release()
+            await mgr.shutdown()
             await store.close()
 
 

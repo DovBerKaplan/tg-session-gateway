@@ -185,24 +185,25 @@ class TestSidecarLifecycle:
             )
             assert r.status_code == 200  # accepted for start...
 
-            await asyncio.sleep(0.3)  # let _start_client run and refuse
+            await asyncio.sleep(0.3)  # let the supervisor hit the lock and refuse
             # ...but the client NEVER reached Telegram
             assert fake_pyrogram.start_calls == 0
-            # refused sessions are removed, not left half-alive: the
-            # API answers 404 and the ONLY trace is the refusal log line
+            # refused sessions STAY registered and visible (error state,
+            # retry cooldown) — sends answer 503, never 404: the operator
+            # must see the problem instead of the session vanishing
             r = await c.post(
                 "/v1/sessions/b1/send_message",
                 json={"chat_id": 10, "text": "x"},
                 headers=APP,
             )
-            assert r.status_code == 404
+            assert r.status_code == 503
+            r = await c.get("/v1/admin/status", headers=ADM)
+            assert r.json()["sessions"][0]["state"] == "error"
 
-            # holder gone → next registration succeeds
+            # holder gone → explicit restart (clears the cooldown) recovers
             os.unlink(os.path.join(cfg.session_dir, "b1.lock"))
-            r = await c.post(
-                "/v1/admin/sessions", json={"alias": "b1", "token": TOKEN}, headers=ADM
-            )
-            assert r.status_code == 200
+            r = await c.post("/v1/admin/sessions/b1/restart", headers=ADM)
+            assert r.status_code == 200 and r.json()["ok"] is True
             await wait_for(lambda: fake_pyrogram.start_calls == 1, what="retry start()")
 
     async def test_pause_sending_blocks_writes_allows_updates(self, fake_pyrogram, tmp_path):

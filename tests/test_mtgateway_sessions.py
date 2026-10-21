@@ -3,7 +3,7 @@
 import json
 import tempfile
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from mtgateway.config import Config
 from mtgateway.sessions import (
@@ -23,6 +23,23 @@ def _cfg(tmpdir):
         api_hash="test_hash",
         data_dir=tmpdir,
     )
+
+
+class _FakeLiveClient:
+    """Stands in for a connected Pyrogram client — the supervisor's
+    healthy watch then leaves the session alone (no Telegram)."""
+
+    is_connected = True
+
+    async def stop(self):
+        pass
+
+
+async def _fake_start_inner(s):
+    """Test seam replacing _start_client_inner: session goes live."""
+    s.client = _FakeLiveClient()
+    s.state = SessionState.live
+    s.connected_since = time.time()
 
 
 class TestSessionStates:
@@ -136,10 +153,11 @@ class TestManagerLifecycle:
             await store.connect()
             mgr = MTSessionManager(cfg, store)
             # Mock the Pyrogram client start to avoid actual connection
-            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_client_inner", new=_fake_start_inner):
                 s = await mgr.register("bot1", "123:abc")
                 assert s.alias == "bot1"
                 assert "bot1" in mgr.sessions
+                await mgr.shutdown()
                 await store.close()
 
     async def test_unregister_removes_session(self):
@@ -148,7 +166,7 @@ class TestManagerLifecycle:
             store = MTStore(d)
             await store.connect()
             mgr = MTSessionManager(cfg, store)
-            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_client_inner", new=_fake_start_inner):
                 await mgr.register("bot1", "t")
                 assert await mgr.unregister("bot1") is True
                 assert "bot1" not in mgr.sessions
@@ -161,12 +179,13 @@ class TestManagerLifecycle:
             store = MTStore(d)
             await store.connect()
             mgr = MTSessionManager(cfg, store)
-            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_client_inner", new=_fake_start_inner):
                 s = await mgr.register("bot1", "t")
                 assert await mgr.pause("bot1") is True
                 assert s.state == SessionState.paused
                 assert await mgr.resume("bot1") is True
                 assert s.state == SessionState.live
+                await mgr.shutdown()
                 await store.close()
 
 
@@ -215,7 +234,7 @@ class TestPauseSending:
             store = MTStore(d)
             await store.connect()
             mgr = MTSessionManager(cfg, store)
-            with patch.object(MTSessionManager, "_start_with_retries", new=AsyncMock()):
+            with patch.object(MTSessionManager, "_start_client_inner", new=_fake_start_inner):
                 s = await mgr.register("bot1", "t")
                 assert s.send_paused is False
                 assert await mgr.pause_sending("bot1") is True
@@ -225,6 +244,7 @@ class TestPauseSending:
                 assert s._update_queue.qsize() == 1
                 assert await mgr.resume_sending("bot1") is True
                 assert s.send_paused is False
+                await mgr.shutdown()
                 await store.close()
 
 
