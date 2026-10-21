@@ -101,12 +101,13 @@ class BotSession:
 
 
 class SessionManager:
-    def __init__(self, cfg: Config, store: Store, client: httpx.AsyncClient):
+    def __init__(self, cfg: Config, store: Store, client: httpx.AsyncClient, health=None):
         self.cfg = cfg
         self.store = store
         self.client = client
         self.sessions: dict[str, BotSession] = {}
         self.typing = TypingManager(cfg, client)
+        self.health = health  # gateway.dbhealth.StorageHealth | None
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -129,16 +130,39 @@ class SessionManager:
                 ttl_s=self.cfg.policy.update_ttl_s,
                 persist_path=os.path.join(self.cfg.data_dir, "queue.db"),
                 bot_alias=alias,
+                durability=getattr(self.cfg.storage, "durability", "normal"),
+                health=self.health,
             ),
             guard=BotRateGuard(self.cfg.rate, self.cfg.policy.on_limit),
             on_limit=on_limit,
             paid_broadcasts=paid_broadcasts,
         )
         s.guard.paid_enabled = paid_broadcasts
+        await self._restore_backoffs(s)
         self.sessions[alias] = s
         await self.store.register_bot(alias, token)
         s.task = asyncio.create_task(self._poller(s), name=f"poll-{alias}")
         return s
+
+    async def _restore_backoffs(self, s: BotSession) -> None:
+        """Re-arm FLOOD_WAIT pauses that outlived a restart (the guard
+        is in-memory; the ledger makes the pause durable)."""
+        rows = await self.store.load_backoffs(s.alias)
+        now = time.time()
+        for chat_id, until in rows:
+            s.guard.report_429(chat_id if chat_id != 0 else None, until - now)
+        if rows:
+            log.info("[%s] restored %d backoff pause(s) from ledger", s.alias, len(rows))
+
+    def record_backoff(self, s: BotSession, chat_id: int | None, retry_after: float) -> None:
+        """Persist a chat/egress pause so a restart mid-FLOOD_WAIT does
+        not resume hammering Telegram."""
+        until = time.time() + retry_after
+        try:
+            task = asyncio.create_task(self.store.save_backoff(s.alias, chat_id, until))
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        except Exception as e:  # ledger is best-effort
+            log.warning("record_backoff failed: %s", e)
 
     async def pause(self, alias: str) -> bool:
         s = self.sessions.get(alias)
@@ -272,6 +296,7 @@ class SessionManager:
                     if retry:
                         s.real_429 += 1
                         s.guard.report_429(None, float(retry))
+                        self.record_backoff(s, None, float(retry))
                         from .rateguard import jittered
 
                         await asyncio.sleep(jittered(float(retry) + 1.0))

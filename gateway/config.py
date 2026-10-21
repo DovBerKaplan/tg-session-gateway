@@ -58,6 +58,24 @@ class BotPolicy:
     paid_broadcasts_enabled: bool = _env_bool("GW_PAID_BROADCASTS", False)
 
 
+@dataclass
+class StorageConfig:
+    """DB durability + maintenance knobs (dbhealth).
+
+    - durability: NORMAL survives kill -9 (process death) but not
+      machine power loss; FULL fsyncs and survives both, slower.
+    - maintenance runs hourly: integrity_check, WAL checkpoint, audit
+      retention; backups (rotating, encrypted for session files) at
+      most once per backup_interval_s.
+    """
+
+    durability: str = _env("GW_DURABILITY", "normal")  # normal | full
+    maintenance_interval_s: float = _env_float("GW_MAINTENANCE_INTERVAL_S", 3600.0)
+    backup_interval_s: float = _env_float("GW_BACKUP_INTERVAL_S", 86400.0)
+    backup_keep: int = _env_int("GW_BACKUP_KEEP", 5)
+    audit_retention_days: int = _env_int("GW_AUDIT_RETENTION_DAYS", 30)
+
+
 DEFAULT_TYPING_TIMEOUT_TEXT = (
     "⚠️ Sorry, this bot is temporarily unavailable due to a problem "
     "on the provider side. Please try again later."
@@ -106,6 +124,11 @@ class Config:
     rate: RateConfig = field(default_factory=RateConfig)
     policy: BotPolicy = field(default_factory=BotPolicy)
     typing: TypingConfig = field(default_factory=TypingConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+
+    @property
+    def backups_dir(self) -> str:
+        return os.path.join(self.data_dir, "backups")
 
     def validate(self) -> None:
         missing = [
@@ -117,3 +140,5 @@ class Config:
             raise SystemExit(f"Missing required env: {', '.join(missing)}")
         if self.policy.on_limit not in ("queue", "reject"):
             raise SystemExit("GW_ON_LIMIT must be 'queue' or 'reject'")
+        if self.storage.durability not in ("normal", "full"):
+            raise SystemExit("GW_DURABILITY must be 'normal' or 'full'")

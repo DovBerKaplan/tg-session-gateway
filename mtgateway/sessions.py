@@ -126,6 +126,8 @@ class MTSession:
     # E2: Idempotency — app-supplied keys prevent duplicate sends
     _seen_idempotency_keys: dict[str, float] = field(default_factory=dict)  # fast-path cache
     _store: MTStore | None = None  # injected by the manager
+    _health = None  # gateway.dbhealth.StorageHealth | None — injected by the manager
+    persist_failures: int = 0  # write-through failures (readyz degrades)
 
     if TYPE_CHECKING:
         from .store import MTStore
@@ -188,14 +190,26 @@ class MTSession:
         survive kill -9 and replay after restart (chaos-soak proven).
         Pull consumers ack on delivery (queue_ack); WS push stays
         at-least-once (replayed after restart until a pull acks them).
+
+        A persistence failure (disk full, DB locked) is COUNTED and
+        degrades /readyz — it must never be a silent `except: pass`
+        (the in-memory queue would die with the process).
         """
         self._next_update_seq += 1
         update["_gw_seq"] = self._next_update_seq
-        try:
-            if self._store is not None:
+        if self._store is not None:
+            try:
                 await self._store.queue_push(self.alias, update["_gw_seq"], json.dumps(update))
-        except Exception:
-            pass  # memory path still works; persistence is best-effort
+            except Exception as e:
+                self.persist_failures += 1
+                log.error(
+                    "[%s] update persistence FAILED (update lives in memory only, "
+                    "lost on restart): %s",
+                    self.alias,
+                    e,
+                )
+                if self._health is not None:
+                    self._health.note_persist_failure(f"queue.push:{self.alias}", e)
         try:
             self._update_queue.put_nowait(update)
         except asyncio.QueueFull:
@@ -247,6 +261,7 @@ class MTSession:
             "terminal_error": self.terminal_error,
             "reconnects": self.reconnects,
             "start_attempts": self.start_attempts,
+            "persist_failures": self.persist_failures,
             "deploy_to_first_message_s": round(self.deploy_to_first_message_s, 2)
             if self.deploy_to_first_message_s
             else None,
@@ -256,15 +271,17 @@ class MTSession:
 class MTSessionManager:
     """Manages the lifecycle of all Pyrogram sessions in this gateway."""
 
-    def __init__(self, cfg: Config, store: MTStore):
+    def __init__(self, cfg: Config, store: MTStore, health=None):
         self.cfg = cfg
         self.store = store
         self.sessions: dict[str, MTSession] = {}
+        self.health = health  # gateway.dbhealth.StorageHealth | None
 
     def _create_session(self, alias: str, token: str) -> MTSession:
         s = MTSession(alias=alias, token=token)
         s._session_dir = self.cfg.session_dir
         s._store = self.store
+        s._health = getattr(self, "health", None)
         s.guard = MTRateGuard(self.cfg.rate, self.cfg.mtproto_rate)
         return s
 
@@ -610,6 +627,25 @@ class MTSessionManager:
             return False  # revoked key — a restart cannot fix it
         s.next_retry_at = 0.0  # supervisor reconnects on its next beat
         return True
+
+    async def persist_states(self) -> None:
+        """Best-effort pts/qts/date/seq snapshot into the store — the
+        columns existed but were never written; a restart can now
+        report the real Telegram update state instead of zeros."""
+        for s in self.sessions.values():
+            if s.state != SessionState.live or s.client is None:
+                continue
+            sess = getattr(s.client, "session", None)
+            pts = int(getattr(sess, "pts", 0) or 0)
+            qts = int(getattr(sess, "qts", 0) or 0)
+            date = int(getattr(sess, "date", 0) or 0)
+            seq = int(getattr(sess, "seq", 0) or 0)
+            if not (pts or qts or date or seq):
+                continue  # don't zero out previously saved state
+            try:
+                await self.store.save_state(s.alias, pts, qts, date, seq)
+            except Exception as e:
+                log.warning("[%s] state snapshot failed: %s", s.alias, e)
 
     async def restore_all(self) -> int:
         """Gateway restart: restore all sessions from the store."""

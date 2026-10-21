@@ -155,6 +155,7 @@ class Proxy:
             except Exception:
                 retry = 5.0
             s.guard.report_429(chat_id, retry)
+            self.mgr.record_backoff(s, chat_id, retry)  # durable across restarts
             s.last_429 = {
                 "method": method,
                 "chat_id": chat_id,
@@ -210,6 +211,7 @@ class Proxy:
             except Exception:
                 retry = 5.0
             s.guard.report_429(chat_id, retry)
+            self.mgr.record_backoff(s, chat_id, retry)  # durable across restarts
             s.last_429 = {
                 "method": method,
                 "chat_id": chat_id,

@@ -15,6 +15,8 @@ import time
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
 
+from gateway.dbhealth import StorageHealth, check_or_quarantine, pragma_statements
+
 log = logging.getLogger("mtgateway.store")
 
 _SCHEMA = """
@@ -57,11 +59,21 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 class MTStore:
     """SQLite-backed persistence for MTProto session state."""
 
-    def __init__(self, data_dir: str, fernet_key: str | None = None):
+    def __init__(
+        self,
+        data_dir: str,
+        fernet_key: str | None = None,
+        durability: str = "normal",
+        backups_dir: str | None = None,
+        health: StorageHealth | None = None,
+    ):
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, "sessions"), exist_ok=True)
         self.path = os.path.join(data_dir, "mtgateway.db")
+        self.durability = durability
+        self.backups_dir = backups_dir
+        self.health = health
         self._db: aiosqlite.Connection | None = None
         self._fernet = self._load_fernet(fernet_key)
 
@@ -83,10 +95,13 @@ class MTStore:
         return Fernet(generated)
 
     async def connect(self) -> None:
+        # boot gate: quarantine a corrupt DB (restore newest backup if
+        # any) — the process stays alive instead of crash-looping
+        check_or_quarantine(self.path, self.backups_dir, self.health)
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA journal_mode=WAL")
-        await self.db.execute("PRAGMA foreign_keys=ON")
+        for stmt in pragma_statements(self.durability, foreign_keys=True):
+            await self.db.execute(stmt)
         await self.db.executescript(_SCHEMA)
         await self.db.commit()
 
