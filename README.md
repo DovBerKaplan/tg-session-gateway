@@ -26,14 +26,14 @@ FloodWait backoff, and a crash-safe update queue.
 ```bash
 # one-time: the token-encryption key. The image refuses to invent
 # secrets inside the container (they'd die with it) — postgres, not nginx
-docker run --rm dovberkaplan/tg-session-gateway:0.0.4 genkey
+docker run --rm dovberkaplan/tg-session-gateway:0.0.5 genkey
 
 docker run -d --name tggw -p 8080:8080 \
   -e GW_ADMIN_SECRET=$(openssl rand -hex 16) \
   -e GW_APP_SECRET=$(openssl rand -hex 16) \
-  -e GW_FERNET_KEY=$(docker run --rm dovberkaplan/tg-session-gateway:0.0.4 genkey) \
+  -e GW_FERNET_KEY=$(docker run --rm dovberkaplan/tg-session-gateway:0.0.5 genkey) \
   -v tggw-data:/data \
-  dovberkaplan/tg-session-gateway:0.0.4
+  dovberkaplan/tg-session-gateway:0.0.5
 # then the ONLY change in your bot:
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
@@ -307,7 +307,7 @@ command; GHCR is the source of truth with identical tags. Pin the
 version — `latest` moves only on stable releases, never pre-releases:
 
 ```bash
-docker pull dovberkaplan/tg-session-gateway:0.0.4              # Bot API gateway
+docker pull dovberkaplan/tg-session-gateway:0.0.5              # Bot API gateway
 docker pull dovberkaplan/tg-session-gateway-mtproto:0.0.4      # MTProto sidecar
 # same tags on ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}
 ```
