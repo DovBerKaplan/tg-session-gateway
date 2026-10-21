@@ -49,9 +49,18 @@ CREATE TABLE IF NOT EXISTS admin_audit (
     detail   TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS idempotency_keys (
-    key      TEXT PRIMARY KEY,
     alias    TEXT NOT NULL,
-    seen_at  REAL NOT NULL
+    key      TEXT NOT NULL,
+    state    TEXT NOT NULL DEFAULT 'pending',  -- pending | done
+    seen_at  REAL NOT NULL,
+    PRIMARY KEY (alias, key)
+);
+CREATE TABLE IF NOT EXISTS dead_letters (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias   TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    reason  TEXT NOT NULL,
+    at      REAL NOT NULL
 );
 """
 
@@ -103,7 +112,39 @@ class MTStore:
         for stmt in pragma_statements(self.durability, foreign_keys=True):
             await self.db.execute(stmt)
         await self.db.executescript(_SCHEMA)
+        await self._migrate_idempotency()
         await self.db.commit()
+
+    async def _migrate_idempotency(self) -> None:
+        """v1 had `key` as the lone PK — the same key on two bots
+        collided. v2: (alias, key) PK + pending/done state. Old rows
+        migrate as 'done' (the v1 read-side treated recorded = replay).
+        One-time, idempotent."""
+        cur = await self.db.execute("PRAGMA table_info(idempotency_keys)")
+        cols = [r[1] for r in await cur.fetchall()]
+        if not cols or "state" in cols:
+            return
+        log.warning("migrating idempotency_keys to (alias,key) PK + state")
+        await self.db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS idempotency_keys_v2 (
+                alias    TEXT NOT NULL,
+                key      TEXT NOT NULL,
+                state    TEXT NOT NULL DEFAULT 'pending',
+                seen_at  REAL NOT NULL,
+                PRIMARY KEY (alias, key)
+            );
+            """
+        )
+        try:
+            await self.db.execute(
+                "INSERT OR IGNORE INTO idempotency_keys_v2 (alias, key, state, seen_at) "
+                "SELECT alias, key, 'done', seen_at FROM idempotency_keys"
+            )
+        except Exception as e:  # v1 table may be empty/absent shapes
+            log.warning("idempotency migration copy skipped: %s", e)
+        await self.db.execute("DROP TABLE IF EXISTS idempotency_keys")
+        await self.db.execute("ALTER TABLE idempotency_keys_v2 RENAME TO idempotency_keys")
 
     async def close(self) -> None:
         if self._db:
@@ -214,19 +255,73 @@ class MTStore:
     # ── idempotency (E2: survives kill -9 — duplicate sends must not) ──
 
     IDEMPOTENCY_TTL_S = 300.0
+    STALE_PENDING_S = 60.0  # a claim older than this died mid-send
+
+    async def idempotency_claim(self, alias: str, key: str) -> str:
+        """Atomically claim an idempotency key.
+
+        - 'claimed'  — new key, proceed with the send
+        - 'reclaimed' — a previous attempt died mid-send (stale pending);
+                       retry is ALLOWED, not suppressed
+        - 'replay'   — a completed send with this key exists; suppress
+        """
+        now = time.time()
+        # expired rows must not block a fresh claim (TTL semantics)
+        await self.db.execute(
+            "DELETE FROM idempotency_keys WHERE alias = ? AND key = ? AND seen_at < ?",
+            (alias, key, now - self.IDEMPOTENCY_TTL_S),
+        )
+        cur = await self.db.execute(
+            "INSERT INTO idempotency_keys (alias, key, state, seen_at) "
+            "VALUES (?, ?, 'pending', ?) ON CONFLICT(alias, key) DO NOTHING",
+            (alias, key, now),
+        )
+        await self.db.commit()
+        if cur.rowcount == 1:
+            return "claimed"
+        # a stale pending claim (crashed attempt) is reclaimable — the
+        # UPDATE's WHERE clause makes the reclaim itself atomic
+        cur = await self.db.execute(
+            "UPDATE idempotency_keys SET seen_at = ? "
+            "WHERE alias = ? AND key = ? AND state = 'pending' AND seen_at < ?",
+            (now, alias, key, now - self.STALE_PENDING_S),
+        )
+        await self.db.commit()
+        return "reclaimed" if cur.rowcount == 1 else "replay"
+
+    async def idempotency_finish(self, alias: str, key: str) -> None:
+        """The send completed — this key now suppresses retries."""
+        await self.db.execute(
+            "UPDATE idempotency_keys SET state = 'done', seen_at = ? WHERE alias = ? AND key = ?",
+            (time.time(), alias, key),
+        )
+        await self.db.commit()
+
+    async def idempotency_fail(self, alias: str, key: str) -> None:
+        """The send FAILED — release the key so a retry is not
+        suppressed (the old code recorded before sending and then
+        swallowed every retry)."""
+        await self.db.execute(
+            "DELETE FROM idempotency_keys WHERE alias = ? AND key = ? AND state = 'pending'",
+            (alias, key),
+        )
+        await self.db.commit()
 
     async def idempotency_seen(self, alias: str, key: str) -> bool:
-        """True when the key was already recorded (a replayed send)."""
+        """True when a DONE key is active (a replayed send)."""
         row = await self.db.execute_fetchall(
-            "SELECT 1 FROM idempotency_keys WHERE key = ? AND seen_at > ?",
-            (key, time.time() - self.IDEMPOTENCY_TTL_S),
+            "SELECT 1 FROM idempotency_keys "
+            "WHERE alias = ? AND key = ? AND state = 'done' AND seen_at > ?",
+            (alias, key, time.time() - self.IDEMPOTENCY_TTL_S),
         )
         return bool(row)
 
     async def idempotency_record(self, alias: str, key: str) -> None:
+        """Legacy shim: record-and-suppress (v1 semantics)."""
         await self.db.execute(
-            "INSERT OR REPLACE INTO idempotency_keys (key, alias, seen_at) VALUES (?, ?, ?)",
-            (key, alias, time.time()),
+            "INSERT INTO idempotency_keys (alias, key, state, seen_at) VALUES (?, ?, 'done', ?) "
+            "ON CONFLICT(alias, key) DO UPDATE SET state = 'done', seen_at = excluded.seen_at",
+            (alias, key, time.time()),
         )
         await self.db.commit()
 
@@ -236,6 +331,44 @@ class MTStore:
             (time.time() - self.IDEMPOTENCY_TTL_S,),
         )
         await self.db.commit()
+
+    # ── dead letters (poison updates) ────────────────────────────────
+
+    async def dead_letter(self, alias: str, payload: str, reason: str) -> None:
+        """Capture an unprocessable update instead of dropping it into
+        the void; admin can inspect (and clear) via the API."""
+        try:
+            await self.db.execute(
+                "INSERT INTO dead_letters (alias, payload, reason, at) VALUES (?, ?, ?, ?)",
+                (alias, payload, reason, time.time()),
+            )
+            await self.db.commit()
+        except Exception as e:  # DLQ is best-effort
+            log.error("dead-letter write failed: %s", e)
+
+    async def list_dead_letters(self, alias: str, limit: int = 100) -> list[dict]:
+        async with self.db.execute(
+            "SELECT id, payload, reason, at FROM dead_letters WHERE alias = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (alias, limit),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def clear_dead_letters(self, alias: str) -> int:
+        cur = await self.db.execute("DELETE FROM dead_letters WHERE alias = ?", (alias,))
+        await self.db.commit()
+        return cur.rowcount
+
+    # ── queue TTL ────────────────────────────────────────────────────
+
+    async def queue_ttl_cleanup(self, alias: str, cutoff: float) -> int:
+        """Drop persisted updates older than the TTL (spec §12: queued
+        update content is short-lived)."""
+        cur = await self.db.execute(
+            "DELETE FROM update_queue WHERE alias = ? AND enqueued_at < ?", (alias, cutoff)
+        )
+        await self.db.commit()
+        return cur.rowcount
 
     # ── admin audit trail (append-only) ───────────────────────────────
 

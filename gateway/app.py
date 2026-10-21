@@ -147,6 +147,7 @@ def build_router_from_state(cfg: Config):
     async def _call_route(request: Request, s, method: str):
         proxy = Proxy(cfg, request.app.state.mgr, request.app.state.client)
         ctype = request.headers.get("content-type", "application/json")
+        idem_key = request.headers.get("idempotency-key") or None
         if ctype.startswith("multipart/"):
             raw = await request.body()  # media uploads — verbatim
             return await proxy.call(s, method, raw, ctype)
@@ -163,8 +164,8 @@ def build_router_from_state(cfg: Config):
                     parsed[k] = val == "true"
                 else:
                     parsed[k] = val
-            return await proxy.call(s, method, parsed)
-        return await proxy.call(s, method, await _json_body(request))
+            return await proxy.call(s, method, parsed, idem_key=idem_key)
+        return await proxy.call(s, method, await _json_body(request), idem_key=idem_key)
 
     @router.post("/tgapi/bot{token}/{method}")
     async def tgapi(token: str, method: str, request: Request):
