@@ -66,6 +66,7 @@ class SessionLock:
     _fd: int | None = None
     _lock_path: str = ""
     _heartbeat_task: asyncio.Task[None] | None = None
+    token: int | None = None  # fencing token (monotonic per acquisition)
 
     @property
     def path(self) -> str:
@@ -108,14 +109,37 @@ class SessionLock:
         try:
             self._fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(self._fd, f"{os.getpid()}\n{HOSTNAME}\n{BOOT_ID}\n{time.time()}\n".encode())
+            self.token = self._next_fencing_token()
             log.info(
-                "[%s] session lock acquired (pid=%d host=%s)", self.alias, os.getpid(), HOSTNAME
+                "[%s] session lock acquired (pid=%d host=%s fence=%d)",
+                self.alias,
+                os.getpid(),
+                HOSTNAME,
+                self.token,
             )
             atexit.register(self._cleanup)
             return True
         except FileExistsError:
             log.error("[%s] LOCK REFUSED: race lost acquiring lock", self.alias)
             return False
+
+    def _next_fencing_token(self) -> int:
+        """Monotonic counter file — a late write from a thawed zombie
+        carries a stale token and is detectable downstream. Single-host
+        semantics (the same assumption the file lock itself makes)."""
+        counter = os.path.join(self.lock_dir, ".fence_counter")
+        n = 1
+        try:
+            with open(counter) as f:
+                n = int(f.read().strip() or "0") + 1
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(counter, "w") as f:
+                f.write(str(n))
+        except OSError:
+            pass  # best-effort; the lock itself already succeeded
+        return n
 
     def release(self) -> None:
         """Release the lock. Safe to call multiple times.
@@ -379,5 +403,5 @@ class FileLockAdapter:
         return self._lock.held
 
     @property
-    def token(self) -> None:
-        return None  # file backend has no fencing token (single-host)
+    def token(self) -> int | None:
+        return self._lock.token  # monotonic file counter (single-host)

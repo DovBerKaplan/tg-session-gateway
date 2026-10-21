@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adherence to [Semantic Versioning](https://semver.org/).
 
+## [0.0.5] — 2026-10-21
+
+Full hardening pass over both planes (the verified external review +
+an internal 30-item audit), in six committed phases:
+
+### Added
+- Session supervisor (mtgateway): one task per session owns it for
+  life — reconnects reuse the session's OWN lock (the old reconnect
+  path fought it and permanently dropped the session), retryable
+  failures back off exponentially, auth floods are slept out, and
+  revoked/duplicated keys quarantine instead of burning the session.
+- DB durability kit (gateway/dbhealth.py): PRAGMAs everywhere
+  (busy_timeout, GW_DURABILITY, wal_autocheckpoint), boot quarantine
+  + newest-backup restore for corrupt DBs, visible persistence
+  failures (StorageHealth degrades /readyz), rotating VACUUM INTO
+  backups + Fernet-encrypted .session backups, hourly maintenance
+  (integrity_check, WAL truncate, audit retention).
+- FLOOD_WAIT backoff ledger: chat pauses survive restarts.
+- mtgateway getUpdates offset mode (opt-in, Bot API semantics —
+  delivery never acks); atomic per-(alias,key) idempotency with
+  pending/done (a failed send releases its key); dead-letter capture
+  for poison updates with admin inspect/clear; GW_UPDATE_QUEUE_MAX /
+  GW_UPDATE_TTL_S finally wired; pts/qts state snapshots.
+- Idempotency-Key header on Bot API writes (spec E2).
+- Liveness vs readiness: /healthz proves the event loop ticks
+  (LoopBeat), /readyz adds a storage write probe + session picture;
+  active get_me pings catch half-open TCP; dead-man switch metric.
+- Metrics pack + monitoring/alerts.yml (12 rules) + docs/alerting.md
+  runbook; pip-audit unsilenced in CI.
+- Crash-loop safe mode (boot-rate tracker, admin ack), verified
+  safe-restart scripts (fail unless all sessions return live),
+  autoheal labels + watchdog in install.sh, stop_grace_period 30s,
+  harder preflight (disk space, write probe), boot-time Fernet token
+  verification, staggered restores.
+- Schema versioning (PRAGMA user_version) + migration runner with
+  pre-migration backups; monotonic file-backend fencing tokens
+  (audited at session start); docs/runbook.md (failure → commands).
+
+### Fixed
+- See phases 0-2 for the full bug list (lock self-refusal, un-awaited
+  releases, redis TTL in seconds-vs-ms, ack-on-delivery data loss,
+  idempotency races, silent persistence failures, the lone-key
+  idempotency PK collision between bots).
+
 ## [0.0.4] — 2026-10-09
 
 First consumer-facing behavior on top of the hardened core: the gateway

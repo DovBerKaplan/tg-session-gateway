@@ -15,7 +15,7 @@ import time
 import aiosqlite
 from cryptography.fernet import Fernet, InvalidToken
 
-from .dbhealth import StorageHealth, check_or_quarantine, pragma_statements
+from .dbhealth import StorageHealth, check_or_quarantine, ensure_schema_async, pragma_statements
 
 log = logging.getLogger("gateway.store")
 
@@ -94,6 +94,7 @@ class Store:
         for stmt in pragma_statements(self.durability):
             await self.db.execute(stmt)
         await self.db.executescript(_SCHEMA)
+        await ensure_schema_async(self.db, 1, {}, self.path, self.backups_dir)
         await self.db.commit()
 
     async def close(self) -> None:

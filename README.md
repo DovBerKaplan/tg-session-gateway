@@ -198,7 +198,8 @@ POST /v1/sessions/{alias}/getUpdates
 
 ## Invariants
 
-Design rules the code enforces — with the tests that prove them
+Design rules the code enforces — with the tests that prove them.
+When they break anyway: [runbook](docs/runbook.md) · [alerting](docs/alerting.md) · [alert rules](monitoring/alerts.yml)
 (0.0.x honesty: proven where a test is linked, aspirational elsewhere):
 
 - **One owner per token.** The gateway runs the only `getUpdates`

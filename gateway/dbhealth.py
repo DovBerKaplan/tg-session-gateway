@@ -163,6 +163,68 @@ def _restore_newest_backup(path: str, backups_dir: str | None) -> bool:
     return False
 
 
+# ── schema versioning / migrations ──────────────────────────────────
+
+
+def ensure_schema(
+    conn, current_version: int, migrations: dict, db_path: str, backups_dir: str | None = None
+) -> None:
+    """Tiny migration runner: PRAGMA user_version based.
+
+    - version 0 on an EXISTING db = pre-versioning install → adopt as
+      current (all historical changes were additive CREATE IF NOT EXISTS)
+    - version < current → snapshot the file first (backup_db), then
+      apply migrations[v] for each missing v in order, then bump
+    - future column changes ride `migrations`; no silent breakage
+    `conn` is the LIVE connection (sqlite3 or aiosqlite — call from the
+    right context; this function is sync for sqlite3, wrap in to_thread
+    for aiosqlite callers).
+    """
+    row = conn.execute("PRAGMA user_version").fetchone()
+    have = row[0] if row else 0
+    if have == 0 and os.path.exists(db_path):
+        conn.execute(f"PRAGMA user_version = {current_version}")
+        conn.commit()
+        return
+    if have >= current_version:
+        return
+    if backups_dir and os.path.exists(db_path):
+        backup_db(db_path, backups_dir)  # snapshot BEFORE migrating
+    for version in sorted(migrations):
+        if have < version <= current_version:
+            log.info("applying schema migration v%d to %s", version, db_path)
+            conn.executescript(migrations[version])
+            have = version
+    conn.execute(f"PRAGMA user_version = {current_version}")
+    conn.commit()
+
+
+async def ensure_schema_async(
+    db, current_version: int, migrations: dict, db_path: str, backups_dir: str | None = None
+) -> None:
+    """ensure_schema for aiosqlite connections (same rules; the sync
+    variant must never touch an aiosqlite connection — its cursor API
+    is coroutine-based and thread-bound)."""
+    cur = await db.execute("PRAGMA user_version")
+    row = await cur.fetchone()
+    have = row[0] if row else 0
+    if have == 0 and os.path.exists(db_path):
+        await db.execute(f"PRAGMA user_version = {current_version}")
+        await db.commit()
+        return
+    if have >= current_version:
+        return
+    if backups_dir and os.path.exists(db_path):
+        backup_db(db_path, backups_dir)  # snapshot BEFORE migrating
+    for version in sorted(migrations):
+        if have < version <= current_version:
+            log.info("applying schema migration v%d to %s", version, db_path)
+            await db.executescript(migrations[version])
+            have = version
+    await db.execute(f"PRAGMA user_version = {current_version}")
+    await db.commit()
+
+
 # ── backups ─────────────────────────────────────────────────────────
 
 

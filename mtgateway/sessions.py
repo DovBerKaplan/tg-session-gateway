@@ -581,6 +581,7 @@ class MTSessionManager:
             log.error("[%s] refusing to start — lock held by another process", s.alias)
             return False
         s.lock = lock
+        log.info("[%s] lock fence token = %s", s.alias, lock.token)
         return True
 
     async def _release_lock(self, s: MTSession) -> None:
