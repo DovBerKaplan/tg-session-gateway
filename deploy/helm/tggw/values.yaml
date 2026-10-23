@@ -74,12 +74,29 @@ networkPolicy:
   # ingress: API port only from namespaces labeled as gateway clients
   ingressNamespaceLabel:
     tg-gateway.io/client: "true"
-  # egress: DNS + Telegram DCs only (api.telegram.org resolves inside
-  # 149.154.160.0/20). Everything else is denied.
+  # egress: DNS + the FULL official Telegram CIDR list
+  # (core.telegram.org/resources/cidr.txt — DC5 lives in 91.108.56.0/22;
+  # the old two-range default silently blocked it). IPv6 included.
   telegramCIDRs:
     - 149.154.160.0/20
+    - 91.105.192.0/23
     - 91.108.4.0/22
+    - 91.108.8.0/22
+    - 91.108.12.0/22
+    - 91.108.16.0/22
+    - 91.108.20.0/22
+    - 91.108.56.0/22
+    - 185.76.151.0/24
+    - 2001:67c:4e8::/48
+    - 2001:b28:f23c::/48
+    - 2001:b28:f23d::/48
+    - 2001:b28:f23f::/48
+    - 2a0a:f280::/32
   dnsPort: 53
+  # push mode POSTs updates to the consumer's push_url — allow egress
+  # to namespaces labeled as gateway clients (any port: consumer
+  # services vary). Set false if you never use push mode.
+  pushEgress: true
 
 podDisruptionBudget:
   enabled: true

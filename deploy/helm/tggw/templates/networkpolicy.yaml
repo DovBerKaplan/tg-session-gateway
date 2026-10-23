@@ -64,4 +64,12 @@ spec:
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
+    {{- if .Values.networkPolicy.pushEgress }}
+    # push mode: deliver updates to the consumer's HTTP endpoint —
+    # namespaces labeled as gateway clients (see ingress label)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressNamespaceLabel | nindent 14 }}
+    {{- end }}
 {{- end }}

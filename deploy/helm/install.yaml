@@ -16,6 +16,7 @@
 #      (the NetworkPolicy denies everything else)
 ---
 ---
+---
 # Source: tggw/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -92,7 +93,37 @@ spec:
         - ipBlock:
             cidr: 149.154.160.0/20
         - ipBlock:
+            cidr: 91.105.192.0/23
+        - ipBlock:
             cidr: 91.108.4.0/22
+        - ipBlock:
+            cidr: 91.108.8.0/22
+        - ipBlock:
+            cidr: 91.108.12.0/22
+        - ipBlock:
+            cidr: 91.108.16.0/22
+        - ipBlock:
+            cidr: 91.108.20.0/22
+        - ipBlock:
+            cidr: 91.108.56.0/22
+        - ipBlock:
+            cidr: 185.76.151.0/24
+        - ipBlock:
+            cidr: 2001:67c:4e8::/48
+        - ipBlock:
+            cidr: 2001:b28:f23c::/48
+        - ipBlock:
+            cidr: 2001:b28:f23d::/48
+        - ipBlock:
+            cidr: 2001:b28:f23f::/48
+        - ipBlock:
+            cidr: 2a0a:f280::/32
+    # push mode: deliver updates to the consumer's HTTP endpoint —
+    # namespaces labeled as gateway clients (see ingress label)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              tg-gateway.io/client: "true"
 ---
 # Source: tggw/templates/quota.yaml
 apiVersion: v1
@@ -188,17 +219,16 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     helm.sh/chart: tggw-0.1.0
   annotations:
-    # helm-resource-policy would also work; keep it explicit instead:
-    # this Secret must survive `helm uninstall` mistakes during ops.
-    description: "tggw secrets — GW_FERNET_KEY rotation loses stored tokens"
+    # survives `helm uninstall` — deleting this Secret would make every
+    # stored bot token undecryptable (GW_FERNET_KEY rotation is fatal)
+    helm.sh/resource-policy: keep
 type: Opaque
 stringData:
   GW_ADMIN_SECRET: "REPLACE_WITH_RANDOM_32_CHARS"
   GW_APP_SECRET: "REPLACE_WITH_RANDOM_32_CHARS"
   GW_FERNET_KEY: "REPLACE_WITH_FERNET_KEY_from_tggw_genkey"
   GW_API_ID: "12345"
-  GW_API_HASH: "REPLACE_WITH_TELEGRAM_API_HASH"
----
+  GW_API_HASH: "REPLACE_WITH_TELEGRAM_API_HASH"---
 # Source: tggw/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -333,7 +363,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: botapi
-          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0-go
+          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0
           imagePullPolicy: IfNotPresent
           args: ["botapi"]
           ports:
@@ -450,7 +480,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mtproto
-          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0-go
+          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0
           imagePullPolicy: IfNotPresent
           args: ["mtproto"]
           ports:

@@ -6,7 +6,7 @@ description: |
   no Redis, no Postgres, no operator.
 type: application
 version: 0.1.0
-appVersion: "0.1.0-go"
+appVersion: "0.1.0"
 maintainers:
   - name: DovBerKaplan
 home: https://github.com/DovBerKaplan/tg-session-gateway

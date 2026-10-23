@@ -20,7 +20,31 @@ kubectl label --overwrite ns tg-gateway pod-security.kubernetes.io/enforce=restr
 `GW_ADMIN_SECRET`/`GW_APP_SECRET` are generated once by the chart and
 reused on every upgrade (helm `lookup`). `GW_FERNET_KEY` is **never**
 generated: rotating it makes every stored bot token undecryptable, so
-you provide it explicitly (or bring a `existingSecret`).
+you provide it explicitly.
+
+> **Prefer `existingSecret` in shared/production clusters**: any value
+> passed via `--set secrets.fernetKey` is stored in Helm's release
+> history (release Secret in the namespace). The chart's Secret carries
+> `helm.sh/resource-policy: keep`, so it survives `helm uninstall` —
+> deleting it manually is fatal to stored tokens.
+
+## PDB: maxUnavailable 0 means the operator must be present
+
+The default PodDisruptionBudget blocks ALL voluntary evictions: a
+`kubectl drain` waits forever (until `--timeout`), and managed node
+upgrades (GKE/EKS auto-upgrades) stall or force-kill after their
+grace. That is deliberate — a mid-traffic eviction risks duplicate
+sends and, on the MTProto plane, AUTH_KEY_DUPLICATED — but know the
+levers:
+
+```sh
+# allow the drain to proceed past the PDB
+kubectl drain <node> --disable-eviction --ignore-daemonsets
+
+# or flip the default off for auto-upgrading clusters
+helm upgrade tggw deploy/helm/tggw -n tg-gateway --reuse-values \
+  --set podDisruptionBudget.enabled=false
+```
 
 No Helm? `deploy/helm/install.yaml` is the same chart rendered flat —
 replace the placeholder secrets in it and `kubectl apply -f`.
