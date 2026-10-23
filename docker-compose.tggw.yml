@@ -1,0 +1,78 @@
+# The Go binary (tggw) — same lifecycle contract as docker-compose.yml,
+# one image for both planes. Non-K8s users are unaffected by the Go
+# rewrite: the GW_* env contract and /data layout are identical.
+name: tg-gateway-go
+
+services:
+  botapi:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tggw
+    image: tggw:latest
+    container_name: tg-gateway-botapi
+    command: ["botapi"]
+    labels:
+      tg.gateway: "true"
+      autoheal: "true"
+    restart: unless-stopped
+    stop_grace_period: 30s # drain in-flight + flush offsets + release locks
+    healthcheck:
+      test: ["CMD", "/tggw", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      GW_ADMIN_SECRET: ${GW_ADMIN_SECRET:?set in .env}
+      GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}
+      GW_FERNET_KEY: ${GW_FERNET_KEY:?set in .env}
+      GW_ON_LIMIT: ${GW_ON_LIMIT:-queue}
+    volumes:
+      - tg-gateway-data:/data
+    networks:
+      - tg-gateway-net
+    ports:
+      - "127.0.0.1:8080:8080" # admin/API on loopback only (spec §5.1)
+
+  mtproto:
+    image: tggw:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tggw
+    container_name: tg-gateway-mtproto
+    command: ["mtproto"]
+    profiles: ["mtproto"] # opt-in, like the Helm values
+    labels:
+      tg.gateway: "true"
+      autoheal: "true"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/tggw", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      GW_ADMIN_SECRET: ${GW_ADMIN_SECRET:?set in .env}
+      GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}
+      GW_FERNET_KEY: ${GW_FERNET_KEY:?set in .env}
+      GW_API_ID: ${GW_API_ID:?set in .env}
+      GW_API_HASH: ${GW_API_HASH:?set in .env}
+    volumes:
+      - tg-gateway-mt-data:/data
+    networks:
+      - tg-gateway-net
+    ports:
+      - "127.0.0.1:8081:8080"
+
+networks:
+  tg-gateway-net:
+    name: tg-gateway-net
+    external: true # created once by deploy/install.sh; consumers JOIN it
+
+volumes:
+  tg-gateway-data:
+    name: tg-gateway-data
+  tg-gateway-mt-data:
+    name: tg-gateway-mt-data

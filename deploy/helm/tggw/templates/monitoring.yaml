@@ -1,0 +1,66 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+{{- else }}
+{{- fail "monitoring.serviceMonitor.enabled=true but the ServiceMonitor CRD is not installed in the cluster" }}
+{{- end }}
+{{- end }}
+---
+{{- if .Values.monitoring.prometheusRule.enabled }}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: tggw
+      rules:
+        - alert: TgGatewaySessionDown
+          expr: max by (alias) (tg_gateway_session_state) == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "gateway session {{`{{ $labels.alias }}`}} is not live"
+        - alert: TgGatewayLoopWedged
+          expr: tg_gateway_loop_lag_seconds > 5
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "gateway event loop wedged ({{`{{ $labels.plane }}`}} plane)"
+        - alert: TgGatewayStorageDegraded
+          expr: tg_gateway_storage_degraded == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "gateway storage degraded ({{`{{ $labels.plane }}`}} plane)"
+        - alert: TgGatewayRealFloodWait
+          expr: increase(tg_gateway_real_flood_wait_total[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "Telegram FLOOD_WAIT hit ({{`{{ $labels.alias }}`}})"
+{{- else }}
+{{- fail "monitoring.prometheusRule.enabled=true but the PrometheusRule CRD is not installed in the cluster" }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    tggw/component: botapi
+---
+{{- if .Values.mtproto.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-mtproto
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    tggw/component: mtproto
+{{- end }}

@@ -1,0 +1,67 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  # default-deny for every pod the chart owns
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  # the API answers ONLY labeled client namespaces — an unlabeled pod in
+  # the same cluster cannot reach bot tokens
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressNamespaceLabel | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  # egress: cluster DNS + Telegram DC CIDRs only. api.telegram.org
+  # resolves inside 149.154.160.0/20; MTProto DCs live in the same
+  # ranges — nothing else is needed, so nothing else is allowed.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: {{ .Values.networkPolicy.dnsPort }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.dnsPort }}
+    - to:
+        {{- range .Values.networkPolicy.telegramCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+{{- end }}

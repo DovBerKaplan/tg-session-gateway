@@ -1,0 +1,21 @@
+# tggw — single static Go binary for both planes (botapi / mtproto).
+# Stage 1 builds with the official Go toolchain; stage 2 is distroless
+# static (no shell, no package manager, ~15MB) with a non-root user.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go/go.mod go/go.sum ./
+RUN go mod download
+COPY go/ .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tggw ./cmd/tggw
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/tggw /tggw
+USER nonroot:nonroot
+VOLUME /data
+EXPOSE 8080
+ENTRYPOINT ["/tggw"]
+
+# container healthcheck without a shell:
+#   docker:   --health-cmd '/tggw healthcheck'
+#   compose:  healthcheck: ["CMD", "/tggw", "healthcheck"]
+# (Kubernetes uses HTTP probes on /healthz and /readyz directly.)

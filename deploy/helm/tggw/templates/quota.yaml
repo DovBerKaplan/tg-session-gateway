@@ -1,0 +1,36 @@
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.resourceQuota.requests.cpu | quote }}
+    requests.memory: {{ .Values.resourceQuota.requests.memory | quote }}
+    limits.cpu: {{ .Values.resourceQuota.limits.cpu | quote }}
+    limits.memory: {{ .Values.resourceQuota.limits.memory | quote }}
+    # the namespace holds exactly the gateway — nothing else may squat here
+    pods: {{ add (ternary 1 0 .Values.botapi.enabled) (ternary 1 0 .Values.mtproto.enabled) | quote }}
+{{- end }}
+---
+{{- if .Values.limitRange }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: {{ .Values.limitRange.defaultRequest.cpu | quote }}
+        memory: {{ .Values.limitRange.defaultRequest.memory | quote }}
+      default:
+        cpu: {{ .Values.limitRange.default.cpu | quote }}
+        memory: {{ .Values.limitRange.default.memory | quote }}
+{{- end }}

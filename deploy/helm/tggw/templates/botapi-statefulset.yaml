@@ -1,0 +1,108 @@
+{{- if .Values.botapi.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-botapi
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.componentLabels" (set . "component" "botapi") | nindent 4 }}
+spec:
+  # replicas is pinned to 1 by product invariant: a second live replica
+  # sharing bot tokens is a split-brain poller, not availability.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      tggw/component: botapi
+  serviceName: {{ .Release.Name }}-botapi
+  template:
+    metadata:
+      labels:
+        {{- include "tggw.componentLabels" (set . "component" "botapi") | nindent 8 }}
+        {{- with .Values.extraPodLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      containers:
+        - name: botapi
+          image: {{ include "tggw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["botapi"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GW_DATA_DIR
+              value: /data
+            - name: GW_HOST
+              value: 0.0.0.0
+            - name: GW_PORT
+              value: "8080"
+            {{- range $k, $v := .Values.botapi.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "tggw.secretName" . }}
+          resources:
+            {{- toYaml .Values.botapi.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["{{ .Values.botapi.storage.accessMode }}"]
+        {{- with .Values.botapi.storage.className }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.botapi.storage.size }}
+{{- end }}

@@ -1,0 +1,36 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-botapi
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  # maxUnavailable: 0 — voluntary evictions (node drains) must wait for
+  # the operator: a mid-traffic kill risks duplicate sends and, on the
+  # MTProto plane, AUTH_KEY_DUPLICATED.
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      tggw/component: botapi
+---
+{{- if .Values.mtproto.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-mtproto
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      tggw/component: mtproto
+{{- end }}
+{{- end }}

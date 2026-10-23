@@ -1,0 +1,12 @@
+apiVersion: v2
+name: tggw
+description: |
+  Telegram Session Gateway — Bot API gateway + MTProto sidecar as one
+  static Go binary. Zero client-service dependencies: SQLite on a PVC,
+  no Redis, no Postgres, no operator.
+type: application
+version: 0.1.0
+appVersion: "0.1.0-go"
+maintainers:
+  - name: DovBerKaplan
+home: https://github.com/DovBerKaplan/tg-session-gateway

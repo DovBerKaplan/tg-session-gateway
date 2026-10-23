@@ -1,0 +1,463 @@
+# tggw — rendered from deploy/helm/tggw (helm template tggw deploy/helm/tggw)
+# For Helm users: helm install tggw deploy/helm/tggw -n tg-gateway --create-namespace \
+#   --set secrets.fernetKey=<output of: tggw genkey>
+#
+# For no-Helm users: this manifest is the same chart rendered flat.
+# BEFORE kubectl apply:
+#   1. Generate a Fernet key:  openssl rand -base64 32 | tr '+/' '-_'
+#   2. Replace the three base64 placeholders in the Secret below:
+#        echo -n 'YOUR_VALUE' | base64
+#      (or delete the Secret here and create your own named tggw-secrets
+#       with GW_ADMIN_SECRET, GW_APP_SECRET, GW_FERNET_KEY, GW_API_ID,
+#       GW_API_HASH)
+#   3. kubectl apply -f install.yaml
+#   4. Label the namespace of every consumer app:
+#        kubectl label ns <consumer-ns> tg-gateway.io/client=true
+#      (the NetworkPolicy denies everything else)
+---
+# Source: tggw/templates/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tg-gateway
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Source: tggw/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tggw-default-deny
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  # default-deny for every pod the chart owns
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: tggw
+  policyTypes: [Ingress, Egress]
+---
+# Source: tggw/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tggw-ingress
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  # the API answers ONLY labeled client namespaces — an unlabeled pod in
+  # the same cluster cannot reach bot tokens
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: tggw
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              tg-gateway.io/client: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Source: tggw/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tggw-egress
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  # egress: cluster DNS + Telegram DC CIDRs only. api.telegram.org
+  # resolves inside 149.154.160.0/20; MTProto DCs live in the same
+  # ranges — nothing else is needed, so nothing else is allowed.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: tggw
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 149.154.160.0/20
+        - ipBlock:
+            cidr: 91.108.4.0/22
+---
+# Source: tggw/templates/quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tggw
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  hard:
+    requests.cpu: "100m"
+    requests.memory: "384Mi"
+    limits.cpu: "1"
+    limits.memory: "768Mi"
+    # the namespace holds exactly the gateway — nothing else may squat here
+    pods: "2"
+---
+# Source: tggw/templates/quota.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: tggw
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: "10m"
+        memory: "32Mi"
+      default:
+        cpu: "200m"
+        memory: "128Mi"
+---
+# Source: tggw/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tggw-botapi
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  # maxUnavailable: 0 — voluntary evictions (node drains) must wait for
+  # the operator: a mid-traffic kill risks duplicate sends and, on the
+  # MTProto plane, AUTH_KEY_DUPLICATED.
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: tggw
+      tggw/component: botapi
+---
+# Source: tggw/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tggw-mtproto
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: tggw
+      tggw/component: mtproto
+---
+# Source: tggw/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tggw-secrets
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+  annotations:
+    # helm-resource-policy would also work; keep it explicit instead:
+    # this Secret must survive `helm uninstall` mistakes during ops.
+    description: "tggw secrets — GW_FERNET_KEY rotation loses stored tokens"
+type: Opaque
+stringData:
+  GW_ADMIN_SECRET: "REPLACE_WITH_RANDOM_32_CHARS"
+  GW_APP_SECRET: "REPLACE_WITH_RANDOM_32_CHARS"
+  GW_FERNET_KEY: "REPLACE_WITH_FERNET_KEY_from_tggw_genkey"
+  GW_API_ID: "12345"
+  GW_API_HASH: "REPLACE_WITH_TELEGRAM_API_HASH"
+---
+# Source: tggw/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tggw
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    tggw/component: botapi
+---
+# Source: tggw/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tggw-mtproto
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    tggw/component: mtproto
+---
+# Source: tggw/templates/botapi-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tggw-botapi
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+    app.kubernetes.io/component: botapi
+    tggw/component: botapi
+spec:
+  # replicas is pinned to 1 by product invariant: a second live replica
+  # sharing bot tokens is a split-brain poller, not availability.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: tggw
+      tggw/component: botapi
+  serviceName: tggw-botapi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tggw
+        app.kubernetes.io/instance: tggw
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: tggw-0.1.0
+        app.kubernetes.io/component: botapi
+        tggw/component: botapi
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: botapi
+          image: ghcr.io/dovberkaplan/tg-session-gateway:0.1.0-go
+          imagePullPolicy: IfNotPresent
+          args: ["botapi"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GW_DATA_DIR
+              value: /data
+            - name: GW_HOST
+              value: 0.0.0.0
+            - name: GW_PORT
+              value: "8080"
+            - name: GW_ON_LIMIT
+              value: "queue"
+            - name: GW_UPSTREAM
+              value: "https://api.telegram.org"
+          envFrom:
+            - secretRef:
+                name: tggw-secrets
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOncePod"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Source: tggw/templates/mtproto-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tggw-mtproto
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+    app.kubernetes.io/component: mtproto
+    tggw/component: mtproto
+spec:
+  # pinned to 1: two live holders of one auth_key trip AUTH_KEY_DUPLICATED
+  # and can invalidate the key (sidecar spec §risk R1).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: tggw
+      tggw/component: mtproto
+  serviceName: tggw-mtproto
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tggw
+        app.kubernetes.io/instance: tggw
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: tggw-0.1.0
+        app.kubernetes.io/component: mtproto
+        tggw/component: mtproto
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mtproto
+          image: ghcr.io/dovberkaplan/tg-session-gateway:0.1.0-go
+          imagePullPolicy: IfNotPresent
+          args: ["mtproto"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GW_DATA_DIR
+              value: /data
+            - name: GW_HOST
+              value: 0.0.0.0
+            - name: GW_PORT
+              value: "8080"
+          envFrom:
+            - secretRef:
+                name: tggw-secrets
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOncePod"]
+        resources:
+          requests:
+            storage: 1Gi

@@ -1,0 +1,114 @@
+# Default values for the tggw chart.
+#
+# Single-owner invariant: each plane is a StatefulSet with replicas: 1,
+# a ReadWriteOncePod PVC and the in-process file lock — three layers
+# before any Telegram connect().
+
+namespace: tg-gateway
+createNamespace: true
+
+image:
+  repository: ghcr.io/dovberkaplan/tg-session-gateway
+  # empty → appVersion
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# ── secrets ────────────────────────────────────────────────────────
+# Either reference an existing Secret...
+existingSecret: ""
+# ...or fill these in (adminSecret/appSecret are generated ONCE by the
+# chart on first install and then reused; fernetKey is never generated:
+# rotating it makes every stored token undecryptable — create it with
+# `tggw genkey` or `openssl rand -base64 32 | tr '+/' '-_'`).
+secrets:
+  fernetKey: ""
+  adminSecret: ""
+  appSecret: ""
+  # MTProto plane credentials (ignored when mtproto.enabled=false)
+  apiID: 0
+  apiHash: ""
+
+# ── Bot API plane ──────────────────────────────────────────────────
+botapi:
+  enabled: true
+  env:
+    GW_UPSTREAM: "https://api.telegram.org"
+    GW_ON_LIMIT: "queue"
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  storage:
+    size: 1Gi
+    # ReadWriteOncePod hard-guarantees single-pod attachment (K8s ≥1.29);
+    # set to ReadWriteOnce on older clusters.
+    accessMode: ReadWriteOncePod
+    className: ""
+
+# ── MTProto plane ──────────────────────────────────────────────────
+mtproto:
+  enabled: true
+  env: {}
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  storage:
+    size: 1Gi
+    accessMode: ReadWriteOncePod
+    className: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# ── hardening ──────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  # ingress: API port only from namespaces labeled as gateway clients
+  ingressNamespaceLabel:
+    tg-gateway.io/client: "true"
+  # egress: DNS + Telegram DCs only (api.telegram.org resolves inside
+  # 149.154.160.0/20). Everything else is denied.
+  telegramCIDRs:
+    - 149.154.160.0/20
+    - 91.108.4.0/22
+  dnsPort: 53
+
+podDisruptionBudget:
+  enabled: true
+  # 0 = voluntary evictions (node drains) wait for the operator —
+  # killing the gateway mid-traffic risks AUTH_KEY_DUPLICATED.
+  maxUnavailable: 0
+
+resourceQuota:
+  enabled: true
+  requests: { cpu: 100m, memory: 384Mi }
+  limits: { cpu: "1", memory: 768Mi }
+
+limitRange:
+  defaultRequest: { cpu: 10m, memory: 32Mi }
+  default: { cpu: 200m, memory: 128Mi }
+
+# extraPodLabels / nodeSelector / tolerations apply to both planes
+extraPodLabels: {}
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+monitoring:
+  # rendered only when the CRD exists (helm template shows them for review)
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+  prometheusRule:
+    enabled: false
+
+# shared pod security context (restricted PSA compatible)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault

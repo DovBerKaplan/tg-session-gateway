@@ -1,0 +1,108 @@
+{{- if .Values.mtproto.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-mtproto
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.componentLabels" (set . "component" "mtproto") | nindent 4 }}
+spec:
+  # pinned to 1: two live holders of one auth_key trip AUTH_KEY_DUPLICATED
+  # and can invalidate the key (sidecar spec §risk R1).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tggw
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      tggw/component: mtproto
+  serviceName: {{ .Release.Name }}-mtproto
+  template:
+    metadata:
+      labels:
+        {{- include "tggw.componentLabels" (set . "component" "mtproto") | nindent 8 }}
+        {{- with .Values.extraPodLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      containers:
+        - name: mtproto
+          image: {{ include "tggw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["mtproto"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GW_DATA_DIR
+              value: /data
+            - name: GW_HOST
+              value: 0.0.0.0
+            - name: GW_PORT
+              value: "8080"
+            {{- range $k, $v := .Values.mtproto.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "tggw.secretName" . }}
+          resources:
+            {{- toYaml .Values.mtproto.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["{{ .Values.mtproto.storage.accessMode }}"]
+        {{- with .Values.mtproto.storage.className }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mtproto.storage.size }}
+{{- end }}
