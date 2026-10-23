@@ -45,14 +45,10 @@ func TestKillNineRestartNoDuplicatesNoLoss(t *testing.T) {
 		})
 	}
 
-	// KILL -9 equivalent: NO app.Close() — the supervisor keeps running
-	// like a dead process's threads would not, so remove the stranded
-	// lock exactly as the dead-holder janitor path would (a live-pid
-	// lock with a fresh heartbeat would be refused, which is the OTHER
-	// invariant test).
-	if err := os.Remove(filepath.Join(app1.Cfg.SessionDir, "acct0.lock")); err != nil {
-		t.Fatal(err)
-	}
+	// KILL -9 equivalent: NO app.Close() — model the kernel releasing
+	// the dead holder's flock (releaseLock drops the session's lock
+	// without touching its client or supervisor).
+	app1.Mgr.releaseLock(app1.Mgr.Get("acct0"))
 
 	// ── lifetime 2: a new app on the SAME data dir ──
 	fake2 := &fakeMTClient{}
@@ -86,10 +82,8 @@ func TestKillNineRestartNoDuplicatesNoLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// lifetime 2 "dies" the same way — strand its lock
-	if err := os.Remove(filepath.Join(app2.Cfg.SessionDir, "acct0.lock")); err != nil {
-		t.Fatal(err)
-	}
+	// lifetime 2 "dies" the same way — kernel drops its flock
+	app2.Mgr.releaseLock(app2.Mgr.Get("acct0"))
 
 	fake3 := &fakeMTClient{}
 	app3, _ := newTestAppKey(t, fake3, dir, key)

@@ -9,7 +9,6 @@ package migrate
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,13 +51,6 @@ type pyroforkSession struct {
 	AuthKey  []byte
 	UserID   int64
 	IsBot    bool
-}
-
-// gotdSessionEnvelope mirrors gotd's private jsonData wire format
-// ({"Version":1,"Data":{...}}) so Loader.Load parses our blob.
-type gotdSessionEnvelope struct {
-	Version int
-	Data    session.Data
 }
 
 // readPyroforkSession opens a .session file and extracts the auth row.
@@ -105,11 +97,29 @@ func buildGotdBlob(s *pyroforkSession) ([]byte, string, error) {
 		AuthKeyID: id.ID[:],
 		Config:    session.Config{TestMode: s.TestMode},
 	}
-	blob, err := json.Marshal(gotdSessionEnvelope{Version: 1, Data: data})
-	if err != nil {
+	store := &memorySessionStore{}
+	if err := (&session.Loader{Storage: store}).Save(context.Background(), &data); err != nil {
 		return nil, "", err
 	}
-	return blob, fmt.Sprintf("%x", id.ID[:]), nil
+	return store.buf, fmt.Sprintf("%x", id.ID[:]), nil
+}
+
+// memorySessionStore captures the Loader-serialized blob in memory
+// (the migration writes it to SQLite afterwards).
+type memorySessionStore struct {
+	buf []byte
+}
+
+func (m *memorySessionStore) LoadSession(ctx context.Context) ([]byte, error) {
+	if m.buf == nil {
+		return nil, session.ErrNotFound
+	}
+	return m.buf, nil
+}
+
+func (m *memorySessionStore) StoreSession(ctx context.Context, data []byte) error {
+	m.buf = data
+	return nil
 }
 
 // Run scans dataDir/sessions/*.session and writes gotd session blobs
@@ -199,10 +209,4 @@ func Run(dataDir string, dryRun bool) (*Report, error) {
 	}
 	rep.LoginsRequired = rep.Errors + rep.NeedsNewLogin
 	return rep, nil
-}
-
-// Context satisfies linters that expect a context-aware entrypoint.
-func RunContext(ctx context.Context, dataDir string, dryRun bool) (*Report, error) {
-	_ = ctx
-	return Run(dataDir, dryRun)
 }

@@ -23,6 +23,7 @@ type fakeTelegram struct {
 	getCalls int
 	sent     []map[string]any
 	sendChat []map[string]any
+	rawSends [][]byte       // verbatim bodies (streamed or buffered)
 	quota429 map[string]int // chat_id → send 429 with retry_after N times
 }
 
@@ -33,6 +34,12 @@ func newFakeTelegram(batch []map[string]any) *fakeTelegram {
 func (f *fakeTelegram) Do(req *httpRequest) (*httpResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if req.Reader != nil {
+		raw, _ := io.ReadAll(req.Reader)
+		f.rawSends = append(f.rawSends, raw)
+	} else if req.RawBody != nil {
+		f.rawSends = append(f.rawSends, req.RawBody)
+	}
 	if req.RawBody == nil && req.Body != nil {
 		raw, _ := json.Marshal(req.Body)
 		req.RawBody = raw

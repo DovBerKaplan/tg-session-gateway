@@ -1,9 +1,11 @@
 package botapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -201,11 +203,28 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 	return &gwResponse{status: resp.StatusCode, raw: resp.Body}
 }
 
-// forwardRaw passes multipart bodies (sendPhoto, documents…) through
-// verbatim; the Rate Guard uses the chat_id form field when present.
+// ForwardStream passes a pre-sized multipart body through verbatim
+// WITHOUT buffering it in full: prefix (the leading bytes, already
+// read so the chat_id form field can be mined) is re-joined with the
+// unread rest of the body. Same admission and result handling as
+// forwardRaw.
+func (p *Proxy) ForwardStream(ctx context.Context, s *BotSession, method string, prefix []byte, rest io.Reader, total int64, contentType string) *gwResponse {
+	return p.forwardMultipart(ctx, s, method, prefix,
+		io.MultiReader(bytes.NewReader(prefix), rest), total, contentType)
+}
+
+// forwardRaw passes buffered multipart bodies through verbatim.
 func (p *Proxy) forwardRaw(ctx context.Context, s *BotSession, method string, raw []byte, contentType string) *gwResponse {
+	return p.forwardMultipart(ctx, s, method, raw, bytes.NewReader(raw), int64(len(raw)), contentType)
+}
+
+// forwardMultipart is the shared multipart path: Rate Guard admission
+// keyed on the chat_id form field (mined from the prefix), verbatim
+// forwarding (buffered or streamed), 429 learning, raw passthrough of
+// the response.
+func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method string, prefix []byte, body io.Reader, total int64, contentType string) *gwResponse {
 	var chatID *int64
-	if mm := multipartChatIDRe.FindSubmatch(raw); mm != nil {
+	if mm := multipartChatIDRe.FindSubmatch(prefix); mm != nil {
 		if v, err := strconv.ParseInt(string(mm[1]), 10, 64); err == nil {
 			chatID = &v
 		}
@@ -222,10 +241,12 @@ func (p *Proxy) forwardRaw(ctx context.Context, s *BotSession, method string, ra
 		})
 	}
 	resp, err := p.client.Do(&httpRequest{
-		Method: "POST", URL: "/bot" + s.Token + "/" + method,
-		RawBody: raw,
-		Header:  map[string]string{"Content-Type": contentType},
-		ctx:     ctx,
+		Method:        "POST",
+		URL:           "/bot" + s.Token + "/" + method,
+		Reader:        body,
+		ContentLength: total,
+		Header:        map[string]string{"Content-Type": contentType},
+		ctx:           ctx,
 	})
 	if err != nil {
 		return jsonResp(502, map[string]any{

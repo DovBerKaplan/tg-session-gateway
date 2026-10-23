@@ -2,7 +2,9 @@ package botapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -67,13 +69,24 @@ func NewApp(cfg config.BotAPI, client HTTPClient) (*App, error) {
 		adminMux := http.NewServeMux()
 		app.adminRoutes(adminMux)
 		app.adminSrv = &http.Server{
-			Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.AdminPort),
-			Handler: adminMux,
+			Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.AdminPort),
+			Handler:           adminMux,
+			ReadHeaderTimeout: 10 * time.Second, // slowloris guard
+			IdleTimeout:       120 * time.Second,
+			// no WriteTimeout on purpose: getUpdates long-polls up to 50s
+			// and the WS connections stream indefinitely
 		}
 	} else {
 		app.routes(mux)
 	}
-	app.srv = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: mux}
+	app.srv = &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second, // slowloris guard
+		IdleTimeout:       120 * time.Second,
+		// no WriteTimeout on purpose: getUpdates long-polls up to 50s
+		// and the WS connections stream indefinitely
+	}
 	return app, nil
 }
 
@@ -312,11 +325,27 @@ func (a *App) writeGwResponse(w http.ResponseWriter, r *gwResponse) {
 }
 
 func (a *App) adminAuthed(r *http.Request) bool {
-	return a.Cfg.AdminSecret != "" && r.Header.Get("Authorization") == "Bearer "+a.Cfg.AdminSecret
+	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AdminSecret)
 }
 
 func (a *App) appAuthed(r *http.Request) bool {
-	return r.Header.Get("Authorization") == "Bearer "+a.Cfg.AppSecret
+	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AppSecret)
+}
+
+// upload limits: over the cap the gateway answers 413 instead of
+// silently truncating (a truncated upload would send a CORRUPT file).
+const (
+	maxMultipartBody = 64 << 20
+	maxFormBody      = 1 << 20
+	maxJSONBody      = 8 << 20
+)
+
+func tooLarge(w http.ResponseWriter, limit int64) bool {
+	const msg = `{"ok":false,"error_code":413,"description":"request body exceeds the gateway limit"}`
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	_, _ = w.Write([]byte(msg))
+	return true
 }
 
 // callRoute parses the request body the way the Python gateway does:
@@ -324,12 +353,34 @@ func (a *App) appAuthed(r *http.Request) bool {
 func (a *App) callRoute(w http.ResponseWriter, r *http.Request, s *BotSession, method string) {
 	ctype := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ctype, "multipart/") {
-		raw, _ := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+		r.Body = http.MaxBytesReader(w, r.Body, maxMultipartBody)
+		if r.ContentLength > 0 && r.ContentLength <= maxMultipartBody {
+			// STREAM: read a prefix (the chat_id form field lives in the
+			// leading parts), forward the rest verbatim without ever
+			// holding the whole upload in memory
+			prefix := make([]byte, 64<<10)
+			n, _ := io.ReadFull(r.Body, prefix)
+			a.writeGwResponse(w, a.Proxy.ForwardStream(
+				r.Context(), s, method, prefix[:n], r.Body, r.ContentLength, ctype))
+			return
+		}
+		// chunked/unknown length: buffer (bounded) — a ContentLength is
+		// mandatory for streaming (api.telegram.org rejects chunked)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil && isTooLarge(err) {
+			tooLarge(w, maxMultipartBody)
+			return
+		}
 		a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, nil, ctype, raw, ""))
 		return
 	}
 	if strings.HasPrefix(ctype, "application/x-www-form-urlencoded") {
-		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil && isTooLarge(err) {
+			tooLarge(w, maxFormBody)
+			return
+		}
 		parsed := map[string]any{}
 		for _, kv := range strings.Split(string(raw), "&") {
 			if kv == "" {
@@ -356,15 +407,27 @@ func (a *App) callRoute(w http.ResponseWriter, r *http.Request, s *BotSession, m
 		a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, parsed, "", nil, r.Header.Get("Idempotency-Key")))
 		return
 	}
-	raw, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil && isTooLarge(err) {
+		tooLarge(w, maxJSONBody)
+		return
+	}
 	body := map[string]any{}
 	if len(raw) > 0 {
+		// invalid JSON stays TOLERANT (body = {}): the Python gateway's
+		// _json_body does exactly that — parity over taste
 		var parsed map[string]any
 		if err := json.Unmarshal(raw, &parsed); err == nil && parsed != nil {
 			body = parsed
 		}
 	}
 	a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, body, "", nil, r.Header.Get("Idempotency-Key")))
+}
+
+func isTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
 }
 
 func urlUnescape(s string) string {
@@ -674,6 +737,15 @@ func (a *App) adminAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── health & metrics ───────────────────────────────────────────────
+
+// bearerOK compares secrets in constant time (timing side channels).
+func bearerOK(header, secret string) bool {
+	got := strings.TrimPrefix(header, "Bearer ")
+	if len(got) != len(secret) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(secret)) == 1
+}
 
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	lag := round2(a.Beat.Lag())

@@ -26,6 +26,7 @@ import (
 
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/config"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/cryptoutil"
+	"github.com/DovBerKaplan/tg-session-gateway/go/internal/lock"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/store"
 )
 
@@ -421,11 +422,12 @@ func TestSecondSidecarRefusedBeforeTelegram(t *testing.T) {
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// a LIVE holder: our own pid, fresh heartbeat → lock is not stale
-	lockPath := filepath.Join(sessDir, "b1.lock")
-	now := float64(time.Now().UnixNano()) / 1e9
-	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n%f\n", os.Getpid(), now)), 0o644); err != nil {
-		t.Fatal(err)
+	// a LIVE holder: a REAL flock held by another open-file-description
+	// (flock semantics: two fds in one process conflict, exactly like
+	// two processes — the kernel is the authority, no staleness window)
+	holder := &lock.Lock{Alias: "b1", LockDir: sessDir}
+	if !holder.Acquire() {
+		t.Fatal("planting holder lock failed")
 	}
 
 	fake := &fakeMTClient{}
@@ -460,10 +462,9 @@ func TestSecondSidecarRefusedBeforeTelegram(t *testing.T) {
 		t.Fatalf("state = %v, want error", sessions[0])
 	}
 
-	// holder gone → explicit restart (clears the cooldown) recovers
-	if err := os.Remove(lockPath); err != nil {
-		t.Fatal(err)
-	}
+	// holder gone (kernel would release on death; we model it with
+	// Release) → explicit restart (clears the cooldown) recovers
+	holder.Release()
 	code, body = mtDo(t, "POST", base, "/v1/admin/sessions/b1/restart", "", itestADM)
 	if code != 200 || body["ok"] != true {
 		t.Fatalf("restart = %d %v", code, body)

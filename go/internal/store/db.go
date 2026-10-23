@@ -78,6 +78,10 @@ func QuickCheck(path string) (bool, string) {
 // unchanged; corrupt → renamed to <path>.corrupt-<ts> and the newest
 // valid backup (if any) restored in place. Either way the process
 // LIVES — crash-looping a supervisor over a corrupt file helps nobody.
+//
+// The -wal and -shm sidecars move ASIDE with the main file: leaving
+// them behind would let a hot WAL apply corrupt pages onto the
+// restored backup.
 func CheckOrQuarantine(path string, backupsDir string, h *health.Storage) {
 	if _, err := os.Stat(path); err != nil {
 		return
@@ -88,9 +92,17 @@ func CheckOrQuarantine(path string, backupsDir string, h *health.Storage) {
 	}
 	ts := time.Now().Format("20060102-150405")
 	quarantine := fmt.Sprintf("%s.corrupt-%s", path, ts)
+	// best effort: fold the WAL into the quarantined file so the
+	// evidence is complete
+	checkpointWAL(path)
 	if err := os.Rename(path, quarantine); err != nil {
 		slog.Error("cannot quarantine corrupt DB", "path", path, "err", err)
 		return
+	}
+	for _, side := range []string{path + "-wal", path + "-shm"} {
+		if _, err := os.Stat(side); err == nil {
+			_ = os.Rename(side, side+".corrupt-"+ts)
+		}
 	}
 	slog.Error("DB corrupt — quarantined", "path", path, "detail", detail, "to", quarantine)
 	if h != nil {
@@ -99,6 +111,18 @@ func CheckOrQuarantine(path string, backupsDir string, h *health.Storage) {
 	if restoreNewestBackup(path, backupsDir) {
 		slog.Warn("restored from backup (data since last backup is lost)", "path", path)
 	}
+}
+
+// checkpointWAL folds a SQLite write-ahead log into its main file on a
+// throwaway connection (ignored on failure — quarantine is best-effort
+// evidence preservation).
+func checkpointWAL(path string) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = db.Close() }()
+	_, _ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 }
 
 func restoreNewestBackup(path, backupsDir string) bool {
@@ -148,14 +172,40 @@ func EnsureSchema(db *sql.DB, currentVersion int, migrations map[int]string, dbP
 	for _, version := range sortedKeys(migrations) {
 		if have < version && version <= currentVersion {
 			slog.Info("applying schema migration", "version", version, "db", dbPath)
-			if _, err := db.Exec(migrations[version]); err != nil {
+			// each migration commits atomically WITH its version bump:
+			// a failure mid-way leaves the db at the last good version,
+			// never at a half-applied schema that fails the next boot
+			// with "duplicate column"
+			if err := applyMigration(db, version, migrations[version]); err != nil {
 				return err
 			}
 			have = version
 		}
 	}
-	_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentVersion))
-	return err
+	if have < currentVersion {
+		_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentVersion))
+		return err
+	}
+	return nil
+}
+
+// applyMigration runs one migration SQL plus its user_version bump in
+// a single transaction.
+func applyMigration(db *sql.DB, version int, script string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(script); err != nil {
+		return err
+	}
+	// PRAGMA inside a transaction: user_version is transactional in
+	// SQLite, so the bump rides the same commit
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func sortedKeys(m map[int]string) []int {

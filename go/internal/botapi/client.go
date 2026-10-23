@@ -16,8 +16,14 @@ type httpRequest struct {
 	URL     string
 	Body    map[string]any // JSON body (marshaled when RawBody is nil)
 	RawBody []byte         // pre-encoded body (push mode, raw forward)
-	Header  map[string]string
-	ctx     context.Context
+	// Reader streams a pre-sized body (multipart uploads) instead of
+	// buffering. ContentLength is REQUIRED alongside it: api.telegram.org
+	// rejects chunked requests, and a generic io.Reader makes net/http
+	// send chunked unless ContentLength is set explicitly.
+	Reader        io.Reader
+	ContentLength int64
+	Header        map[string]string
+	ctx           context.Context
 }
 
 // httpResponse is what comes back: status + raw body bytes (the proxy
@@ -52,7 +58,9 @@ func (u *UpstreamClient) Do(req *httpRequest) (*httpResponse, error) {
 		url = u.Base + url
 	}
 	var reader io.Reader
-	if req.RawBody != nil {
+	if req.Reader != nil {
+		reader = req.Reader // streamed (multipart): ContentLength below is mandatory
+	} else if req.RawBody != nil {
 		reader = bytes.NewReader(req.RawBody)
 	} else if req.Body != nil {
 		raw, err := json.Marshal(req.Body)
@@ -67,9 +75,12 @@ func (u *UpstreamClient) Do(req *httpRequest) (*httpResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	if req.Reader != nil {
+		hreq.ContentLength = req.ContentLength
+	}
 	if req.Header["Content-Type"] != "" {
 		hreq.Header.Set("Content-Type", req.Header["Content-Type"])
-	} else if req.Body != nil || req.RawBody != nil {
+	} else if req.Body != nil || req.RawBody != nil || req.Reader != nil {
 		hreq.Header.Set("Content-Type", "application/json")
 	}
 	ctx := req.ctx

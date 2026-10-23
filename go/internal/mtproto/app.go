@@ -7,8 +7,10 @@ package mtproto
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -89,13 +91,24 @@ func newApp(cfg config.MTProto, skipRestore bool) (*App, error) {
 		adminMux := http.NewServeMux()
 		app.adminRoutes(adminMux)
 		app.adminSrv = &http.Server{
-			Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.AdminPort),
-			Handler: adminMux,
+			Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.AdminPort),
+			Handler:           adminMux,
+			ReadHeaderTimeout: 10 * time.Second, // slowloris guard
+			IdleTimeout:       120 * time.Second,
+			// no WriteTimeout on purpose: getUpdates long-polls up to 50s
+			// and the WS connections stream indefinitely
 		}
 	} else {
 		app.routes(mux)
 	}
-	app.srv = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: mux}
+	app.srv = &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second, // slowloris guard
+		IdleTimeout:       120 * time.Second,
+		// no WriteTimeout on purpose: getUpdates long-polls up to 50s
+		// and the WS connections stream indefinitely
+	}
 	return app, nil
 }
 
@@ -267,11 +280,11 @@ func (a *App) adminRoutes(mux *http.ServeMux) {
 }
 
 func (a *App) appAuthed(r *http.Request) bool {
-	return r.Header.Get("Authorization") == "Bearer "+a.Cfg.AppSecret
+	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AppSecret)
 }
 
 func (a *App) adminAuthed(r *http.Request) bool {
-	return r.Header.Get("Authorization") == "Bearer "+a.Cfg.AdminSecret
+	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AdminSecret)
 }
 
 // ── method proxy ───────────────────────────────────────────────────
@@ -384,7 +397,14 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 	}
 
 	body := map[string]any{}
-	raw, _ := readAll(r)
+	raw, readErr := readAll(r)
+	if readErr != nil && isTooLarge(readErr) {
+		writeJSON(w, 413, map[string]any{
+			"ok": false, "error_code": 413,
+			"description": "request body exceeds the gateway limit",
+		})
+		return
+	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
 			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "invalid JSON body"})
@@ -995,6 +1015,15 @@ func (a *App) adminAudit(w http.ResponseWriter, r *http.Request) {
 
 // ── health & metrics ───────────────────────────────────────────────
 
+// bearerOK compares secrets in constant time (timing side channels).
+func bearerOK(header, secret string) bool {
+	got := strings.TrimPrefix(header, "Bearer ")
+	if len(got) != len(secret) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(secret)) == 1
+}
+
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": a.Beat.Alive(), "version": Version, "loop_lag_s": round2(a.Beat.Lag())})
 }
@@ -1125,12 +1154,22 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+// maxMethodBody bounds method-call bodies: the allowlist is text
+// (messages, markups, base64 media handles) — 10MB is generous and
+// keeps a hostile client from ballooning memory.
+const maxMethodBody = 10 << 20
+
 func readAll(r *http.Request) ([]byte, error) {
 	if r.Body == nil {
 		return nil, nil
 	}
 	defer r.Body.Close()
-	return io.ReadAll(r.Body)
+	return io.ReadAll(http.MaxBytesReader(nil, r.Body, maxMethodBody))
+}
+
+func isTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
 }
 
 // randSuffix returns n random lowercase-hex chars (consumer ids).
