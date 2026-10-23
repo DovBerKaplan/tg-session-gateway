@@ -1,12 +1,16 @@
 # tggw — single static Go binary for both planes (botapi / mtproto).
-# Stage 1 builds with the official Go toolchain; stage 2 is distroless
-# static (no shell, no package manager, ~15MB) with a non-root user.
-FROM golang:1.25-alpine AS build
+# Stage 1 cross-compiles NATIVELY on the build platform (no QEMU:
+# arm64 builds run at amd64 speed); stage 2 is distroless static
+# (no shell, no package manager, ~15MB) with a non-root user.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go/go.mod go/go.sum ./
 RUN go mod download
 COPY go/ .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tggw ./cmd/tggw
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags="-s -w -X github.com/DovBerKaplan/tg-session-gateway/go/internal/version.Version=$VERSION" \
+    -o /out/tggw ./cmd/tggw
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/tggw /tggw

@@ -33,10 +33,8 @@ import (
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/lock"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/rateguard"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/store"
+	"github.com/DovBerKaplan/tg-session-gateway/go/internal/version"
 )
-
-// Version is reported by /healthz.
-const Version = "0.1.0-go"
 
 // App is the whole MTProto sidecar: store, session manager, admin,
 // health and metrics wired together with graceful shutdown.
@@ -134,7 +132,7 @@ func (a *App) buildLifecycle(skipRestore bool) {
 		slog.Error("GW_FERNET_KEY cannot decrypt tokens (wrong key? those sessions will not start)",
 			"aliases", strings.Join(bad, ", "))
 	}
-	slog.Info("MTProto gateway up", "restored", restored, "version", Version)
+	slog.Info("MTProto gateway up", "restored", restored, "version", version.Version)
 }
 
 // housekeepingLoop runs the 60s pass: state snapshots, idempotency
@@ -1025,7 +1023,7 @@ func bearerOK(header, secret string) bool {
 }
 
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": a.Beat.Alive(), "version": Version, "loop_lag_s": round2(a.Beat.Lag())})
+	writeJSON(w, 200, map[string]any{"ok": a.Beat.Alive(), "version": version.Version, "loop_lag_s": round2(a.Beat.Lag())})
 }
 
 func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {

@@ -1,13 +1,15 @@
 name: Release
 
-# Publishes both images to GHCR on version tags (v*), mirroring them to
-# Docker Hub (shorter pull command). GHCR stays the source of truth;
-# the mirror is a copy with identical tags. Uses only the built-in
-# GITHUB_TOKEN for GHCR; the Docker Hub mirror additionally needs the
-# repo secrets DOCKERHUB_USERNAME + DOCKERHUB_TOKEN and is skipped
-# entirely when they are absent. This repository has a history of a
-# malicious workflow exfiltrating secrets, so every action here is
-# official (actions/*, docker/*) and every permission is least-privilege.
+# Publishes the tggw image to GHCR on version tags (v*), mirroring to
+# Docker Hub when the repo secrets exist. Publishing NEEDS the verify
+# job first (build + vet + race tests + black-box conformance) —
+# nothing ships from a red build.
+#
+# Security posture: this repository has a history of a malicious
+# workflow exfiltrating secrets. Every action here is official
+# (actions/*, docker/*); the GitHub Release is created with the
+# preinstalled gh CLI (official GitHub tooling) instead of a
+# third-party release action, and every permission is least-privilege.
 
 on:
   push:
@@ -15,100 +17,152 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  packages: write
+  contents: write # GitHub Release
+  packages: write # GHCR
+  id-token: write # provenance attestations
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
-  publish:
-    name: Build & Publish Images
+  verify:
+    name: Verify before publishing
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # secrets cannot be referenced from step-level `if` (workflow fails
-    # validation) — collapse them into one job-level env flag instead
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go/go.mod}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install httpx pytest
+      - run: go build ./...
+        working-directory: go
+      - run: go vet ./...
+        working-directory: go
+      - run: go test -race -count=1 ./...
+        working-directory: go
+      - name: Black-box conformance against the real binary
+        run: |
+          cd go && CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
+          cd .. && TGGW_BIN=/tmp/tggw pytest -q tests/conformance_go
+
+  publish:
+    name: Build & Publish Image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - dockerfile: docker/Dockerfile.gateway
-            image: ${{ github.repository }}        # ghcr.io/<owner>/<repo>
-            mirror: dovberkaplan/tg-session-gateway
-          - dockerfile: docker/Dockerfile.mtgateway
-            image: ${{ github.repository }}-mtproto  # ghcr.io/<owner>/<repo>-mtproto
-            mirror: dovberkaplan/tg-session-gateway-mtproto
-          # the Go rewrite: one image, both planes (botapi|mtproto args).
-          # Distinct name while Python and Go coexist; it becomes the
-          # primary image at cutover.
-          - dockerfile: docker/Dockerfile.tggw
-            image: ${{ github.repository }}-go      # ghcr.io/<owner>/<repo>-go
-            mirror: dovberkaplan/tggw
     steps:
       - uses: actions/checkout@v4
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
-      - name: Log in to Docker Hub (mirror)
-        if: env.DOCKERHUB_MIRROR == 'true'
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
       - name: Set up buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Extract metadata (tags, labels)
+      # ONE build for both registries: metadata-action tags every
+      # listed image identically (the old workflow built twice).
+      - name: Extract metadata (GHCR)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ matrix.image }}
-          # v1.2.3 → 1.2.3, 1.2, 1; latest moves ONLY on stable tags —
-          # never on pre-releases (v1.2.3-rc1) or manual runs (sha/edge)
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-go
+          # v1.2.3 → 1.2.3, 1.2, 1 — matching the chart's appVersion
+          # default; latest moves ONLY on stable tags, never rc/manual
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=ref,event=branch
             type=sha,format=long
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
 
-      - name: Build and push (GHCR)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # ── Docker Hub mirror — same tags, short pull command ──────────
-      # Skipped (not failed) when the repo has no Docker Hub secrets.
       - name: Extract metadata (Docker Hub mirror)
         if: env.DOCKERHUB_MIRROR == 'true'
         id: meta-mirror
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.mirror }}
+          images: dovberkaplan/tggw
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
 
-      - name: Build and push (Docker Hub mirror)
+      - name: Log in to Docker Hub (mirror)
         if: env.DOCKERHUB_MIRROR == 'true'
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Assemble tag list (GHCR + optional mirror, one build)
+        id: tags
+        run: |
+          {
+            echo 'tags<<TAGS_EOF'
+            echo "${{ steps.meta.outputs.tags }}"
+            if [ -n "${{ steps.meta-mirror.outputs.tags }}" ]; then
+              echo "${{ steps.meta-mirror.outputs.tags }}"
+            fi
+            echo 'TAGS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (tggw — one build, GHCR + mirror)
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: docker/Dockerfile.tggw
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta-mirror.outputs.tags }}
-          labels: ${{ steps.meta-mirror.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          sbom: true
+          provenance: mode=max
+
+  release:
+    name: GitHub Release (binaries + chart)
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go/go.mod}
+      - name: Build tggw (${{ matrix.goos }}/${{ matrix.goarch }}) + package chart
+        run: |
+          cd go
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/DovBerKaplan/tg-session-gateway/go/internal/version.Version=${{ github.ref_name }}" \
+            -o /out/tggw ./cmd/tggw
+          cd ..
+          sha256sum /out/tggw > /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          mv /out/tggw /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}
+      - name: Create GitHub Release (gh CLI — official tooling)
+        if: matrix.goarch == 'amd64'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
+          helm package deploy/helm/tggw -d /out
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" --generate-notes \
+            /out/tggw-* /out/*.tgz || true
+      - name: Upload arm64 assets
+        if: matrix.goarch == 'arm64'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
+          helm package deploy/helm/tggw -d /out 2>/dev/null || true
+          gh release upload "${{ github.ref_name }}" /out/tggw-* --clobber

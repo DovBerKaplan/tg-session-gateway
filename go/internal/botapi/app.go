@@ -21,10 +21,8 @@ import (
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/config"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/health"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/store"
+	"github.com/DovBerKaplan/tg-session-gateway/go/internal/version"
 )
-
-// Version is reported by /healthz.
-const Version = "0.1.0-go"
 
 // App is the whole Bot API gateway: store, sessions, proxy, admin,
 // health and metrics wired together with graceful shutdown.
@@ -109,7 +107,7 @@ func (a *App) buildLifecycle() {
 		slog.Error("GW_FERNET_KEY cannot decrypt tokens (wrong key? those bots will not start)",
 			"aliases", strings.Join(bad, ", "))
 	}
-	slog.Info("gateway up", "restored", restored, "version", Version)
+	slog.Info("gateway up", "restored", restored, "version", version.Version)
 }
 
 // maintenanceLoop runs the hourly integrity/backup/retention sweep.
@@ -749,7 +747,7 @@ func bearerOK(header, secret string) bool {
 
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	lag := round2(a.Beat.Lag())
-	writeJSON(w, 200, map[string]any{"ok": a.Beat.Alive(), "version": Version, "loop_lag_s": lag})
+	writeJSON(w, 200, map[string]any{"ok": a.Beat.Alive(), "version": version.Version, "loop_lag_s": lag})
 }
 
 func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {

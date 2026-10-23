@@ -13,6 +13,7 @@ import (
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/botapi"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/config"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/cryptoutil"
+	"github.com/DovBerKaplan/tg-session-gateway/go/internal/version"
 )
 
 const genkeyHint = `Generate one outside the container:
@@ -44,7 +45,7 @@ func main() {
 	case "terminate":
 		err = runTerminate()
 	case "version":
-		fmt.Println(botapi.Version)
+		fmt.Println(version.Version)
 	default:
 		usage()
 		os.Exit(2)
