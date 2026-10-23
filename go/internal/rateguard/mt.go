@@ -12,13 +12,12 @@ import (
 // ── FLOOD_WAIT parsing (Pyrogram/Telegram error strings) ──────────
 
 var (
-	floodWaitRe     = regexp.MustCompile(`(?i)FloodWait\((\d+)\)`)
-	floodPremiumRe  = regexp.MustCompile(`(?i)FloodPremiumWait\((\d+)\)`)
-	slowmodeWaitRe  = regexp.MustCompile(`(?i)SlowmodeWait\((\d+)\)`)
-	peerFloodRe     = regexp.MustCompile(`(?i)PeerFloodInvalid`)
-	tgFloodWaitRe   = regexp.MustCompile(`(?is)FLOOD_WAIT\S*.*?wait of (\d+) seconds`)
-	tgSlowmodeRe    = regexp.MustCompile(`(?is)SLOWMODE_WAIT\S*.*?wait of (\d+) seconds`)
-	allDigitsRe     = regexp.MustCompile(`\d+`)
+	floodWaitRe    = regexp.MustCompile(`(?i)FloodWait\((\d+)\)`)
+	floodPremiumRe = regexp.MustCompile(`(?i)FloodPremiumWait\((\d+)\)`)
+	slowmodeWaitRe = regexp.MustCompile(`(?i)SlowmodeWait\((\d+)\)`)
+	peerFloodRe    = regexp.MustCompile(`(?i)PeerFloodInvalid`)
+	tgFloodWaitRe  = regexp.MustCompile(`(?is)FLOOD_WAIT\S*.*?wait of (\d+) seconds`)
+	tgSlowmodeRe   = regexp.MustCompile(`(?is)SLOWMODE_WAIT\S*.*?wait of (\d+) seconds`)
 )
 
 // FloodInfo describes a parsed rate-limit error.
@@ -66,8 +65,8 @@ func atoi(s string) int {
 // ── Per-peer adaptive backoff ─────────────────────────────────────
 
 type peerBackoff struct {
-	offences   int
-	lastWait   float64
+	offences    int
+	lastWait    float64
 	pausedUntil float64
 }
 
@@ -76,17 +75,17 @@ type peerBackoff struct {
 type MTGuard struct {
 	mu sync.Mutex
 
-	faq    config.RateConfig
-	MT     config.MTProtoRate
-	Private map[int64]*Bucket
-	Groups  map[int64]*Bucket
-	globalWrites *Bucket
-	reads        *Bucket
-	silent       *Bucket
-	paid         *Bucket
-	PaidEnabled  bool
+	faq               config.RateConfig
+	MT                config.MTProtoRate
+	Private           map[int64]*Bucket
+	Groups            map[int64]*Bucket
+	globalWrites      *Bucket
+	reads             *Bucket
+	silent            *Bucket
+	paid              *Bucket
+	PaidEnabled       bool
 	egressPausedUntil float64
-	paidLane bool
+	paidLane          bool
 
 	peerBackoffs map[int64]*peerBackoff
 }
@@ -94,10 +93,10 @@ type MTGuard struct {
 // NewMTGuard builds a guard for one MTProto session.
 func NewMTGuard(faq config.RateConfig, mt config.MTProtoRate) *MTGuard {
 	return &MTGuard{
-		faq:      faq,
-		MT:       mt,
-		Private:  map[int64]*Bucket{},
-		Groups:   map[int64]*Bucket{},
+		faq:          faq,
+		MT:           mt,
+		Private:      map[int64]*Bucket{},
+		Groups:       map[int64]*Bucket{},
 		globalWrites: NewBucket(faq.GlobalRate, faq.GlobalBurst),
 		reads:        NewBucket(faq.ReadRate, max(10, int(faq.ReadRate))),
 		silent:       NewBucket(mt.SilentRate, max(5, int(mt.SilentRate))),
@@ -287,7 +286,7 @@ func (g *MTGuard) Snapshot() map[string]any {
 	for pid, pb := range g.peerBackoffs {
 		if pb.pausedUntil > now {
 			peer[itoa(pid)] = map[string]any{
-				"offences":    pb.offences,
+				"offences":     pb.offences,
 				"paused_for_s": math.Round((pb.pausedUntil-now)*10) / 10,
 			}
 		}

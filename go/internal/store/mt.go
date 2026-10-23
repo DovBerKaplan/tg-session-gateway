@@ -83,15 +83,15 @@ func OpenMT(dataDir, fernetKey, durability string, backupsDir string, h *health.
 		return nil, err
 	}
 	if _, err := db.Exec(mtSchema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err := migrateIdempotencyV1(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err := EnsureSchema(db, 1, map[int]string{}, path, backupsDir); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &MT{DB: db, Path: path, BackupsDir: backupsDir, box: box}, nil
@@ -118,7 +118,7 @@ func migrateIdempotencyV1(db *sql.DB) error {
 			hasState = true
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	if hasState {
 		return nil
 	}
@@ -190,7 +190,7 @@ func (m *MT) ListSessions() ([]SessionRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SessionRow
 	for rows.Next() {
 		var r SessionRow
@@ -285,7 +285,7 @@ func (m *MT) QueuePull(alias string, offset int64, limit int) []map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []map[string]any
 	for rows.Next() {
 		var uid int64
@@ -407,7 +407,7 @@ func (m *MT) ListDeadLetters(alias string, limit int) []DeadLetterRow {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []DeadLetterRow
 	for rows.Next() {
 		var r DeadLetterRow
@@ -446,7 +446,7 @@ func (m *MT) GetAudit(limit int) []AuditEntry {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry

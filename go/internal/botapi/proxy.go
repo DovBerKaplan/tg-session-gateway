@@ -15,9 +15,9 @@ import (
 // gwResponse is what a proxy call produced: either gateway-generated
 // JSON (jsonBody) or a verbatim upstream passthrough (raw).
 type gwResponse struct {
-	status  int
+	status   int
 	jsonBody any
-	raw     []byte
+	raw      []byte
 }
 
 func jsonResp(status int, body any) *gwResponse { return &gwResponse{status: status, jsonBody: body} }
@@ -135,8 +135,8 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 			retry := maxF(1.0, minF(s.guard.WaitTime(m, chatID), 60.0))
 			return jsonResp(429, map[string]any{
 				"ok": false, "error_code": 429,
-				"description":  fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-				"parameters": map[string]any{"retry_after": int(retry)},
+				"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
+				"parameters":  map[string]any{"retry_after": int(retry)},
 			})
 		}
 		wait := minF(s.guard.WaitTime(m, chatID), 2.0)
@@ -145,7 +145,7 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 			return jsonResp(429, map[string]any{
 				"ok": false, "error_code": 429,
 				"description": "Queue wait exceeded GW_QUEUE_WAIT_TIMEOUT",
-				"parameters": map[string]any{"retry_after": 1},
+				"parameters":  map[string]any{"retry_after": 1},
 			})
 		}
 		select {
@@ -153,7 +153,7 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 			return jsonResp(429, map[string]any{
 				"ok": false, "error_code": 429,
 				"description": "Queue wait exceeded GW_QUEUE_WAIT_TIMEOUT",
-				"parameters": map[string]any{"retry_after": 1},
+				"parameters":  map[string]any{"retry_after": 1},
 			})
 		case <-time.After(time.Duration(wait * float64(time.Second))):
 		}
@@ -165,10 +165,10 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 		return jsonResp(500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
 	}
 	resp, err := p.client.Do(&httpRequest{
-		Method: "POST",
-		URL:    "/bot" + s.Token + "/" + method,
+		Method:  "POST",
+		URL:     "/bot" + s.Token + "/" + method,
 		RawBody: raw,
-		ctx:    ctx,
+		ctx:     ctx,
 	})
 	if err != nil {
 		return jsonResp(502, map[string]any{
@@ -217,15 +217,15 @@ func (p *Proxy) forwardRaw(ctx context.Context, s *BotSession, method string, ra
 		retry := maxF(1, minF(s.guard.WaitTime(method, chatID), 60))
 		return jsonResp(429, map[string]any{
 			"ok": false, "error_code": 429,
-			"description":  fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-			"parameters": map[string]any{"retry_after": int(retry)},
+			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
+			"parameters":  map[string]any{"retry_after": int(retry)},
 		})
 	}
 	resp, err := p.client.Do(&httpRequest{
 		Method: "POST", URL: "/bot" + s.Token + "/" + method,
 		RawBody: raw,
-		Header: map[string]string{"Content-Type": contentType},
-		ctx:    ctx,
+		Header:  map[string]string{"Content-Type": contentType},
+		ctx:     ctx,
 	})
 	if err != nil {
 		return jsonResp(502, map[string]any{

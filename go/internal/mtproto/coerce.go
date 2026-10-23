@@ -21,7 +21,7 @@ func CoerceReplyMarkup(v any) tg.ReplyMarkupClass {
 	}
 	if rows, ok := m["keyboard"].([]any); ok {
 		kb := &tg.ReplyKeyboardMarkup{
-			Resize:    boolOr(m, "resize_keyboard", true),
+			Resize:     boolOr(m, "resize_keyboard", true),
 			Persistent: boolOr(m, "is_persistent", false),
 		}
 		for _, rowAny := range rows {
@@ -124,8 +124,8 @@ func CoerceInputMedia(v any) tg.InputMediaClass {
 	switch kind {
 	case "photo":
 		return &tg.InputMediaPhoto{
-			ID: inputPhotoOrEmpty(mediaRef),
-			TTLSeconds:      intOr(m, "ttl_seconds", 0),
+			ID:         inputPhotoOrEmpty(mediaRef),
+			TTLSeconds: intOr(m, "ttl_seconds", 0),
 		}
 	case "video":
 		im := &tg.InputMediaUploadedDocument{

@@ -47,7 +47,7 @@ func TestDeadHolderReclaimed(t *testing.T) {
 	dir := t.TempDir()
 	// a PID that definitely does not exist
 	deadPID := int64(99999999)
-	os.WriteFile(filepath.Join(dir, "b1.lock"),
+	_ = os.WriteFile(filepath.Join(dir, "b1.lock"),
 		[]byte(strconv.FormatInt(deadPID, 10)+"\n"+hostname+"\n"+bootID+"\n1.0\n"), 0o644)
 	l := &Lock{Alias: "b1", LockDir: dir}
 	if !l.Acquire() {
@@ -59,7 +59,7 @@ func TestDeadHolderReclaimed(t *testing.T) {
 func TestLiveHolderNotStale(t *testing.T) {
 	dir := t.TempDir()
 	// OUR pid with a fresh mtime: not stale (same host, alive, fresh heartbeat)
-	os.WriteFile(filepath.Join(dir, "b1.lock"),
+	_ = os.WriteFile(filepath.Join(dir, "b1.lock"),
 		[]byte(strconv.Itoa(os.Getpid())+"\n"+hostname+"\n"+bootID+"\n1.0\n"), 0o644)
 	l := &Lock{Alias: "b1", LockDir: dir}
 	if l.Acquire() {
@@ -72,7 +72,7 @@ func TestLegacyTwoLineFileSameHostSemantics(t *testing.T) {
 	dir := t.TempDir()
 	deadPID := int64(99999999)
 	// legacy format: pid\ntimestamp — hostname nil → same-host rules
-	os.WriteFile(filepath.Join(dir, "legacy.lock"),
+	_ = os.WriteFile(filepath.Join(dir, "legacy.lock"),
 		[]byte(strconv.FormatInt(deadPID, 10)+"\n1.0\n"), 0o644)
 	l := &Lock{Alias: "legacy", LockDir: dir}
 	if !l.Acquire() {
@@ -84,13 +84,13 @@ func TestLegacyTwoLineFileSameHostSemantics(t *testing.T) {
 func TestSweepRemovesOnlyStale(t *testing.T) {
 	dir := t.TempDir()
 	// stale: dead pid
-	os.WriteFile(filepath.Join(dir, "dead.lock"),
+	_ = os.WriteFile(filepath.Join(dir, "dead.lock"),
 		[]byte("99999999\n"+hostname+"\n"+bootID+"\n1.0\n"), 0o644)
 	// live: our pid, fresh
-	os.WriteFile(filepath.Join(dir, "live.lock"),
+	_ = os.WriteFile(filepath.Join(dir, "live.lock"),
 		[]byte(strconv.Itoa(os.Getpid())+"\n"+hostname+"\n"+bootID+"\n1.0\n"), 0o644)
 	// unrelated file
-	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644)
 
 	removed := SweepDir(dir)
 	if removed != 1 {

@@ -247,6 +247,12 @@ def backup_db(path: str, backups_dir: str, keep: int = 5) -> str | None:
     dest = os.path.join(
         backups_dir, f"{base}-{ts}-{os.getpid()}-{int(time.time() * 1000) % 1000}.db"
     )
+    # two backups can land on the same millisecond (fast test loops, tight
+    # maintenance passes) — bump a counter instead of failing the backup
+    n = 0
+    while os.path.exists(dest):
+        n += 1
+        dest = os.path.join(backups_dir, f"{base}-{ts}-{os.getpid()}-{n}.db")
     try:
         conn = sqlite3.connect(path)
         try:

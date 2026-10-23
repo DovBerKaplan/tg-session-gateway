@@ -15,7 +15,7 @@ type httpRequest struct {
 	Method  string
 	URL     string
 	Body    map[string]any // JSON body (marshaled when RawBody is nil)
-	RawBody []byte          // pre-encoded body (push mode, raw forward)
+	RawBody []byte         // pre-encoded body (push mode, raw forward)
 	Header  map[string]string
 	ctx     context.Context
 }

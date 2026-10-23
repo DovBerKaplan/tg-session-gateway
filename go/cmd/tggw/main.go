@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,20 +69,25 @@ commands:
 // preflight enforces the Postgres-style hard requirements: secrets and
 // the data volume exist OUTSIDE the container layer, or the gateway
 // refuses to start instead of inventing identity that dies on restart.
+// Long operator guidance goes straight to stderr; the returned error
+// stays a short single line.
 func preflight(fernetKey, dataDir string) error {
 	if fernetKey == "" {
-		return fmt.Errorf("GW_FERNET_KEY is required (encrypts stored bot tokens).\n%s\n"+
-			"The gateway refuses to generate secrets inside the container:\n"+
-			"a key written to the container layer is lost on restart and\n"+
-			"every stored token becomes undecryptable.", genkeyHint)
+		fmt.Fprintf(os.Stderr,
+			"GW_FERNET_KEY encrypts the stored bot tokens.\n%s\n"+
+				"The gateway refuses to generate secrets inside the container:\n"+
+				"a key written to the container layer is lost on restart and\n"+
+				"every stored token becomes undecryptable.\n", genkeyHint)
+		return errors.New("GW_FERNET_KEY is required")
 	}
 	if os.Getenv("GW_ALLOW_EPHEMERAL_DATA") != "1" && !isMount(dataDir) {
-		return fmt.Errorf(
+		fmt.Fprintf(os.Stderr,
 			"%s must be a mounted volume (-v <name>:%s).\n"+
 				"Sessions, offsets, the update queue and the audit log live there;\n"+
 				"container-local storage silently loses them on restart.\n"+
-				"Set GW_ALLOW_EPHEMERAL_DATA=1 to run anyway (throwaway demos only).",
+				"Set GW_ALLOW_EPHEMERAL_DATA=1 to run anyway (throwaway demos only).\n",
 			dataDir, dataDir)
+		return fmt.Errorf("%s must be a mounted volume", dataDir)
 	}
 	return nil
 }

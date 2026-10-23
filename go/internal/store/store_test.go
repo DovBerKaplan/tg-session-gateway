@@ -49,8 +49,8 @@ func TestGatewayBotLifecycle(t *testing.T) {
 func TestGatewayReopenKeepsData(t *testing.T) {
 	dir := t.TempDir()
 	g := openTestGateway(t, dir)
-	g.RegisterBot("keep", "710000:token")
-	g.SaveOffset("keep", 1001)
+	_ = g.RegisterBot("keep", "710000:token")
+	_ = g.SaveOffset("keep", 1001)
 	g.Close()
 
 	g2 := openTestGateway(t, dir)
@@ -125,7 +125,7 @@ func TestQueuePushPullAckOffsets(t *testing.T) {
 		t.Fatal(err)
 	}
 	// redelivery dedupes
-	q.PushAll(batch)
+	_ = q.PushAll(batch)
 	if q.Depth() != 2 {
 		t.Fatalf("depth after dedupe = %d, want 2", q.Depth())
 	}
@@ -156,7 +156,7 @@ func TestQueueRestartRestoresUnacked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q1.PushAll([]map[string]any{
+	_ = q1.PushAll([]map[string]any{
 		{"update_id": int64(1), "message": map[string]any{"text": "a"}},
 		{"update_id": int64(2), "message": map[string]any{"text": "b"}},
 	})
@@ -178,8 +178,8 @@ func TestQueueRestartRestoresUnacked(t *testing.T) {
 func TestQueueOverflowDropOldest(t *testing.T) {
 	q, _ := OpenQueue(2, "drop_oldest", 0, "", "b1", "normal", nil)
 	defer q.Close()
-	q.PushAll([]map[string]any{{"update_id": int64(1)}, {"update_id": int64(2)}})
-	q.PushAll([]map[string]any{{"update_id": int64(3)}})
+	_ = q.PushAll([]map[string]any{{"update_id": int64(1)}, {"update_id": int64(2)}})
+	_ = q.PushAll([]map[string]any{{"update_id": int64(3)}})
 	stats := q.Stats()
 	if stats["depth"] != 2 || stats["dropped_oldest"] != 1 {
 		t.Fatalf("drop_oldest stats = %+v", stats)
@@ -193,7 +193,7 @@ func TestQueueOverflowDropOldest(t *testing.T) {
 func TestQueueOverflowRejectNew(t *testing.T) {
 	q, _ := OpenQueue(2, "reject_new", 0, "", "b1", "normal", nil)
 	defer q.Close()
-	q.PushAll([]map[string]any{{"update_id": int64(1)}, {"update_id": int64(2)}})
+	_ = q.PushAll([]map[string]any{{"update_id": int64(1)}, {"update_id": int64(2)}})
 	if err := q.PushAll([]map[string]any{{"update_id": int64(3)}}); err == nil {
 		t.Fatal("reject_new must report overflow")
 	}
@@ -202,9 +202,9 @@ func TestQueueOverflowRejectNew(t *testing.T) {
 func TestQueueTTLExpiry(t *testing.T) {
 	q, _ := OpenQueue(10, "drop_oldest", 0.05, "", "b1", "normal", nil)
 	defer q.Close()
-	q.PushAll([]map[string]any{{"update_id": int64(1)}})
+	_ = q.PushAll([]map[string]any{{"update_id": int64(1)}})
 	time.Sleep(80 * time.Millisecond)
-	q.PushAll([]map[string]any{{"update_id": int64(2)}}) // triggers prune
+	_ = q.PushAll([]map[string]any{{"update_id": int64(2)}}) // triggers prune
 	if got := q.Pull(nil, 0, 10, nil); len(got) != 1 || idOf(got[0]) != 2 {
 		t.Fatalf("expired update must be pruned: %+v", got)
 	}
@@ -248,7 +248,7 @@ func TestMTSessionLifecycle(t *testing.T) {
 
 func TestMTQueuePersistAck(t *testing.T) {
 	m := openTestMT(t, t.TempDir())
-	m.Register("s1", "tok")
+	_ = m.Register("s1", "tok")
 	_ = m.QueuePush("s1", 1, `{"_gw_seq":1,"message":{"text":"a"}}`)
 	_ = m.QueuePush("s1", 2, `{"_gw_seq":2,"message":{"text":"b"}}`)
 	if m.QueueDepth("s1") != 2 {
@@ -271,7 +271,7 @@ func TestMTQueuePersistAck(t *testing.T) {
 
 func TestMTDeadLetters(t *testing.T) {
 	m := openTestMT(t, t.TempDir())
-	m.Register("s1", "tok")
+	_ = m.Register("s1", "tok")
 	m.DeadLetter("s1", `{"weird":`, "unserializable")
 	rows := m.ListDeadLetters("s1", 10)
 	if len(rows) != 1 || rows[0].Reason != "unserializable" {
@@ -284,8 +284,8 @@ func TestMTDeadLetters(t *testing.T) {
 
 func TestMTIdempotencyPerAlias(t *testing.T) {
 	m := openTestMT(t, t.TempDir())
-	m.Register("a", "t")
-	m.Register("b", "t")
+	_ = m.Register("a", "t")
+	_ = m.Register("b", "t")
 	if v := m.IdempotencyClaim("a", "shared"); v != "claimed" {
 		t.Fatalf("a claim = %q", v)
 	}

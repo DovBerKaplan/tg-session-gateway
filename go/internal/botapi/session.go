@@ -41,17 +41,17 @@ type BotSession struct {
 	Alias string
 	Token string
 
-	mu       sync.Mutex
-	state    State
-	queue    *store.Queue
-	guard    *rateguard.Guard
+	mu             sync.Mutex
+	state          State
+	queue          *store.Queue
+	guard          *rateguard.Guard
 	connectedSince float64
-	lastError string
-	real429  int
-	synth429 int
-	last429  map[string]any
-	pushURL  string
-	pushHealthy *bool
+	lastError      string
+	real429        int
+	synth429       int
+	last429        map[string]any
+	pushURL        string
+	pushHealthy    *bool
 
 	pollCancel context.CancelFunc
 	pushCancel context.CancelFunc
@@ -63,12 +63,12 @@ type BotSession struct {
 	PaidBroadcasts bool
 
 	// typing overrides — nil inherits the runtime global layer
-	typMu                  sync.Mutex
-	typingEnabled          *bool
-	typingPrivateOnly      *bool
-	typingIntervalS        *float64
-	typingTimeoutS         *float64
-	typingTimeoutText      *string
+	typMu             sync.Mutex
+	typingEnabled     *bool
+	typingPrivateOnly *bool
+	typingIntervalS   *float64
+	typingTimeoutS    *float64
+	typingTimeoutText *string
 
 	sendTimes []float64 // rolling 1s send meter (§13)
 }
@@ -156,21 +156,21 @@ func (s *BotSession) PublicStatus() map[string]any {
 		lastErr = lastErr[:200]
 	}
 	return map[string]any{
-		"alias":           s.Alias,
-		"state":           string(s.state),
-		"connected_since": s.connectedSince,
+		"alias":            s.Alias,
+		"state":            string(s.state),
+		"connected_since":  s.connectedSince,
 		"connection_age_s": connectionAge,
-		"queue":           s.queue.Stats(),
-		"buckets":         s.guard.Snapshot(),
-		"sends_per_s":     s.sendsPerSLocked(),
-		"real_429":        s.real429,
-		"synthetic_429":   s.synth429,
-		"last_429":        last429,
-		"last_error":      lastErr,
-		"push_url":        nilIfEmpty(s.pushURL),
-		"push_healthy":    pushHealthy,
-		"on_limit":        s.effectiveOnLimitLocked(),
-		"paid_broadcasts": s.PaidBroadcasts,
+		"queue":            s.queue.Stats(),
+		"buckets":          s.guard.Snapshot(),
+		"sends_per_s":      s.sendsPerSLocked(),
+		"real_429":         s.real429,
+		"synthetic_429":    s.synth429,
+		"last_429":         last429,
+		"last_error":       lastErr,
+		"push_url":         nilIfEmpty(s.pushURL),
+		"push_healthy":     pushHealthy,
+		"on_limit":         s.effectiveOnLimitLocked(),
+		"paid_broadcasts":  s.PaidBroadcasts,
 	}
 }
 
@@ -323,7 +323,7 @@ func (m *Manager) Pause(alias string) bool {
 	if s.pollCancel != nil {
 		s.pollCancel()
 	}
-	m.store.SetPaused(alias, true)
+	_ = m.store.SetPaused(alias, true)
 	return true
 }
 
@@ -333,7 +333,7 @@ func (m *Manager) Resume(ctx context.Context, alias string) bool {
 	if s == nil {
 		return false
 	}
-	m.store.SetPaused(alias, false)
+	_ = m.store.SetPaused(alias, false)
 	if s.pollCancel == nil {
 		pollCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		s.pollCancel = cancel
@@ -372,7 +372,7 @@ func (m *Manager) Delete(_ context.Context, alias string) bool {
 		s.pushCancel()
 	}
 	s.queue.Close()
-	m.store.DeleteBot(alias)
+	_, _ = m.store.DeleteBot(alias)
 	return true
 }
 
@@ -455,10 +455,10 @@ func (m *Manager) pushHealthcheck(ctx context.Context, s *BotSession) {
 			cancel()
 			if err != nil || resp.StatusCode >= 400 {
 				v := false
-			s.setPushHealthy(&v) // queue grows; never disconnect Telegram
+				s.setPushHealthy(&v) // queue grows; never disconnect Telegram
 			} else {
 				v := true
-			s.setPushHealthy(&v)
+				s.setPushHealthy(&v)
 			}
 		}
 	}
@@ -534,6 +534,9 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 		})
 		cancel()
 		if err != nil {
+			if ctx.Err() != nil {
+				return // pause/drain/shutdown cancelled us — not an upstream error
+			}
 			s.setState(StateError)
 			s.setError(err.Error())
 			slog.Warn("poller error — backing off", "alias", s.Alias, "err", err)
@@ -545,9 +548,9 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 			continue
 		}
 		var data struct {
-			Ok          bool           `json:"ok"`
-			Description string         `json:"description"`
-			Parameters  map[string]any `json:"parameters"`
+			Ok          bool             `json:"ok"`
+			Description string           `json:"description"`
+			Parameters  map[string]any   `json:"parameters"`
 			Result      []map[string]any `json:"result"`
 		}
 		if err := json.Unmarshal(resp.Body, &data); err != nil {
@@ -586,7 +589,7 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 					offset = int64(id)
 				}
 			}
-			m.store.SaveOffset(s.Alias, offset)
+			_ = m.store.SaveOffset(s.Alias, offset)
 			// auto typing indicator (spec §10.4) — covers pull and push
 			m.typing.OnUpdates(s, data.Result)
 			if url := s.PushURL(); url != "" {

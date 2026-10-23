@@ -2,9 +2,8 @@ package botapi
 
 import (
 	"encoding/json"
-	"io"
 	"fmt"
-	"net/http"
+	"io"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -18,13 +17,13 @@ import (
 // fakeTelegram stands in for api.telegram.org: deleteWebhook OK,
 // getUpdates yields one batch then empties, sendMessage records.
 type fakeTelegram struct {
-	mu        sync.Mutex
-	batch     []map[string]any
-	fed       bool
-	getCalls  int
-	sent      []map[string]any
-	sendChat  []map[string]any
-	quota429  map[string]int // chat_id → send 429 with retry_after N times
+	mu       sync.Mutex
+	batch    []map[string]any
+	fed      bool
+	getCalls int
+	sent     []map[string]any
+	sendChat []map[string]any
+	quota429 map[string]int // chat_id → send 429 with retry_after N times
 }
 
 func newFakeTelegram(batch []map[string]any) *fakeTelegram {
@@ -75,9 +74,9 @@ func testCfg(dataDir string) config.BotAPI {
 		AdminSecret: "adm-secret", AppSecret: "app-secret",
 		DataDir: dataDir, FernetKey: "CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw=",
 		PollTimeout: 0, PollBackoffMax: 0.1,
-		Rate:   config.DefaultRate(),
-		Policy: config.PolicyConfig{OnLimit: "queue", QueueWaitTimeout: 25, UpdateQueueMax: 5000, UpdateTTLS: 3600},
-		Typing: config.TypingConfig{Enabled: false, PrivateOnly: true, IntervalS: 0.05, TimeoutS: 0.2, TimeoutText: "timeout!"},
+		Rate:    config.DefaultRate(),
+		Policy:  config.PolicyConfig{OnLimit: "queue", QueueWaitTimeout: 25, UpdateQueueMax: 5000, UpdateTTLS: 3600},
+		Typing:  config.TypingConfig{Enabled: false, PrivateOnly: true, IntervalS: 0.05, TimeoutS: 0.2, TimeoutText: "timeout!"},
 		Storage: config.StorageConfig{Durability: "normal", MaintenanceInterval: 3600, BackupInterval: 86400, BackupKeep: 5, AuditRetentionDays: 30},
 	}
 }
@@ -98,9 +97,6 @@ func newTestApp(t *testing.T, fake *fakeTelegram, dataDir string) (*App, *httpte
 }
 
 const token = "700000:itest-token"
-
-func admReq(r *http.Request) *http.Request { r.Header.Set("Authorization", "Bearer adm-secret"); return r }
-func appReq(r *http.Request) *http.Request { r.Header.Set("Authorization", "Bearer app-secret"); return r }
 
 func post(t *testing.T, url, path, body string, headers map[string]string) (int, map[string]any) {
 	t.Helper()
@@ -206,7 +202,7 @@ func TestGatewayLifecycle(t *testing.T) {
 	}
 
 	// pause: poller stops calling upstream
-	code, body = post(t, base, "/admin/bots/b1/pause", ``, map[string]string{"Authorization": "Bearer adm-secret"})
+	_, body = post(t, base, "/admin/bots/b1/pause", ``, map[string]string{"Authorization": "Bearer adm-secret"})
 	if body["ok"] != true {
 		t.Fatalf("pause = %v", body)
 	}

@@ -387,10 +387,10 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Alias   *string `json:"alias"`
-		Token   string  `json:"token"`
-		OnLimit *string `json:"on_limit"`
-		PaidBroadcasts bool `json:"paid_broadcasts"`
+		Alias          *string `json:"alias"`
+		Token          string  `json:"token"`
+		OnLimit        *string `json:"on_limit"`
+		PaidBroadcasts bool    `json:"paid_broadcasts"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || body.Token == "" {
 		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "token required"})

@@ -71,37 +71,37 @@ type Session struct {
 	clientFactory func() Client
 	client        Client
 
-	ConnectedSince   float64
-	LastError        string
-	RealFloodWait    int
-	Synthetic429     int
-	LastFloodWait    map[string]any
+	ConnectedSince float64
+	LastError      string
+	RealFloodWait  int
+	Synthetic429   int
+	LastFloodWait  map[string]any
 
 	// supervisor state
-	terminalError   bool
-	nextRetryAt     float64
-	stopSupervisor  chan struct{}
-	reconnects      int
-	startAttempts   int
-	LastPingOKAt    float64 // monotonic
-	pingAt          float64 // monotonic — last ping attempt
-	LastUpdateAt    float64 // wall clock
+	terminalError     bool
+	nextRetryAt       float64
+	stopSupervisor    chan struct{}
+	reconnects        int
+	startAttempts     int
+	LastPingOKAt      float64 // monotonic
+	pingAt            float64 // monotonic — last ping attempt
+	LastUpdateAt      float64 // wall clock
 	IdempotencyClaims int
-	PersistFailures int
-	SendPaused      bool
+	PersistFailures   int
+	SendPaused        bool
 
 	sessionLock *lock.Lock
 
 	// update routing
-	updateCh      chan map[string]any
-	consumers     []*Consumer
-	nextSeq       int64
+	updateCh       chan map[string]any
+	consumers      []*Consumer
+	nextSeq        int64
 	activeConsumer string
 
 	// write-through store + fast-path idempotency cache
-	st            *store.MT
-	h             *health.Storage
-	seenIdemKeys  map[string]float64
+	st           *store.MT
+	h            *health.Storage
+	seenIdemKeys map[string]float64
 
 	firstSendAt float64
 }
@@ -174,15 +174,15 @@ func (m *Manager) Register(ctx context.Context, alias, token string) (*Session, 
 		return nil, err
 	}
 	s := &Session{
-		Alias:        alias,
-		Token:        token,
-		state:        StateConnecting,
-		Guard:        rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
-		clientFactory: func() Client { return m.ClientFactory(alias) },
-		updateCh:     make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
-		st:           m.st,
-		h:            m.h,
-		seenIdemKeys: map[string]float64{},
+		Alias:          alias,
+		Token:          token,
+		state:          StateConnecting,
+		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
+		clientFactory:  func() Client { return m.ClientFactory(alias) },
+		updateCh:       make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
+		st:             m.st,
+		h:              m.h,
+		seenIdemKeys:   map[string]float64{},
 		stopSupervisor: make(chan struct{}),
 	}
 	m.mu.Lock()
@@ -492,7 +492,7 @@ func (m *Manager) Pause(alias string) bool {
 		return false
 	}
 	s.setState(StatePaused)
-	m.st.SetPaused(alias, true)
+	_ = m.st.SetPaused(alias, true)
 	return true
 }
 
@@ -502,7 +502,7 @@ func (m *Manager) Resume(alias string) bool {
 	if s == nil {
 		return false
 	}
-	m.st.SetPaused(alias, false)
+	_ = m.st.SetPaused(alias, false)
 	s.setState(StateLive)
 	return true
 }
@@ -578,7 +578,7 @@ func (m *Manager) Unregister(ctx context.Context, alias string) bool {
 		cancel()
 	}
 	m.releaseLock(s)
-	m.st.Delete(alias)
+	_, _ = m.st.Delete(alias)
 	return true
 }
 
@@ -817,22 +817,22 @@ func (s *Session) Stats() map[string]any {
 		lastErr = lastErr[:200]
 	}
 	return map[string]any{
-		"alias":            s.Alias,
-		"state":            string(s.state),
-		"connection_age_s": connectionAge,
-		"queue_depth":      len(s.updateCh),
-		"consumers":        len(s.consumers),
-		"active_consumer":  nilIfEmptyStr(s.activeConsumer),
-		"real_flood_wait":  s.RealFloodWait,
-		"synthetic_429":    s.Synthetic429,
-		"last_flood_wait":  lastFlood,
-		"last_error":       lastErr,
-		"send_paused":      s.SendPaused,
-		"terminal_error":   s.terminalError,
-		"reconnects":       s.reconnects,
-		"start_attempts":   s.startAttempts,
-		"persist_failures": s.PersistFailures,
-		"idempotency_claims": s.IdempotencyClaims,
+		"alias":                     s.Alias,
+		"state":                     string(s.state),
+		"connection_age_s":          connectionAge,
+		"queue_depth":               len(s.updateCh),
+		"consumers":                 len(s.consumers),
+		"active_consumer":           nilIfEmptyStr(s.activeConsumer),
+		"real_flood_wait":           s.RealFloodWait,
+		"synthetic_429":             s.Synthetic429,
+		"last_flood_wait":           lastFlood,
+		"last_error":                lastErr,
+		"send_paused":               s.SendPaused,
+		"terminal_error":            s.terminalError,
+		"reconnects":                s.reconnects,
+		"start_attempts":            s.startAttempts,
+		"persist_failures":          s.PersistFailures,
+		"idempotency_claims":        s.IdempotencyClaims,
 		"seconds_since_last_update": lastUpdateAge,
 		"seconds_since_ping_ok":     pingAge,
 		"deploy_to_first_message_s": slo,

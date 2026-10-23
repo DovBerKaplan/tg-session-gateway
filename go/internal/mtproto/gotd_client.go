@@ -30,10 +30,10 @@ type gotdClient struct {
 	alias   string
 	storeDB *store.MT
 
-	client       *telegram.Client
-	raw          *tg.Client
-	runCancel    context.CancelFunc
-	runErr       error
+	client    *telegram.Client
+	raw       *tg.Client
+	runCancel context.CancelFunc
+
 	updateHandler func(map[string]any)
 }
 
@@ -74,7 +74,7 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 	storage := sqliteSessionStorage{db: st.DB, alias: alias}
 	g.client = telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: &storage,
-		UpdateHandler: telegram.UpdateHandlerFunc(g.onUpdatesClass),
+		UpdateHandler:  telegram.UpdateHandlerFunc(g.onUpdatesClass),
 	})
 	g.raw = g.client.API()
 	return g
@@ -106,12 +106,12 @@ func flattenUpdates(class tg.UpdatesClass) []tg.UpdateClass {
 		// short private message — synthesize the UpdateNewMessage shape
 		out = append(out, &tg.UpdateNewMessage{
 			Message: &tg.Message{
-				ID:       ups.ID,
-				Out:      ups.Out,
+				ID:        ups.ID,
+				Out:       ups.Out,
 				Mentioned: ups.Mentioned,
-				Date:     ups.Date,
-				PeerID:   &tg.PeerUser{UserID: ups.UserID},
-				Message:  ups.Message,
+				Date:      ups.Date,
+				PeerID:    &tg.PeerUser{UserID: ups.UserID},
+				Message:   ups.Message,
 			},
 			Pts: ups.Pts,
 		})

@@ -57,6 +57,61 @@ jobs:
       - run: docker build -f docker/Dockerfile.gateway -t tg-session-gateway:ci .
       - run: docker build -f docker/Dockerfile.mtgateway -t tg-mtgateway:ci .
 
+  go-test:
+    name: Go Tests (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go/go.mod}
+      - run: go build ./...
+        working-directory: go
+      - run: go vet ./...
+        working-directory: go
+      - run: go test -race -count=1 ./...
+        working-directory: go
+
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go/go.mod}
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: go
+          args: --timeout=5m
+
+  go-conformance:
+    name: Go Black-box Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go/go.mod}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install httpx pytest
+      - name: Build static binary
+        run: cd go && CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
+      - name: Run conformance suite against the real binary
+        run: pytest -q tests/conformance_go
+        env: {TGGW_BIN: /tmp/tggw}
+
+  go-image:
+    name: Go Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f docker/Dockerfile.tggw -t tggw:ci .
+      - run: docker run --rm tggw:ci version
+      - run: docker run --rm --entrypoint /tggw tggw:ci healthcheck http://127.0.0.1:1 && exit 1 || exit 0
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest

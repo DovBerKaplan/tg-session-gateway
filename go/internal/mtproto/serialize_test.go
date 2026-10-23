@@ -14,10 +14,10 @@ import (
 func TestSerializeUpdateNewMessage(t *testing.T) {
 	u := &tg.UpdateNewMessage{
 		Message: &tg.Message{
-			ID:   42,
-			Date: 1700000000,
-			PeerID: &tg.PeerUser{UserID: 10},
-			FromID: &tg.PeerUser{UserID: 20},
+			ID:      42,
+			Date:    1700000000,
+			PeerID:  &tg.PeerUser{UserID: 10},
+			FromID:  &tg.PeerUser{UserID: 20},
 			Message: "hello",
 			Entities: []tg.MessageEntityClass{
 				&tg.MessageEntityBold{Offset: 0, Length: 2},
@@ -127,9 +127,9 @@ func TestSerializeReplyMarkupRoundTrip(t *testing.T) {
 func TestCoerceReplyMarkupVariants(t *testing.T) {
 	// reply keyboard with resize + persistence
 	kb := CoerceReplyMarkup(map[string]any{
-		"keyboard":      []any{[]any{map[string]any{"text": "Hi"}}},
+		"keyboard":        []any{[]any{map[string]any{"text": "Hi"}}},
 		"resize_keyboard": true,
-		"is_persistent":  true,
+		"is_persistent":   true,
 	})
 	rk, ok := kb.(*tg.ReplyKeyboardMarkup)
 	if !ok || !rk.Resize || !rk.Persistent || len(rk.Rows) != 1 {

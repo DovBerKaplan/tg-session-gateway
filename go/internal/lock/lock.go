@@ -60,12 +60,12 @@ var (
 // connecting to Telegram so a second process fails at the filesystem
 // level and never opens a TCP connection.
 type Lock struct {
-	Alias    string
-	LockDir  string
-	fd       *os.File
-	path     string
+	Alias         string
+	LockDir       string
+	fd            *os.File
+	path          string
 	heartbeatStop chan struct{}
-	Token    int64 // fencing token (monotonic per acquisition)
+	Token         int64 // fencing token (monotonic per acquisition)
 }
 
 // Path is the lock file path for the alias.

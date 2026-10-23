@@ -358,9 +358,9 @@ func TestRegisterLockSendUpdatesIdempotency(t *testing.T) {
 	}
 
 	// idempotency: same key twice → one send
-	code, _ = mtDo(t, "POST", base, "/v1/sessions/b1/send_message",
+	_, _ = mtDo(t, "POST", base, "/v1/sessions/b1/send_message",
 		`{"_idempotency_key":"k1","chat_id":10,"text":"once"}`, itestAPP)
-	code, body = mtDo(t, "POST", base, "/v1/sessions/b1/send_message",
+	_, body = mtDo(t, "POST", base, "/v1/sessions/b1/send_message",
 		`{"_idempotency_key":"k1","chat_id":10,"text":"once"}`, itestAPP)
 	if body["idempotent_replay"] != true {
 		t.Fatalf("replay not flagged: %v", body)

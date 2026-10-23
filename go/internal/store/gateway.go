@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 
 // Idempotency timing constants (spec E2).
 const (
-	IdempotencyTTL   = 300.0
-	StalePendingS    = 60.0 // a claim older than this died mid-send
+	IdempotencyTTL = 300.0
+	StalePendingS  = 60.0 // a claim older than this died mid-send
 )
 
 // Gateway is the Bot API plane store: registered bots, encrypted
@@ -72,11 +72,11 @@ func OpenGateway(dataDir, fernetKey, durability string, backupsDir string, h *he
 		return nil, err
 	}
 	if _, err := db.Exec(gatewaySchema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err := EnsureSchema(db, 1, map[int]string{}, path, backupsDir); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &Gateway{DB: db, Path: path, BackupsDir: backupsDir, box: box}, nil
@@ -116,9 +116,9 @@ func (g *Gateway) SetPaused(alias string, paused bool) error {
 
 // BotRow is the list_bots view.
 type BotRow struct {
-	Alias         string `json:"alias"`
-	TelegramOffset int64 `json:"telegram_offset"`
-	Paused        bool   `json:"paused"`
+	Alias          string `json:"alias"`
+	TelegramOffset int64  `json:"telegram_offset"`
+	Paused         bool   `json:"paused"`
 }
 
 // ListBots returns every registered alias.
@@ -127,7 +127,7 @@ func (g *Gateway) ListBots() ([]BotRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []BotRow
 	for rows.Next() {
 		var r BotRow
@@ -220,7 +220,7 @@ func (g *Gateway) LoadBackoffs(alias string) []BackoffRow {
 		slog.Warn("load_backoffs failed", "alias", alias, "err", err)
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []BackoffRow
 	for rows.Next() {
 		var r BackoffRow
@@ -303,7 +303,7 @@ func (g *Gateway) GetAudit(limit int) []AuditEntry {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry

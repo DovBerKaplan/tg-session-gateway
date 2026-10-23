@@ -70,7 +70,7 @@ func readPyroforkSession(path string) (*pyroforkSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	row := db.QueryRow(
 		"SELECT dc_id, api_id, test_mode, auth_key, user_id, is_bot FROM sessions LIMIT 1")
 	var s pyroforkSession
@@ -127,7 +127,7 @@ func Run(dataDir string, dryRun bool) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(
 		"CREATE TABLE IF NOT EXISTS gotd_sessions (alias TEXT PRIMARY KEY, session_blob BLOB NOT NULL)"); err != nil {
 		return nil, err
@@ -195,7 +195,7 @@ func Run(dataDir string, dryRun bool) (*Report, error) {
 				rep.NeedsNewLogin++
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	rep.LoginsRequired = rep.Errors + rep.NeedsNewLogin
 	return rep, nil

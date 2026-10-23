@@ -48,14 +48,14 @@ func envBool(name string, def bool) bool {
 
 // RateConfig carries the token buckets per the official Bots FAQ.
 type RateConfig struct {
-	PrivateRate float64 // private chat: 1 msg/s, short burst allowed
+	PrivateRate  float64 // private chat: 1 msg/s, short burst allowed
 	PrivateBurst int
-	GroupRate   float64 // group: 20 msgs / 60 s
-	GroupBurst  int
-	GlobalRate  float64 // ~30 msgs/s for the whole bot
-	GlobalBurst int
-	ReadRate    float64 // soft global bucket for reads
-	PaidRate    float64 // paid broadcasts (double opt-in)
+	GroupRate    float64 // group: 20 msgs / 60 s
+	GroupBurst   int
+	GlobalRate   float64 // ~30 msgs/s for the whole bot
+	GlobalBurst  int
+	ReadRate     float64 // soft global bucket for reads
+	PaidRate     float64 // paid broadcasts (double opt-in)
 }
 
 func DefaultRate() RateConfig {
@@ -73,19 +73,19 @@ func DefaultRate() RateConfig {
 
 // PolicyConfig is the per-bot behavior when a bucket is empty.
 type PolicyConfig struct {
-	OnLimit              string  // queue | reject
-	QueueWaitTimeout     float64
-	UpdateQueueMax       int
-	UpdateTTLS           float64
+	OnLimit               string // queue | reject
+	QueueWaitTimeout      float64
+	UpdateQueueMax        int
+	UpdateTTLS            float64
 	PaidBroadcastsEnabled bool
 }
 
 func DefaultPolicy() PolicyConfig {
 	return PolicyConfig{
-		OnLimit:              envStr("GW_ON_LIMIT", "queue"),
-		QueueWaitTimeout:     envFloat("GW_QUEUE_WAIT_TIMEOUT", 25.0),
-		UpdateQueueMax:       envInt("GW_UPDATE_QUEUE_MAX", 5000),
-		UpdateTTLS:           envFloat("GW_UPDATE_TTL_S", 3600.0),
+		OnLimit:               envStr("GW_ON_LIMIT", "queue"),
+		QueueWaitTimeout:      envFloat("GW_QUEUE_WAIT_TIMEOUT", 25.0),
+		UpdateQueueMax:        envInt("GW_UPDATE_QUEUE_MAX", 5000),
+		UpdateTTLS:            envFloat("GW_UPDATE_TTL_S", 3600.0),
 		PaidBroadcastsEnabled: envBool("GW_PAID_BROADCASTS", false),
 	}
 }
@@ -111,11 +111,11 @@ func DefaultStorage() StorageConfig {
 
 // TypingConfig is the auto-typing boot defaults (spec §10.4).
 type TypingConfig struct {
-	Enabled      bool
-	PrivateOnly  bool
-	IntervalS    float64
-	TimeoutS     float64
-	TimeoutText  string
+	Enabled     bool
+	PrivateOnly bool
+	IntervalS   float64
+	TimeoutS    float64
+	TimeoutText string
 }
 
 // DefaultTypingTimeoutText mirrors the Python default byte-for-byte.
@@ -133,10 +133,10 @@ func DefaultTyping() TypingConfig {
 
 // MTProtoRate is MTProto-specific rate handling beyond the FAQ buckets.
 type MTProtoRate struct {
-	FloodBackoffBase float64 // exponential multiplier per repeated offence
-	SlowmodeRespect  bool
+	FloodBackoffBase  float64 // exponential multiplier per repeated offence
+	SlowmodeRespect   bool
 	PeerFloodCooldown float64
-	SilentRate       float64
+	SilentRate        float64
 }
 
 func DefaultMTProtoRate() MTProtoRate {
@@ -150,9 +150,9 @@ func DefaultMTProtoRate() MTProtoRate {
 
 // BotAPI is the Bot API gateway (proxy/poller) configuration.
 type BotAPI struct {
-	Host       string
-	Port       int
-	Upstream   string
+	Host     string
+	Port     int
+	Upstream string
 
 	AdminSecret string
 	AppSecret   string
@@ -160,39 +160,39 @@ type BotAPI struct {
 	DataDir   string
 	FernetKey string // empty → load from data dir / generate (with warning)
 
-	PollTimeout     int
-	PollBackoffMax  float64
+	PollTimeout        int
+	PollBackoffMax     float64
 	PushHealthInterval float64
 
-	Rate   RateConfig
-	Policy PolicyConfig
-	Typing TypingConfig
+	Rate    RateConfig
+	Policy  PolicyConfig
+	Typing  TypingConfig
 	Storage StorageConfig
 }
 
 func BotAPIFromEnv() BotAPI {
 	return BotAPI{
-		Host:        envStr("GW_HOST", "0.0.0.0"),
-		Port:        envInt("GW_PORT", 8080),
-		Upstream:    envStr("GW_UPSTREAM", "https://api.telegram.org"),
-		AdminSecret: envStr("GW_ADMIN_SECRET", ""),
-		AppSecret:   envStr("GW_APP_SECRET", ""),
-		DataDir:     envStr("GW_DATA_DIR", "/data"),
-		FernetKey:   envStr("GW_FERNET_KEY", ""),
-		PollTimeout: envInt("GW_POLL_TIMEOUT", 25),
-		PollBackoffMax: envFloat("GW_POLL_BACKOFF_MAX", 30.0),
+		Host:               envStr("GW_HOST", "0.0.0.0"),
+		Port:               envInt("GW_PORT", 8080),
+		Upstream:           envStr("GW_UPSTREAM", "https://api.telegram.org"),
+		AdminSecret:        envStr("GW_ADMIN_SECRET", ""),
+		AppSecret:          envStr("GW_APP_SECRET", ""),
+		DataDir:            envStr("GW_DATA_DIR", "/data"),
+		FernetKey:          envStr("GW_FERNET_KEY", ""),
+		PollTimeout:        envInt("GW_POLL_TIMEOUT", 25),
+		PollBackoffMax:     envFloat("GW_POLL_BACKOFF_MAX", 30.0),
 		PushHealthInterval: envFloat("GW_PUSH_HEALTH_INTERVAL", 60.0),
-		Rate:        DefaultRate(),
-		Policy:      DefaultPolicy(),
-		Typing:      DefaultTyping(),
-		Storage:     DefaultStorage(),
+		Rate:               DefaultRate(),
+		Policy:             DefaultPolicy(),
+		Typing:             DefaultTyping(),
+		Storage:            DefaultStorage(),
 	}
 }
 
 // MTProto is the MTProto sidecar configuration.
 type MTProto struct {
-	Host string
-	Port int
+	Host   string
+	Port   int
 	WSAddr string // informational: GW_WS_PORT kept for compatibility
 
 	AdminSecret string
@@ -204,8 +204,8 @@ type MTProto struct {
 	APIID   int
 	APIHash string
 
-	SessionDir  string
-	BackupsDir  string
+	SessionDir string
+	BackupsDir string
 
 	LockBackend string // "file" (redis removed: K8s StatefulSet + RWO PVC own single ownership)
 
@@ -214,31 +214,31 @@ type MTProto struct {
 
 	MetricsEnabled bool
 
-	Rate     RateConfig
-	MTRate   MTProtoRate
-	Policy   PolicyConfig
-	Storage  StorageConfig
+	Rate    RateConfig
+	MTRate  MTProtoRate
+	Policy  PolicyConfig
+	Storage StorageConfig
 }
 
 func MTProtoFromEnv() MTProto {
 	dataDir := envStr("GW_DATA_DIR", "/data")
 	cfg := MTProto{
-		Host:        envStr("GW_HOST", "0.0.0.0"),
-		Port:        envInt("GW_PORT", 8080),
-		AdminSecret: envStr("GW_ADMIN_SECRET", ""),
-		AppSecret:   envStr("GW_APP_SECRET", ""),
-		DataDir:     dataDir,
-		FernetKey:   envStr("GW_FERNET_KEY", ""),
-		APIID:       envInt("GW_API_ID", 0),
-		APIHash:     envStr("GW_API_HASH", ""),
-		LockBackend: envStr("GW_LOCK_BACKEND", "file"),
+		Host:            envStr("GW_HOST", "0.0.0.0"),
+		Port:            envInt("GW_PORT", 8080),
+		AdminSecret:     envStr("GW_ADMIN_SECRET", ""),
+		AppSecret:       envStr("GW_APP_SECRET", ""),
+		DataDir:         dataDir,
+		FernetKey:       envStr("GW_FERNET_KEY", ""),
+		APIID:           envInt("GW_API_ID", 0),
+		APIHash:         envStr("GW_API_HASH", ""),
+		LockBackend:     envStr("GW_LOCK_BACKEND", "file"),
 		MaxSessions:     envInt("GW_MAX_SESSIONS", 50),
 		ConsumerTimeout: envFloat("GW_CONSUMER_TIMEOUT", 120.0),
 		MetricsEnabled:  envBool("GW_METRICS", true),
-		Rate:    DefaultRate(),
-		MTRate:  DefaultMTProtoRate(),
-		Policy:  DefaultPolicy(),
-		Storage: DefaultStorage(),
+		Rate:            DefaultRate(),
+		MTRate:          DefaultMTProtoRate(),
+		Policy:          DefaultPolicy(),
+		Storage:         DefaultStorage(),
 	}
 	cfg.SessionDir = dataDir + "/sessions"
 	cfg.BackupsDir = dataDir + "/backups"

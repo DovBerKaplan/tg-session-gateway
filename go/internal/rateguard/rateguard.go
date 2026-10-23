@@ -47,10 +47,10 @@ func MethodKind(method string) string {
 // Bucket is a token bucket with pause support. Start-full semantics:
 // tokens<0 at construction → burst available immediately.
 type Bucket struct {
-	Rate      float64 // tokens per second
-	Capacity  int
-	Tokens    float64
-	Updated   float64 // monotonic
+	Rate        float64 // tokens per second
+	Capacity    int
+	Tokens      float64
+	Updated     float64 // monotonic
 	PausedUntil float64
 }
 
@@ -107,13 +107,13 @@ func nowMono() float64 { return float64(time.Now().UnixNano()) / 1e9 }
 type Guard struct {
 	mu sync.Mutex
 
-	cfg    config.RateConfig
-	Private map[int64]*Bucket
-	Groups  map[int64]*Bucket
-	globalWrites *Bucket
-	paid         *Bucket
-	reads        *Bucket
-	PaidEnabled  bool // double opt-in
+	cfg               config.RateConfig
+	Private           map[int64]*Bucket
+	Groups            map[int64]*Bucket
+	globalWrites      *Bucket
+	paid              *Bucket
+	reads             *Bucket
+	PaidEnabled       bool // double opt-in
 	egressPausedUntil float64
 
 	paidLane bool
@@ -122,12 +122,12 @@ type Guard struct {
 // NewGuard builds a guard for one bot with the shared rate config.
 func NewGuard(cfg config.RateConfig) *Guard {
 	return &Guard{
-		cfg:           cfg,
-		Private:       map[int64]*Bucket{},
-		Groups:        map[int64]*Bucket{},
-		globalWrites:  NewBucket(cfg.GlobalRate, cfg.GlobalBurst),
-		paid:          NewBucket(cfg.PaidRate, int(cfg.PaidRate)),
-		reads:         NewBucket(cfg.ReadRate, max(10, int(cfg.ReadRate))),
+		cfg:          cfg,
+		Private:      map[int64]*Bucket{},
+		Groups:       map[int64]*Bucket{},
+		globalWrites: NewBucket(cfg.GlobalRate, cfg.GlobalBurst),
+		paid:         NewBucket(cfg.PaidRate, int(cfg.PaidRate)),
+		reads:        NewBucket(cfg.ReadRate, max(10, int(cfg.ReadRate))),
 	}
 }
 
@@ -283,8 +283,8 @@ func (g *Guard) Snapshot() map[string]any {
 		}
 	}
 	return map[string]any{
-		"private":            privateEmpty,
-		"groups":             groupEmpty,
+		"private":             privateEmpty,
+		"groups":              groupEmpty,
 		"egress_paused_for_s": math.Round(math.Max(0, g.egressPausedUntil-now)*10) / 10,
 	}
 }

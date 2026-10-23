@@ -18,12 +18,12 @@ var settingFields = []string{"enabled", "private_only", "interval_s", "timeout_s
 // RuntimeTypingSettings is the gateway-wide layer, live-mutable via the
 // admin API.
 type RuntimeTypingSettings struct {
-	mu           sync.Mutex
-	Enabled      bool
-	PrivateOnly  bool
-	IntervalS    float64
-	TimeoutS     float64
-	TimeoutText  string
+	mu          sync.Mutex
+	Enabled     bool
+	PrivateOnly bool
+	IntervalS   float64
+	TimeoutS    float64
+	TimeoutText string
 }
 
 func settingsFromConfig(c config.TypingConfig) *RuntimeTypingSettings {
@@ -71,11 +71,11 @@ func (r *RuntimeTypingSettings) Snapshot() map[string]any {
 
 // TypingPatch is a settings update (nil fields stay unchanged).
 type TypingPatch struct {
-	Enabled      *bool    `json:"enabled"`
-	PrivateOnly  *bool    `json:"private_only"`
-	IntervalS    *float64 `json:"interval_s"`
-	TimeoutS     *float64 `json:"timeout_s"`
-	TimeoutText  *string  `json:"timeout_text"`
+	Enabled     *bool    `json:"enabled"`
+	PrivateOnly *bool    `json:"private_only"`
+	IntervalS   *float64 `json:"interval_s"`
+	TimeoutS    *float64 `json:"timeout_s"`
+	TimeoutText *string  `json:"timeout_text"`
 }
 
 type activeLoop struct {

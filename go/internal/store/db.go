@@ -50,7 +50,7 @@ func Open(path, durability string, foreignKeys bool) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	for _, stmt := range PragmaStatements(durability, foreignKeys) {
 		if _, err := db.Exec(stmt); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
@@ -65,7 +65,7 @@ func QuickCheck(path string) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var result string
 	row := db.QueryRow("PRAGMA quick_check")
 	if err := row.Scan(&result); err != nil {
@@ -183,7 +183,7 @@ func BackupDB(path, backupsDir string, keep int) string {
 	if err != nil {
 		return ""
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec("VACUUM INTO ?", dest); err != nil {
 		// parameter binding unsupported for VACUUM targets — escape manually
 		literal := "'" + strings.ReplaceAll(dest, "'", "''") + "'"
@@ -232,7 +232,7 @@ func MaintenancePass(dbPaths []string, backupsDir string, h *health.Storage, kee
 				h.NotePersistFailure("maintenance:"+filepath.Base(path), err)
 			}
 		}
-		db.Close()
+		_ = db.Close()
 	}
 	if now.Sub(lastBackupAt(backupsDir)).Seconds() >= backupInterval {
 		for _, path := range dbPaths {

@@ -21,19 +21,19 @@ import (
 //
 // overflow: "drop_oldest" (default) or "reject_new".
 type Queue struct {
-	mu         sync.Mutex
-	maxsize    int
-	overflow   string
-	ttlS       float64
-	q          *list.List // front = oldest
-	seen       map[int64]bool
+	mu             sync.Mutex
+	maxsize        int
+	overflow       string
+	ttlS           float64
+	q              *list.List // front = oldest
+	seen           map[int64]bool
 	consumerOffset int64
-	newData    chan struct{} // closed on push; replaced after each wait
-	dropped    int
-	expired    int
+	newData        chan struct{} // closed on push; replaced after each wait
+	dropped        int
+	expired        int
 
-	db             *sql.DB
-	botAlias       string
+	db              *sql.DB
+	botAlias        string
 	unloadedBacklog int
 
 	health *health.Storage
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS consumer_offsets (
     consumer_offset INTEGER NOT NULL DEFAULT 0
 );`)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	q.db = db
@@ -132,12 +132,12 @@ func (q *Queue) loadFromDB() {
 			continue
 		}
 		// wall-clock backfill: age is measured from the original enqueue
-		enq := time.Now().Add(-time.Duration((wallNow()-enqueuedAt)*float64(time.Second)))
+		enq := time.Now().Add(-time.Duration((wallNow() - enqueuedAt) * float64(time.Second)))
 		q.q.PushBack(QueuedUpdate{uid, update, enq})
 		q.seen[uid] = true
 		loaded++
 	}
-	rows.Close()
+	_ = rows.Close()
 	_, _ = q.db.Exec("DELETE FROM update_queue WHERE bot_alias = ? AND update_id <= ?", q.botAlias, q.consumerOffset)
 	var total int
 	_ = q.db.QueryRow(
@@ -159,7 +159,7 @@ func (q *Queue) PushAll(updates []map[string]any) error {
 	q.mu.Lock()
 	q.pruneExpiredLocked()
 	type persisted struct {
-		id  int64
+		id   int64
 		json string
 	}
 	var batch []persisted
@@ -210,7 +210,7 @@ func (q *Queue) PushAll(updates []map[string]any) error {
 		stmt, err := tx.Prepare(
 			"INSERT OR IGNORE INTO update_queue (bot_alias, update_id, update_json, enqueued_at) VALUES (?, ?, ?, ?)")
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			q.notePersistFailure("queue.push:"+q.botAlias, err)
 			return nil
 		}
@@ -218,7 +218,7 @@ func (q *Queue) PushAll(updates []map[string]any) error {
 		for _, p := range batch {
 			_, _ = stmt.Exec(q.botAlias, p.id, p.json, now)
 		}
-		stmt.Close()
+		_ = stmt.Close()
 		if err := tx.Commit(); err != nil {
 			q.notePersistFailure("queue.push:"+q.botAlias, err)
 		}
@@ -364,12 +364,12 @@ func (q *Queue) Stats() map[string]any {
 		}
 	}
 	return map[string]any{
-		"depth":            q.q.Len(),
-		"dropped_oldest":   q.dropped,
-		"expired_by_ttl":   q.expired,
-		"max_age_s":        round1(maxAge),
-		"consumer_offset":  q.consumerOffset,
-		"persistent":       q.db != nil,
+		"depth":           q.q.Len(),
+		"dropped_oldest":  q.dropped,
+		"expired_by_ttl":  q.expired,
+		"max_age_s":       round1(maxAge),
+		"consumer_offset": q.consumerOffset,
+		"persistent":      q.db != nil,
 	}
 }
 

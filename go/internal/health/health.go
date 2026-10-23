@@ -102,12 +102,12 @@ func (t *BootTracker) Clear() { _ = os.Remove(t.Path) }
 // Storage makes storage problems VISIBLE (metrics + degraded
 // readiness) instead of vanishing into ignored errors.
 type Storage struct {
-	mu               sync.Mutex
-	PersistFailures  int
-	CorruptRows      int
-	QuarantinedFiles int
-	reasons          map[string]bool
-	LastPersistError string
+	mu                sync.Mutex
+	PersistFailures   int
+	CorruptRows       int
+	QuarantinedFiles  int
+	reasons           map[string]bool
+	LastPersistError  string
 	LastMaintenanceAt float64
 }
 

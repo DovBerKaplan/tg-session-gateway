@@ -17,8 +17,8 @@ import (
 // SentMessage is the normalized send result (Pyrogram Message subset
 // the consumers read).
 type SentMessage struct {
-	ID     int64  `json:"id"`
-	ChatID int64  `json:"chat_id"`
+	ID     int64 `json:"id"`
+	ChatID int64 `json:"chat_id"`
 }
 
 // EditResult reports an edit outcome.
@@ -57,12 +57,12 @@ type BotInfo struct {
 
 // SendParams is the coerced send_message surface.
 type SendParams struct {
-	ChatID         int64
-	Text           string
-	ParseMode      string // "" | html | markdown
-	ReplyMarkup    map[string]any
-	ReplyToMsgID   int64
-	DisableNotify  bool
+	ChatID        int64
+	Text          string
+	ParseMode     string // "" | html | markdown
+	ReplyMarkup   map[string]any
+	ReplyToMsgID  int64
+	DisableNotify bool
 }
 
 // EditTextParams is edit_message_text.
@@ -100,20 +100,20 @@ type adapter func(ctx context.Context, c Client, args map[string]any) (any, erro
 // adapters is the explicit method allowlist (the plan's inventory from
 // production metrics/logs). Unknown methods return ErrUnsupported.
 var adapters = map[string]adapter{
-	"send_message":            adaptSendMessage,
-	"edit_message_text":       adaptEditText,
+	"send_message":              adaptSendMessage,
+	"edit_message_text":         adaptEditText,
 	"edit_message_reply_markup": adaptEditMarkup,
-	"send_chat_action":        adaptChatAction,
-	"delete_messages":         adaptDeleteMessages,
-	"forward_messages":        adaptForwardMessages,
-	"get_chat":                adaptGetChat,
-	"resolve_username":        adaptResolveUsername,
-	"answer_callback_query":   adaptAnswerCallback,
-	"send_photo":              adaptUploadSend("photo"),
-	"send_video":              adaptUploadSend("video"),
-	"send_document":           adaptUploadSend("document"),
-	"send_audio":              adaptUploadSend("audio"),
-	"get_me":                  adaptGetMe,
+	"send_chat_action":          adaptChatAction,
+	"delete_messages":           adaptDeleteMessages,
+	"forward_messages":          adaptForwardMessages,
+	"get_chat":                  adaptGetChat,
+	"resolve_username":          adaptResolveUsername,
+	"answer_callback_query":     adaptAnswerCallback,
+	"send_photo":                adaptUploadSend("photo"),
+	"send_video":                adaptUploadSend("video"),
+	"send_document":             adaptUploadSend("document"),
+	"send_audio":                adaptUploadSend("audio"),
+	"get_me":                    adaptGetMe,
 }
 
 // ErrUnsupported marks methods outside the allowlist (HTTP 501).

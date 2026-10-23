@@ -405,7 +405,7 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 			writeJSON(w, 429, map[string]any{
 				"ok": false, "error_code": 429,
 				"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-				"parameters": map[string]any{"retry_after": int(retry)},
+				"parameters":  map[string]any{"retry_after": int(retry)},
 			})
 			return
 		}
@@ -451,7 +451,7 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 			writeJSON(w, 429, map[string]any{
 				"ok": false, "error_code": 429,
 				"description": fmt.Sprintf("FLOOD_WAIT: retry after %d", retry),
-				"parameters": map[string]any{"retry_after": retry},
+				"parameters":  map[string]any{"retry_after": retry},
 			})
 			return
 		}
@@ -546,7 +546,7 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 
 	if off, ok := anyToInt64(body["offset"]); ok {
 		// Bot API offset semantics: ack everything strictly below
-		a.Store.QueueAck(s.Alias, off-1)
+		_ = a.Store.QueueAck(s.Alias, off-1)
 		deadline := monoNow() + timeout
 		for {
 			snapshot := a.Store.QueuePull(s.Alias, off-1, limit)
@@ -573,7 +573,7 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 	// legacy no-offset mode: delivery = ack
 	if timeout == 0 {
 		updates := drainUpdateCh(s, limit)
-		a.Store.QueueAck(s.Alias, maxSeq(updates))
+		_ = a.Store.QueueAck(s.Alias, maxSeq(updates))
 		writeJSON(w, 200, map[string]any{"ok": true, "result": updates})
 		return
 	}
@@ -583,7 +583,7 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 	for {
 		updates := drainUpdateCh(s, limit)
 		if len(updates) > 0 {
-			a.Store.QueueAck(s.Alias, maxSeq(updates))
+			_ = a.Store.QueueAck(s.Alias, maxSeq(updates))
 			writeJSON(w, 200, map[string]any{"ok": true, "result": updates})
 			return
 		}
@@ -634,7 +634,7 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 
 	alias := r.PathValue("alias")
 	s := a.Mgr.Get(alias)
@@ -836,9 +836,9 @@ func (a *App) adminLifecycle(action string) http.HandlerFunc {
 	}
 }
 
-func (a *App) adminPause(w http.ResponseWriter, r *http.Request)      { a.adminLifecycle("pause")(w, r) }
-func (a *App) adminResume(w http.ResponseWriter, r *http.Request)     { a.adminLifecycle("resume")(w, r) }
-func (a *App) adminDrain(w http.ResponseWriter, r *http.Request)      { a.adminLifecycle("drain")(w, r) }
+func (a *App) adminPause(w http.ResponseWriter, r *http.Request)  { a.adminLifecycle("pause")(w, r) }
+func (a *App) adminResume(w http.ResponseWriter, r *http.Request) { a.adminLifecycle("resume")(w, r) }
+func (a *App) adminDrain(w http.ResponseWriter, r *http.Request)  { a.adminLifecycle("drain")(w, r) }
 func (a *App) adminPauseSending(w http.ResponseWriter, r *http.Request) {
 	a.adminLifecycle("pause_sending")(w, r)
 }

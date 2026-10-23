@@ -17,13 +17,13 @@ func testRate() config.RateConfig {
 
 func TestMethodKind(t *testing.T) {
 	cases := map[string]string{
-		"SendMessage":        "write",
+		"SendMessage":         "write",
 		"answerCallbackQuery": "fast",
-		"getMe":              "read",
-		"getChat":            "read",
-		"GETMYCOMMANDS":      "read",
-		"sendPhoto":          "write",
-		"answerInlineQuery":  "fast",
+		"getMe":               "read",
+		"getChat":             "read",
+		"GETMYCOMMANDS":       "read",
+		"sendPhoto":           "write",
+		"answerInlineQuery":   "fast",
 	}
 	for m, want := range cases {
 		if got := MethodKind(m); got != want {

@@ -59,7 +59,7 @@ func writePyroforkSession(t *testing.T, path string, dcID int, authKey []byte, u
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(pyroforkSchema); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "mtgateway.db"))
 	var n int
 	_ = db.QueryRow("SELECT COUNT(*) FROM gotd_sessions").Scan(&n)
-	db.Close()
+	_ = db.Close()
 	if n != 0 {
 		t.Fatalf("dry-run wrote %d rows", n)
 	}
@@ -119,7 +119,7 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var blob []byte
 	if err := db.QueryRow("SELECT session_blob FROM gotd_sessions WHERE alias = 'bot1'").Scan(&blob); err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestMigrateReportsMissingSessionsAsNewLogins(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO sessions (alias, token_enc) VALUES ('orphan', X'00')"); err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	rep, err := Run(dir, false)
 	if err != nil {
