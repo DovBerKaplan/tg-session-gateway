@@ -16,13 +16,13 @@ import (
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
-	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/config"
+	"github.com/DovBerKaplan/tg-session-gateway/go/internal/mtproto/pyformat"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/store"
 )
 
@@ -289,11 +289,31 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 		if mErr != nil {
 			return SentMessage{}, mErr
 		}
-		updates, err = builder.Media(ctx, message.Media(input, captionOptions(p)...))
-	} else if strings.EqualFold(p.ParseMode, "html") {
-		updates, err = builder.StyledText(ctx, html.String(nil, p.Text))
+		updates, err = builder.Media(ctx, message.Media(input, captionOption(p)...))
 	} else {
-		updates, err = builder.Text(ctx, p.Text)
+		// pyformat: pyrogram's parse_mode contract — DEFAULT is combined
+		// markdown+HTML, exactly what the Python sidecar's consumers
+		// got (the old code silently downgraded it to plain text).
+		// Sent through a raw request so the merged entity list rides
+		// verbatim (builder tokens would re-split nested entities).
+		msg, entities, pErr := pyformat.Build(p.Text, pyformat.ModeFromName(p.ParseMode))
+		if pErr != nil {
+			return SentMessage{}, pErr
+		}
+		req := &tg.MessagesSendMessageRequest{
+			Peer:     inputPeerOf(p.ChatID),
+			Message:  msg,
+			Entities: entities,
+			RandomID: randomID(),
+			Silent:   p.DisableNotify,
+		}
+		if p.ReplyToMsgID != 0 {
+			req.SetReplyTo(&tg.InputReplyToMessage{ReplyToMsgID: int(p.ReplyToMsgID)})
+		}
+		if markup != nil {
+			req.SetReplyMarkup(markup)
+		}
+		updates, err = g.raw.MessagesSendMessage(ctx, req)
 	}
 	if err != nil {
 		return SentMessage{}, err
@@ -301,23 +321,26 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 	return extractSentMessage(updates, p.ChatID), nil
 }
 
-// captionOptions styles the media caption the same way message text is
-// styled (HTML parse mode rides through).
-func captionOptions(p SendParams) []message.StyledTextOption {
-	if strings.EqualFold(p.ParseMode, "html") && p.Text != "" {
-		return []message.StyledTextOption{html.String(nil, p.Text)}
+// captionOption styles the media caption through the same pyformat
+// contract (captions go through gotd's builder, so the merged-entity
+// path is not available — captions rarely nest, documented gap).
+func captionOption(p SendParams) []message.StyledTextOption {
+	if p.Text == "" {
+		return nil
 	}
-	if p.Text != "" {
-		return []message.StyledTextOption{styling.Plain(p.Text)}
-	}
-	return nil
+	mode := pyformat.ModeFromName(p.ParseMode)
+	return []message.StyledTextOption{styling.Custom(func(eb *entity.Builder) error {
+		return pyformat.Apply(eb, p.Text, mode)
+	})}
 }
 
 var mediaMimeTypes = map[string]string{
-	"photo":    "image/jpeg",
-	"video":    "video/mp4",
-	"audio":    "audio/mpeg",
-	"document": "application/octet-stream",
+	"photo":     "image/jpeg",
+	"video":     "video/mp4",
+	"audio":     "audio/mpeg",
+	"voice":     "audio/ogg",
+	"animation": "video/mp4",
+	"document":  "application/octet-stream",
 }
 
 // buildInputMedia resolves a MediaAttach into the gotd input media.
@@ -351,10 +374,12 @@ func (g *gotdClient) buildInputMedia(ctx context.Context, m *MediaAttach) (tg.In
 	}
 	attrs := []tg.DocumentAttributeClass{&tg.DocumentAttributeFilename{FileName: name}}
 	switch m.Kind {
-	case "video":
+	case "video", "animation":
 		attrs = append(attrs, &tg.DocumentAttributeVideo{SupportsStreaming: true})
 	case "audio":
 		attrs = append(attrs, &tg.DocumentAttributeAudio{})
+	case "voice":
+		attrs = []tg.DocumentAttributeClass{&tg.DocumentAttributeAudio{Voice: true}}
 	}
 	return &tg.InputMediaUploadedDocument{
 		File:       file,
@@ -503,27 +528,24 @@ func walkMessages(u tg.UpdatesClass, fn func(*tg.Message) bool) {
 }
 
 func (g *gotdClient) EditMessageText(ctx context.Context, p EditTextParams) (EditResult, error) {
+	// pyformat: pyrogram's parse_mode contract (DEFAULT = combined)
+	msg, entities, err := pyformat.Build(p.Text, pyformat.ModeFromName(p.ParseMode))
+	if err != nil {
+		return EditResult{}, err
+	}
 	req := tg.MessagesEditMessageRequest{
 		Peer:      inputPeerOf(p.ChatID),
 		ID:        int(p.MessageID),
 		NoWebpage: p.NoWebpage,
-		Message:   p.Text,
-	}
-	if strings.EqualFold(p.ParseMode, "html") {
-		b := entity.Builder{}
-		if err := styling.Perform(&b, html.String(nil, p.Text)); err == nil {
-			if text, entities := b.Complete(); text != "" || len(entities) > 0 {
-				req.Message = text
-				req.Entities = entities
-			}
-		}
+		Message:   msg,
+		Entities:  entities,
 	}
 	if p.ReplyMarkup != nil {
 		if rk := CoerceReplyMarkup(p.ReplyMarkup); rk != nil {
 			req.SetReplyMarkup(rk)
 		}
 	}
-	_, err := g.raw.MessagesEditMessage(ctx, &req)
+	_, err = g.raw.MessagesEditMessage(ctx, &req)
 	return EditResult{Ok: err == nil}, err
 }
 
@@ -686,6 +708,46 @@ func (g *gotdClient) AnswerCallbackQuery(ctx context.Context, id, text string, s
 		CacheTime: cacheTime,
 	})
 	return EditResult{Ok: err == nil}, err
+}
+
+// SendMediaGroup sends an album (photos/documents mixed is rejected
+// by Telegram itself; each item is uploaded/attached in order).
+func (g *gotdClient) SendMediaGroup(ctx context.Context, chatID int64, items []MediaAttach, disableNotify bool) ([]SentMessage, error) {
+	if g.raw == nil {
+		return nil, fmt.Errorf("client not connected")
+	}
+	opts := make([]message.MultiMediaOption, 0, len(items))
+	for i, item := range items {
+		input, err := g.buildInputMedia(ctx, &item)
+		if err != nil {
+			return nil, fmt.Errorf("media[%d]: %w", i, err)
+		}
+		opts = append(opts, message.ForceMulti(message.Media(input)))
+	}
+	rb := message.NewSender(g.raw).To(inputPeerOf(chatID))
+	builder := &rb.Builder
+	if disableNotify {
+		builder = builder.Silent()
+	}
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("empty album")
+	}
+	updates, err := builder.Album(ctx, opts[0], opts[1:]...)
+	if err != nil {
+		return nil, err
+	}
+	var out []SentMessage
+	walkMessages(updates, func(m *tg.Message) bool {
+		out = append(out, SentMessage{ID: int64(m.ID), ChatID: chatID})
+		return false
+	})
+	return out, nil
+}
+
+// EditMessageCaption edits a media message's caption — the same
+// messages.editMessage call with the caption text and its entities.
+func (g *gotdClient) EditMessageCaption(ctx context.Context, p EditTextParams) (EditResult, error) {
+	return g.EditMessageText(ctx, p)
 }
 
 // UpdateState reports the tracked pts/qts (polled by PersistStates).

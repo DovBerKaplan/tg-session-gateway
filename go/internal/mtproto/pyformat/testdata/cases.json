@@ -1,0 +1,572 @@
+[
+ {
+  "entities": [],
+  "input": "hello world",
+  "message": "hello world",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "hello world",
+  "message": "hello world",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "hello world",
+  "message": "hello world",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 4,
+    "offset": 2,
+    "type": "MessageEntityBold"
+   },
+   {
+    "length": 6,
+    "offset": 9,
+    "type": "MessageEntityItalic"
+   },
+   {
+    "length": 9,
+    "offset": 18,
+    "type": "MessageEntityUnderline"
+   },
+   {
+    "length": 6,
+    "offset": 30,
+    "type": "MessageEntityStrike"
+   },
+   {
+    "length": 7,
+    "offset": 39,
+    "type": "MessageEntitySpoiler"
+   }
+  ],
+  "input": "a **bold** b __italic__ c --underline-- d ~~strike~~ e ||spoiler|| f",
+  "message": "a bold b italic c underline d strike e spoiler f",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "length": 4,
+    "offset": 2,
+    "type": "MessageEntityBold"
+   },
+   {
+    "length": 6,
+    "offset": 9,
+    "type": "MessageEntityItalic"
+   },
+   {
+    "length": 9,
+    "offset": 18,
+    "type": "MessageEntityUnderline"
+   },
+   {
+    "length": 6,
+    "offset": 30,
+    "type": "MessageEntityStrike"
+   },
+   {
+    "length": 7,
+    "offset": 39,
+    "type": "MessageEntitySpoiler"
+   }
+  ],
+  "input": "a **bold** b __italic__ c --underline-- d ~~strike~~ e ||spoiler|| f",
+  "message": "a bold b italic c underline d strike e spoiler f",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "a **bold** b __italic__ c --underline-- d ~~strike~~ e ||spoiler|| f",
+  "message": "a **bold** b __italic__ c --underline-- d ~~strike~~ e ||spoiler|| f",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 4,
+    "offset": 7,
+    "type": "MessageEntityCode"
+   }
+  ],
+  "input": "inline `code` here",
+  "message": "inline code here",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "length": 4,
+    "offset": 7,
+    "type": "MessageEntityCode"
+   }
+  ],
+  "input": "inline `code` here",
+  "message": "inline code here",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "inline `code` here",
+  "message": "inline `code` here",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "language": "python",
+    "length": 11,
+    "offset": 0,
+    "type": "MessageEntityPre"
+   }
+  ],
+  "input": "```python\nprint('hi')\n```",
+  "message": "print('hi')",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "language": "python",
+    "length": 11,
+    "offset": 0,
+    "type": "MessageEntityPre"
+   }
+  ],
+  "input": "```python\nprint('hi')\n```",
+  "message": "print('hi')",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "```python\nprint('hi')\n```",
+  "message": "```python\nprint('hi')\n```",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "language": "",
+    "length": 9,
+    "offset": 0,
+    "type": "MessageEntityPre"
+   }
+  ],
+  "input": "```\nnaked pre\n```",
+  "message": "naked pre",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "language": "",
+    "length": 9,
+    "offset": 0,
+    "type": "MessageEntityPre"
+   }
+  ],
+  "input": "```\nnaked pre\n```",
+  "message": "naked pre",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "```\nnaked pre\n```",
+  "message": "```\nnaked pre\n```",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 16,
+    "offset": 0,
+    "type": "MessageEntityBold"
+   },
+   {
+    "length": 5,
+    "offset": 6,
+    "type": "MessageEntityItalic"
+   }
+  ],
+  "input": "**outer __inner__ tail**",
+  "message": "outer inner tail",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "length": 16,
+    "offset": 0,
+    "type": "MessageEntityBold"
+   },
+   {
+    "length": 5,
+    "offset": 6,
+    "type": "MessageEntityItalic"
+   }
+  ],
+  "input": "**outer __inner__ tail**",
+  "message": "outer inner tail",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "**outer __inner__ tail**",
+  "message": "**outer __inner__ tail**",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 8,
+    "offset": 4,
+    "type": "MessageEntityTextUrl",
+    "url": "https://example.com/a?b=1"
+   }
+  ],
+  "input": "see [the docs](https://example.com/a?b=1) now",
+  "message": "see the docs now",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "length": 8,
+    "offset": 4,
+    "type": "MessageEntityTextUrl",
+    "url": "https://example.com/a?b=1"
+   }
+  ],
+  "input": "see [the docs](https://example.com/a?b=1) now",
+  "message": "see the docs now",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "see [the docs](https://example.com/a?b=1) now",
+  "message": "see [the docs](https://example.com/a?b=1) now",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "document_id": 5222424,
+    "length": 2,
+    "offset": 0,
+    "type": "MessageEntityCustomEmoji"
+   }
+  ],
+  "input": "![\ud83c\udf89](tg://emoji?id=5222424)",
+  "message": "\ud83c\udf89",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "document_id": 5222424,
+    "length": 2,
+    "offset": 0,
+    "type": "MessageEntityCustomEmoji"
+   }
+  ],
+  "input": "![\ud83c\udf89](tg://emoji?id=5222424)",
+  "message": "\ud83c\udf89",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "![\ud83c\udf89](tg://emoji?id=5222424)",
+  "message": "![\ud83c\udf89](tg://emoji?id=5222424)",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 9,
+    "offset": 4,
+    "type": "MessageEntityBold"
+   },
+   {
+    "length": 7,
+    "offset": 18,
+    "type": "MessageEntityBold"
+   }
+  ],
+  "input": "mix <b>html bold</b> and **md bold**",
+  "message": "mix html bold and md bold",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "length": 7,
+    "offset": 25,
+    "type": "MessageEntityBold"
+   }
+  ],
+  "input": "mix <b>html bold</b> and **md bold**",
+  "message": "mix <b>html bold</b> and md bold",
+  "mode": "markdown"
+ },
+ {
+  "entities": [
+   {
+    "length": 9,
+    "offset": 4,
+    "type": "MessageEntityBold"
+   }
+  ],
+  "input": "mix <b>html bold</b> and **md bold**",
+  "message": "mix html bold and **md bold**",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": false,
+    "length": 6,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "<blockquote>quoted</blockquote> after",
+  "message": "quoted after",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "<blockquote>quoted</blockquote> after",
+  "message": "<blockquote>quoted</blockquote> after",
+  "mode": "markdown"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": false,
+    "length": 6,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "<blockquote>quoted</blockquote> after",
+  "message": "quoted after",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": true,
+    "length": 11,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "<blockquote expandable>collapsible</blockquote> after",
+  "message": "collapsible after",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "<blockquote expandable>collapsible</blockquote> after",
+  "message": "<blockquote expandable>collapsible</blockquote> after",
+  "mode": "markdown"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": true,
+    "length": 11,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "<blockquote expandable>collapsible</blockquote> after",
+  "message": "collapsible after",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 6,
+    "offset": 0,
+    "type": "MessageEntityCode"
+   }
+  ],
+  "input": "<code>a**b**</code> stars inside code stay literal",
+  "message": "a**b** stars inside code stay literal",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "length": 1,
+    "offset": 7,
+    "type": "MessageEntityBold"
+   }
+  ],
+  "input": "<code>a**b**</code> stars inside code stay literal",
+  "message": "<code>ab</code> stars inside code stay literal",
+  "mode": "markdown"
+ },
+ {
+  "entities": [
+   {
+    "length": 6,
+    "offset": 0,
+    "type": "MessageEntityCode"
+   }
+  ],
+  "input": "<code>a**b**</code> stars inside code stay literal",
+  "message": "a**b** stars inside code stay literal",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": false,
+    "length": 32,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "> quoted line one\n> quoted line two\nplain line",
+  "message": "quoted line one\nquoted line two\nplain line",
+  "mode": "combined"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": false,
+    "length": 32,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "> quoted line one\n> quoted line two\nplain line",
+  "message": "quoted line one\nquoted line two\nplain line",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "> quoted line one\n> quoted line two\nplain line",
+  "message": "> quoted line one\n> quoted line two\nplain line",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "collapsed": true,
+    "length": 17,
+    "offset": 0,
+    "type": "MessageEntityBlockquote"
+   }
+  ],
+  "input": "**> expandable quote\nstill quote\ndone",
+  "message": "expandable quote\nstill quote\ndone",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "**> expandable quote\nstill quote\ndone",
+  "message": "> expandable quote\nstill quote\ndone",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "**> expandable quote\nstill quote\ndone",
+  "message": "**> expandable quote\nstill quote\ndone",
+  "mode": "html"
+ },
+ {
+  "entities": [
+   {
+    "length": 3,
+    "offset": 5,
+    "type": "InputMessageEntityMentionName",
+    "user_id": 123
+   }
+  ],
+  "input": "ping <a href=\"tg://user?id=123\">him</a> please",
+  "message": "ping him please",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "ping <a href=\"tg://user?id=123\">him</a> please",
+  "message": "ping <a href=\"tg://user?id=123\">him</a> please",
+  "mode": "markdown"
+ },
+ {
+  "entities": [
+   {
+    "length": 3,
+    "offset": 5,
+    "type": "InputMessageEntityMentionName",
+    "user_id": 123
+   }
+  ],
+  "input": "ping <a href=\"tg://user?id=123\">him</a> please",
+  "message": "ping him please",
+  "mode": "html"
+ },
+ {
+  "entities": [],
+  "input": "unbalanced **bold",
+  "message": "unbalanced bold",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "unbalanced **bold",
+  "message": "unbalanced bold",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "unbalanced **bold",
+  "message": "unbalanced **bold",
+  "mode": "html"
+ },
+ {
+  "entities": [],
+  "input": "escape ]( test",
+  "message": "escape ]( test",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "escape ]( test",
+  "message": "escape ]( test",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "escape ]( test",
+  "message": "escape ]( test",
+  "mode": "html"
+ },
+ {
+  "entities": [],
+  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "mode": "combined"
+ },
+ {
+  "entities": [],
+  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "mode": "markdown"
+ },
+ {
+  "entities": [],
+  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "mode": "html"
+ }
+]

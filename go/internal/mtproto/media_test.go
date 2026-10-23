@@ -192,3 +192,92 @@ func fmt0(v any) string {
 	}
 	return ""
 }
+
+func TestNewAllowlistMethods(t *testing.T) {
+	fake := &fakeMTClient{}
+	app, ts := newTestApp(t, fake, t.TempDir())
+	base := ts.URL
+
+	regADM(t, base, "b1")
+	waitLive(t, app, fake, "b1")
+
+	b64 := base64.StdEncoding.EncodeToString([]byte("bin"))
+
+	// send_media_group: mixed data + handle + url entries
+	group := `{"chat_id":10,"media":[` +
+		`{"type":"photo","data":"` + b64 + `"},` +
+		`{"type":"document","file_id":"upload:1"},` +
+		`{"type":"photo","url":"https://x/2.jpg"}]}`
+	code, body := mtDo(t, "POST", base, "/v1/sessions/b1/send_media_group", group, itestAPP)
+	if code != 200 || body["ok"] != true {
+		t.Fatalf("send_media_group = %d %v", code, body)
+	}
+	results := body["result"].([]any)
+	if len(results) != 3 {
+		t.Fatalf("album results = %d, want 3", len(results))
+	}
+
+	// copy_message → forward with the header dropped
+	code, body = mtDo(t, "POST", base, "/v1/sessions/b1/copy_message",
+		`{"from_chat_id":10,"chat_id":20,"message_id":5}`, itestAPP)
+	if code != 200 || body["ok"] != true {
+		t.Fatalf("copy_message = %d %v", code, body)
+	}
+	if body["result"].(map[string]any)["message_id"] == nil {
+		t.Fatal("copy_message result lacks message_id")
+	}
+
+	// edit_message_caption rides the same edit wire shape
+	code, body = mtDo(t, "POST", base, "/v1/sessions/b1/edit_message_caption",
+		`{"chat_id":10,"message_id":5,"text":"new caption"}`, itestAPP)
+	if code != 200 || body["ok"] != true {
+		t.Fatalf("edit_message_caption = %d %v", code, body)
+	}
+
+	// send_voice / send_animation attribute mapping
+	_, body = mtDo(t, "POST", base, "/v1/sessions/b1/send_voice",
+		`{"chat_id":30,"data":"`+b64+`"}`, itestAPP)
+	if body["ok"] != true {
+		t.Fatalf("send_voice = %v", body)
+	}
+	_, body = mtDo(t, "POST", base, "/v1/sessions/b1/send_animation",
+		`{"chat_id":40,"data":"`+b64+`"}`, itestAPP)
+	if body["ok"] != true {
+		t.Fatalf("send_animation = %v", body)
+	}
+	g := &gotdClient{uploads: map[string]tg.InputFileClass{}, photoLocs: map[int64]*tg.Photo{}, docLocs: map[int64]*tg.Document{}}
+	g.uploads["upload:1"] = &tg.InputFileBig{ID: 9, Parts: 1, Name: "v"}
+	voice, err := g.buildInputMedia(context.Background(), &MediaAttach{Kind: "voice", Handle: "upload:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vd, ok := voice.(*tg.InputMediaUploadedDocument)
+	if !ok || vd.MimeType != "audio/ogg" {
+		t.Fatalf("voice media = %#v", voice)
+	}
+	sawVoiceAttr := false
+	for _, a := range vd.Attributes {
+		if av, isAudio := a.(*tg.DocumentAttributeAudio); isAudio && av.Voice {
+			sawVoiceAttr = true
+		}
+	}
+	if !sawVoiceAttr {
+		t.Fatalf("voice attributes missing Voice flag: %#v", vd.Attributes)
+	}
+	anim, err := g.buildInputMedia(context.Background(), &MediaAttach{Kind: "animation", Handle: "upload:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ad, ok := anim.(*tg.InputMediaUploadedDocument)
+	if !ok || ad.MimeType != "video/mp4" {
+		t.Fatalf("animation media = %#v", anim)
+	}
+
+	// allowlist now lists them
+	supported := strings.Join(SupportedMethods(), ",")
+	for _, m := range []string{"send_media_group", "copy_message", "edit_message_caption", "send_voice", "send_animation"} {
+		if !strings.Contains(supported, m) {
+			t.Fatalf("allowlist missing %s", m)
+		}
+	}
+}

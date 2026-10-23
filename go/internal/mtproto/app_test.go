@@ -129,6 +129,22 @@ func (f *fakeMTClient) ResolveUsername(ctx context.Context, username string) (in
 	return 77, nil
 }
 
+func (f *fakeMTClient) SendMediaGroup(ctx context.Context, chatID int64, items []MediaAttach, disableNotify bool) ([]SentMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []SentMessage{}
+	for i := range items {
+		f.sent = append(f.sent, sentRec{chatID, fmt.Sprintf("album:%s", items[i].Kind)})
+		f.sentMedia = append(f.sentMedia, &items[i])
+		out = append(out, SentMessage{ID: int64(len(f.sent)), ChatID: chatID})
+	}
+	return out, nil
+}
+
+func (f *fakeMTClient) EditMessageCaption(ctx context.Context, p EditTextParams) (EditResult, error) {
+	return EditResult{Ok: true}, nil
+}
+
 func (f *fakeMTClient) AnswerCallbackQuery(ctx context.Context, id, text string, showAlert bool, url string, cacheTime int) (EditResult, error) {
 	return EditResult{Ok: true}, nil
 }

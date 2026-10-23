@@ -43,6 +43,8 @@ type Client interface {
 	SendChatAction(ctx context.Context, chatID int64, action string) (EditResult, error)
 	DeleteMessages(ctx context.Context, chatID int64, ids []int64, revoke bool) (EditResult, error)
 	ForwardMessages(ctx context.Context, p ForwardParams) ([]SentMessage, error)
+	SendMediaGroup(ctx context.Context, chatID int64, items []MediaAttach, disableNotify bool) ([]SentMessage, error)
+	EditMessageCaption(ctx context.Context, p EditTextParams) (EditResult, error)
 	GetChat(ctx context.Context, chatID int64) (map[string]any, error)
 	ResolveUsername(ctx context.Context, username string) (int64, error)
 	AnswerCallbackQuery(ctx context.Context, id, text string, showAlert bool, url string, cacheTime int) (EditResult, error)
@@ -127,6 +129,11 @@ var adapters = map[string]adapter{
 	"send_video":                adaptUploadSend("video"),
 	"send_document":             adaptUploadSend("document"),
 	"send_audio":                adaptUploadSend("audio"),
+	"send_voice":                adaptUploadSend("voice"),
+	"send_animation":            adaptUploadSend("animation"),
+	"send_media_group":          adaptSendMediaGroup,
+	"copy_message":              adaptCopyMessage,
+	"edit_message_caption":      adaptEditCaption,
 	"get_me":                    adaptGetMe,
 }
 
@@ -385,6 +392,98 @@ func adaptUploadSend(kind string) adapter {
 		}
 		return c.SendMessage(ctx, p)
 	}
+}
+
+// adaptSendMediaGroup sends an album: media is an array of
+// {type, file_id|data|url, caption} entries (first caption wins on
+// Telegram's album UI, but all ride through).
+func adaptSendMediaGroup(ctx context.Context, c Client, args map[string]any) (any, error) {
+	chatID, ok := argInt(args, "chat_id", "chat_username", "chat")
+	if !ok {
+		return nil, fmt.Errorf("chat_id required")
+	}
+	rawList, ok := args["media"].([]any)
+	if !ok || len(rawList) == 0 {
+		return nil, fmt.Errorf("media array required")
+	}
+	items := make([]MediaAttach, 0, len(rawList))
+	for i, raw := range rawList {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("media[%d] must be an object", i)
+		}
+		kind := argStr(entry, "type")
+		if kind == "" {
+			kind = "photo"
+		}
+		item := MediaAttach{Kind: kind, FileName: argStr(entry, "file_name")}
+		switch {
+		case strings.HasPrefix(argStr(entry, "file_id"), "upload:"):
+			item.Handle = argStr(entry, "file_id")
+		case argStr(entry, "url") != "":
+			item.URL = argStr(entry, "url")
+		case argStr(entry, "data") != "":
+			data, err := base64.StdEncoding.DecodeString(argStr(entry, "data"))
+			if err != nil {
+				return nil, fmt.Errorf("media[%d].data must be base64: %w", i, err)
+			}
+			name := item.FileName
+			if name == "" {
+				name = "upload." + kind
+			}
+			handle, err := c.UploadMedia(ctx, kind, name, data)
+			if err != nil {
+				return nil, err
+			}
+			item.Handle = handle
+		default:
+			return nil, fmt.Errorf("media[%d]: file_id (upload handle), base64 data, or url required", i)
+		}
+		items = append(items, item)
+	}
+	disable := argBool(args, "disable_notification")
+	msgs, err := c.SendMediaGroup(ctx, chatID, items, disable)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, map[string]any{"message_id": m.ID, "chat_id": m.ChatID})
+	}
+	return out, nil
+}
+
+// adaptCopyMessage copies a message without the "forwarded from"
+// header (forward with the header dropped).
+func adaptCopyMessage(ctx context.Context, c Client, args map[string]any) (any, error) {
+	fromChat, ok := argInt(args, "from_chat_id", "chat_id")
+	if !ok {
+		return nil, fmt.Errorf("from_chat_id required")
+	}
+	toChat, ok := argInt(args, "chat_id", "to_chat_id")
+	if !ok {
+		return nil, fmt.Errorf("chat_id required")
+	}
+	msgID, ok := argInt(args, "message_id")
+	if !ok {
+		return nil, fmt.Errorf("message_id required")
+	}
+	msgs, err := c.ForwardMessages(ctx, ForwardParams{
+		FromChatID: fromChat, ToChatID: toChat, IDs: []int64{msgID}, NoQuote: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs) == 0 {
+		return nil, fmt.Errorf("copy produced no message")
+	}
+	return map[string]any{"message_id": msgs[0].ID, "chat_id": msgs[0].ChatID}, nil
+}
+
+// adaptEditCaption edits a media message's caption (same wire shape as
+// edit_message_text; Telegram uses the same method for captions).
+func adaptEditCaption(ctx context.Context, c Client, args map[string]any) (any, error) {
+	return adaptEditText(ctx, c, args)
 }
 
 func adaptGetMe(ctx context.Context, c Client, _ map[string]any) (any, error) {
