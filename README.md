@@ -1,4 +1,4 @@
-# Telegram Session Gateway
+# Telegram Session Gateway — `tggw`
 
 > **Your bot container should be disposable. Your Telegram session shouldn't be.**
 
@@ -26,14 +26,14 @@ FloodWait backoff, and a crash-safe update queue.
 ```bash
 # one-time: the token-encryption key. The image refuses to invent
 # secrets inside the container (they'd die with it) — postgres, not nginx
-docker run --rm dovberkaplan/tg-session-gateway:0.0.5 genkey
+docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go:latest genkey
 
 docker run -d --name tggw -p 8080:8080 \
   -e GW_ADMIN_SECRET=$(openssl rand -hex 16) \
   -e GW_APP_SECRET=$(openssl rand -hex 16) \
-  -e GW_FERNET_KEY=$(docker run --rm dovberkaplan/tg-session-gateway:0.0.5 genkey) \
+  -e GW_FERNET_KEY=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go:latest genkey) \
   -v tggw-data:/data \
-  dovberkaplan/tg-session-gateway:0.0.5
+  ghcr.io/dovberkaplan/tg-session-gateway-go:latest botapi
 # then the ONLY change in your bot:
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
@@ -121,13 +121,12 @@ three: zero duplicates, zero lost updates, exactly-once replay.
 
 ## Also: Pyrogram / MTProto bots
 
-Everything above is the **Bot API gateway** (`gateway/`) — the drop-in
-`api.telegram.org` replacement, one base-URL change. If your bot runs
-on **Pyrogram/pyrofork (MTProto)**, the repo also ships an MTProto
-sidecar (`mtgateway/`): your app speaks HTTP/WebSocket, the sidecar
+Everything above is the **Bot API plane** (`tggw botapi`) — the
+drop-in `api.telegram.org` replacement, one base-URL change. If your
+bot runs on **Pyrogram/MTProto**, the same binary serves the MTProto
+sidecar (`tggw mtproto`): your app speaks HTTP/WebSocket, the sidecar
 owns the auth_key, connection, and update loop. Same principles, same
-rate guard — earlier in its lifecycle (one production consumer so
-far), so treat it as the younger sibling: [sidecar docs →](docs/sidecar-spec.md)
+rate guard: [sidecar docs →](docs/sidecar-spec.md)
 
 Both share the same principles: a long-lived infrastructure container
 that owns the Telegram connection, enforces the official
@@ -135,17 +134,19 @@ that owns the Telegram connection, enforces the official
 you deploy your application freely — no FloodWait, no Conflict, no
 AUTH_KEY_DUPLICATED.
 
-## Go rewrite (`tggw`) — pre-release
+## The Go build is the product
 
-Both planes are being rewritten in Go as a single static binary —
-`tggw botapi` / `tggw mtproto` — with embedded SQLite on a PVC, no
-Redis, and a native Kubernetes chart. Status: **implemented,
-conformance-tested and kind-verified, not yet the default** — the
-Python images above stay the production path until the Go build soaks
-against real Telegram traffic.
+This repo ships **`tggw`** — a single static Go binary covering both
+planes (`tggw botapi` / `tggw mtproto`) — with embedded SQLite on a
+PVC, no Redis, and a native Kubernetes chart. Status: implemented,
+conformance-tested and kind-verified; **soak against real Telegram
+traffic is the remaining gate before the 1.0 defaults flip** (see the
+runbook checklist). The previous Python implementation lives on the
+[`legacy-python`](../../tree/legacy-python) branch; its images (≤0.0.5)
+remain on GHCR for rollback.
 
-What exists under `go/` (module
-`github.com/DovBerKaplan/tg-session-gateway/go`):
+What this tree contains (module
+`github.com/DovBerKaplan/tg-session-gateway`):
 
 - Both planes behind the same HTTP contract, the same `GW_*` env and
   the same metric names, opening the existing SQLite files **in place**
@@ -311,9 +312,10 @@ loopback only):
 ```bash
 git clone https://github.com/DovBerKaplan/tg-session-gateway && cd tg-session-gateway
 docker network create tg-gateway-net
-printf 'GW_ADMIN_SECRET=%s\nGW_APP_SECRET=%s\n' \
-  "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
-docker compose up -d          # builds + starts on 127.0.0.1:8080
+printf 'GW_ADMIN_SECRET=%s\nGW_APP_SECRET=%s\nGW_FERNET_KEY=%s\n' \
+  "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" \
+  "$(CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw && /tmp/tggw genkey)" > .env
+docker compose -f docker-compose.tggw.yml up -d   # builds + starts on 127.0.0.1:8080
 curl -s localhost:8080/healthz
 ```
 
@@ -333,26 +335,23 @@ curl -s -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/status
 # mybot → live, session never blinked, no re-auth, queue intact
 ```
 
-Pre-built multi-arch images (amd64/arm64). Docker Hub is the short pull
-command; GHCR is the source of truth with identical tags. Pin the
-version — `latest` moves only on stable releases, never pre-releases:
+Pre-built multi-arch images (amd64/arm64); one image, both planes.
+Docker Hub is the short pull command; GHCR is the source of truth with
+identical tags. Pin the version — `latest` moves only on stable
+releases, never pre-releases:
 
 ```bash
-docker pull dovberkaplan/tg-session-gateway:0.0.5              # Bot API gateway
-docker pull dovberkaplan/tg-session-gateway-mtproto:0.0.4      # MTProto sidecar
-# same tags on ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}
+docker pull ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0   # = dovberkaplan/tggw:0.1.0
+docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0 mtproto \
+  -e GW_API_ID -e GW_API_HASH ...   # same image, MTProto plane
 ```
 
-For a server install with the external network, dedicated volume and
-generated secrets in one step: `sudo bash deploy/install.sh`
-(read it before running — never curl-pipe-sudo).
+For Kubernetes: [the Helm chart →](deploy/helm/tggw/README.md) (or the
+rendered [install.yaml](deploy/helm/install.yaml)), kind-verified —
+`deploy/helm/verify-kind.sh` reproduces the whole acceptance locally.
 
-MTProto sidecar:
-
-```bash
-GW_ADMIN_SECRET=x GW_APP_SECRET=y GW_API_ID=z GW_API_HASH=h \
-  docker compose -f docker-compose.mtgateway.yml up -d
-```
+**Python ≤0.0.5** (rollback images): `ghcr.io/dovberkaplan/tg-session-gateway`
+and `...-mtproto`, source on the [`legacy-python`](../../tree/legacy-python) branch.
 
 ## When to use something else
 

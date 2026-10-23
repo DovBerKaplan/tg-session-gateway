@@ -6,13 +6,19 @@ adherence to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**The repository is now Go-only** — the Python implementation moved to
+the [`legacy-python`](../../tree/legacy-python) branch (tagged v0.0.6
+as its final state; rollback images ≤0.0.5 stay on GHCR). The Go
+module moved from `go/` to the repo root: module path is now
+`github.com/DovBerKaplan/tg-session-gateway`.
+
 Go rewrite of both planes — single static binary `tggw`, native
 Kubernetes, zero client-service dependencies. **Pre-release**: the
 Python images remain the production path until the Go build soaks
 against real Telegram. Reasoning: [ADR-0002](docs/adr/0002-go-rewrite.md).
 
 ### Added
-- `go/` module: both planes (`tggw botapi` / `tggw mtproto`) behind
+- both planes at the repo root (`tggw botapi` / `tggw mtproto`) behind
   the same HTTP contract, `GW_*` env and metric names; modernc SQLite
   opens the existing `gateway.db`/`queue.db`/`mtgateway.db` in place;
   Redis removed (StatefulSet replicas:1 + ReadWriteOncePod PVC + file

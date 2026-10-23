@@ -9,54 +9,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12", cache: pip}
-      - run: pip install ruff
-      - run: ruff check gateway/ mtgateway/ tests/ --output-format=github
-      - run: ruff format --check gateway/ mtgateway/ tests/
-
-  typecheck:
-    name: Typecheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12", cache: pip}
-      - run: pip install mypy -r requirements.txt -r mtgateway/requirements.txt
-      - run: mypy gateway/ mtgateway/
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12", cache: pip}
-      - run: pip install -r requirements.txt -r requirements-dev.txt -r mtgateway/requirements.txt
-      - run: pytest -q --cov=gateway --cov=mtgateway --cov-report=term-missing
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: .coverage
-
-  build:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build -f docker/Dockerfile.gateway -t tg-session-gateway:ci .
-      - run: docker build -f docker/Dockerfile.mtgateway -t tg-mtgateway:ci .
-
   go-test:
     name: Go Tests (race)
     runs-on: ubuntu-latest
@@ -64,13 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - run: go build ./...
-        working-directory: go
       - run: go vet ./...
-        working-directory: go
       - run: go test -race -count=1 ./...
-        working-directory: go
 
   go-lint:
     name: Go Lint
@@ -79,11 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - uses: golangci/golangci-lint-action@v6
         with:
-          working-directory: go
-          args: --timeout=5m
+            args: --timeout=5m
 
   go-conformance:
     name: Go Black-box Conformance
@@ -92,12 +40,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install httpx pytest
       - name: Build static binary
-        run: cd go && CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
+        run: CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
       - name: Run conformance suite against the real binary
         run: pytest -q tests/conformance_go
         env: {TGGW_BIN: /tmp/tggw}
@@ -109,10 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: ~/go/bin/govulncheck ./...
-        working-directory: go
 
   go-image:
     name: Go Docker Build
@@ -131,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - name: Install helm + kind + kubectl
         run: |
           curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz

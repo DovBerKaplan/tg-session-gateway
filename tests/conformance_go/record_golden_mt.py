@@ -32,7 +32,7 @@ from test_integration_mtgateway import FakeClient, make_cfg
 import mtgateway.sessions as mt_sessions
 from mtgateway.app import create_app
 
-OUT_DIR = os.path.join(REPO, "go", "internal", "mtproto", "testdata", "golden")
+OUT_DIR = os.path.join(REPO, "internal", "mtproto", "testdata", "golden")
 
 # ── the corpus: Pyrogram-shaped update dicts ───────────────────────
 # (classic pyrogram to_dict output — "_" carries the constructor name)

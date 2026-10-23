@@ -114,10 +114,32 @@ permanently dead consumer, `drain` + fix the app, or lower
 
 1. Reconnect ONE session: `POST .../sessions/<alias>/restart` (both
    planes where applicable).
-2. Verified process restart: `deploy/safe-restart.sh` /
-   `deploy/mtgateway-safe-restart.sh` (fails loudly unless everything
-   returns to live).
+2. Verified process restart (Compose): `docker restart tggw` and watch
+   `/admin/status` until `live` — the flock + safe-mode machinery makes
+   this safe. On Kubernetes `kubectl rollout restart statefulset/...`
+   (preStop drains first).
 3. Container/host restart — safe mode guards the boot storm.
+
+## Soak gate (before flipping 1.0 defaults) — the cutover checklist
+
+The Go build is functionally complete and kind-verified; this list is
+what production must confirm BEFORE the README/image defaults stop
+calling it a soak:
+
+1. `tggw migrate --dry-run --from <copy of real /data>` ⇒
+   `Telegram logins required: 0` (any non-zero is a stop).
+2. Extract the REAL method inventory from the consumer's production
+   logs (`POST /v1/sessions/...` lines) and diff against
+   `tggw`'s allowlist (`501` responses are the loud miss).
+3. Side-by-side against a test account: updates flow, send /
+   getUpdates / offset-ack behave, WS push stays connected for hours.
+4. Re-record the golden updates from real consumer traffic
+   (`tests/conformance_go/record_golden_mt.py` records from the
+   legacy sidecar; the production re-record replaces the corpus) and
+   diff against `go test ./internal/mtproto/ -run Golden`.
+5. `kubectl top pod` idle: < 20m CPU / < 32Mi RAM sustained.
+6. Only after all green: tag v1.0.0, move `latest`, update the README
+   quickstart to the promoted tags.
 
 ## Restoring an encrypted session backup
 

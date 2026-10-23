@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install httpx pytest
@@ -44,8 +44,8 @@ jobs:
         working-directory: go
       - name: Black-box conformance against the real binary
         run: |
-          cd go && CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
-          cd .. && TGGW_BIN=/tmp/tggw pytest -q tests/conformance_go
+          CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
+          TGGW_BIN=/tmp/tggw pytest -q tests/conformance_go
 
   publish:
     name: Build & Publish Image
@@ -137,13 +137,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version-file: go/go.mod}
+        with: {go-version-file: go.mod}
       - name: Build tggw (${{ matrix.goos }}/${{ matrix.goarch }}) + package chart
         run: |
-          cd go
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
           go build -trimpath \
-            -ldflags="-s -w -X github.com/DovBerKaplan/tg-session-gateway/go/internal/version.Version=${{ github.ref_name }}" \
+            -ldflags="-s -w -X github.com/DovBerKaplan/tg-session-gateway/internal/version.Version=${{ github.ref_name }}" \
             -o /out/tggw ./cmd/tggw
           cd ..
           sha256sum /out/tggw > /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
