@@ -584,9 +584,6 @@ func (m *Manager) Unregister(ctx context.Context, alias string) bool {
 
 // RestoreAll rebuilds sessions after restart (boot janitor first).
 func (m *Manager) RestoreAll(ctx context.Context) int {
-	if removed := lock.SweepDir(m.cfg.SessionDir); removed > 0 {
-		slog.Info("boot janitor: removed stale locks", "count", removed)
-	}
 	n := 0
 	rows, err := m.st.ListSessions()
 	if err != nil {

@@ -17,14 +17,15 @@ import (
 // fakeTelegram stands in for api.telegram.org: deleteWebhook OK,
 // getUpdates yields one batch then empties, sendMessage records.
 type fakeTelegram struct {
-	mu       sync.Mutex
-	batch    []map[string]any
-	fed      bool
-	getCalls int
-	sent     []map[string]any
-	sendChat []map[string]any
-	rawSends [][]byte       // verbatim bodies (streamed or buffered)
-	quota429 map[string]int // chat_id → send 429 with retry_after N times
+	mu                sync.Mutex
+	batch             []map[string]any
+	fed               bool
+	getCalls          int
+	sent              []map[string]any
+	sendChat          []map[string]any
+	rawSends          [][]byte // verbatim bodies (streamed or buffered)
+	lastContentLength int64
+	quota429          map[string]int // chat_id → send 429 with retry_after N times
 }
 
 func newFakeTelegram(batch []map[string]any) *fakeTelegram {
@@ -35,6 +36,7 @@ func (f *fakeTelegram) Do(req *httpRequest) (*httpResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if req.Reader != nil {
+		f.lastContentLength = req.ContentLength
 		raw, _ := io.ReadAll(req.Reader)
 		f.rawSends = append(f.rawSends, raw)
 	} else if req.RawBody != nil {

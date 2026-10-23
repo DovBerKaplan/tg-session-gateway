@@ -1,7 +1,9 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,4 +362,75 @@ func idOf(u map[string]any) int64 {
 		return int64(n)
 	}
 	return -1
+}
+
+// TestQuarantineMovesWALAside: a corrupt DB with hot -wal/-shm files
+// must move ALL THREE aside under the same .corrupt-<ts> suffix, and
+// the restored backup must open valid with no orphan WAL applying
+// corrupt pages onto it.
+func TestQuarantineMovesWALAside(t *testing.T) {
+	dir := t.TempDir()
+	backups := filepath.Join(dir, "backups")
+	if err := os.MkdirAll(backups, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "gateway.db")
+
+	// a valid DB + one valid backup, then corrupt the live file
+	good := OpenGatewayForTest(t, filepath.Join(dir, "seed"), backups)
+	good.Close()
+	backupSeed(t, dbPath, backups)
+	if err := os.WriteFile(dbPath, []byte("this is not a database at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// hot WAL/SHM from the "crashed" process
+	if err := os.WriteFile(dbPath+"-wal", []byte("stale wal bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath+"-shm", []byte("shm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	CheckOrQuarantine(dbPath, backups, nil)
+
+	// all three moved aside under the same timestamp suffix
+	var quarantined []string
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".corrupt-") {
+			quarantined = append(quarantined, e.Name())
+		}
+	}
+	if len(quarantined) != 3 {
+		t.Fatalf("expected main+wal+shm quarantined, got %v", quarantined)
+	}
+	// no orphan sidecars next to the restored file
+	if _, err := os.Stat(dbPath + "-wal"); !os.IsNotExist(err) {
+		t.Fatal("orphan -wal left behind — it would corrupt the restored backup")
+	}
+	// the restored DB is healthy
+	ok, detail := QuickCheck(dbPath)
+	if !ok {
+		t.Fatalf("restored DB failed quick_check: %s", detail)
+	}
+}
+
+func backupSeed(t *testing.T, live, backups string) {
+	src := filepath.Join(filepath.Dir(live), "seed", "gateway.db")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backups, "gateway.db-20200101-000000-1-1.db"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = t
+}
+
+func OpenGatewayForTest(t *testing.T, d, backups string) *Gateway {
+	g, err := OpenGateway(d, "CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw=", "normal", backups, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
 }

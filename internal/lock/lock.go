@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -37,8 +38,10 @@ const (
 	StaleAfter        = 60 * time.Second
 )
 
-// reclaims counts lock files removed by SweepDir (housekeeping, not
-// reclaim-anymore: flock makes stale reclaim unnecessary).
+// reclaims stays at 0 forever: flock makes stale reclaim unnecessary.
+// The counter exists only so the metric
+// tg_gateway_lock_reclaims_total keeps scraping without breaking
+// dashboards.
 var reclaims atomic.Int64
 
 var (
@@ -98,18 +101,57 @@ func (l *Lock) Acquire() bool {
 			l.Alias, l.readHolder())
 		return false
 	}
+	if l.pythonHolderFresh(f) {
+		// TRANSITIONAL (0.1.x): a lock file in the Python sidecar's
+		// format with a fresh mtime means the PYTHON sidecar is alive
+		// on this volume — its O_EXCL lock is invisible to flock, so
+		// refuse rather than double-connect the auth_key. Remove this
+		// check once 0.1.x has soaked. See ADR-0003.
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+		fmt.Fprintf(os.Stderr,
+			"[%s] LOCK REFUSED: a live PYTHON sidecar holds this session (fresh lock file). "+
+				"Stop it before starting the Go sidecar on the same volume.\n", l.Alias)
+		return false
+	}
 	l.fd = f
 	l.Token = tokenCounter.Add(1)
-	// diagnostics only — nothing below decides on this content
-	content := fmt.Sprintf("%d\n%s\n%s\n%f\n", os.Getpid(), hostname, bootID, float64(time.Now().UnixNano())/1e9)
-	_, _ = f.WriteString(content)
-	_ = f.Truncate(int64(len(content)))
+	_ = f.Truncate(0)
+	// diagnostics only — nothing below decides on this content. The
+	// 5th line ("tggw") marks OUR format so the transitional Python
+	// guard never mistakes our own file for a live Python holder.
+	content := fmt.Sprintf("%d\n%s\n%s\n%f\ntggw\n", os.Getpid(), hostname, bootID, float64(time.Now().UnixNano())/1e9)
+	_, _ = f.WriteAt([]byte(content), 0)
 	return true
 }
 
+// pythonHolderFresh reports whether the lock file carries the Python
+// sidecar's holder format (4 lines: pid/host/boot_id/ts) written
+// within the last heartbeat window — i.e. a live Python holder.
+func (l *Lock) pythonHolderFresh(f *os.File) bool {
+	raw, err := os.ReadFile(l.path)
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	lines := splitLines(raw)
+	if len(lines) >= 5 && lines[4] == "tggw" {
+		return false // OUR format — never a Python holder
+	}
+	if len(lines) < 4 || lines[3] == "" || lines[0] == "" {
+		return false // empty/legacy/short files: not a Python holder
+	}
+	ts, err := strconv.ParseFloat(strings.TrimSpace(lines[3]), 64)
+	if err != nil {
+		return false
+	}
+	age := time.Since(time.Unix(0, int64(ts*1e9)))
+	return age >= 0 && age < StaleAfter
+}
+
 // Release drops the lock (safe to call multiple times). The file
-// itself stays — the next acquirer opens and flocks it; deleting it
-// would race an in-flight open+flock pair into two "winners".
+// itself is NEVER deleted: flock binds to the inode, so unlinking
+// while held lets another process create+lock a fresh inode — two
+// owners. Empty lock files are harmless.
 func (l *Lock) Release() {
 	if l.fd == nil {
 		return
@@ -155,43 +197,5 @@ func splitLines(raw []byte) []string {
 	return out
 }
 
-// SweepDir zeroes lock files that are stale AND currently unheld
-// (housekeeping for abandoned dirs — flock correctness never depends
-// on it). It never UNLINKS: deleting a flock file races an in-flight
-// open+flock pair into two "winners" on two inodes; truncating keeps
-// the inode and is invisible to flock. Returns how many were cleaned.
-func SweepDir(lockDir string) int {
-	entries, err := os.ReadDir(lockDir)
-	if err != nil {
-		return 0
-	}
-	cleaned := 0
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".lock" {
-			continue
-		}
-		p := filepath.Join(lockDir, e.Name())
-		st, err := os.Stat(p)
-		if err != nil || time.Since(st.ModTime()) <= StaleAfter {
-			continue
-		}
-		f, err := os.OpenFile(p, os.O_RDWR, 0o644)
-		if err != nil {
-			continue
-		}
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			_ = f.Close()
-			continue // a live holder keeps it
-		}
-		_ = f.Truncate(0)
-		_ = f.Close()
-		cleaned++
-	}
-	if cleaned > 0 {
-		reclaims.Add(int64(cleaned))
-	}
-	return cleaned
-}
-
-// ReclaimsTotal reports how many lock files SweepDir cleaned up.
+// ReclaimsTotal reports 0 (kept for dashboard compatibility).
 func ReclaimsTotal() int64 { return reclaims.Load() }

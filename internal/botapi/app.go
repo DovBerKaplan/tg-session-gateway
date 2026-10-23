@@ -827,6 +827,9 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if a.Health.Degraded() != "" {
 		degraded = 1
 	}
+	if n := multipartChatUnresolved.Load(); n > 0 {
+		lines = append(lines, fmt.Sprintf("tg_gateway_multipart_chat_unresolved_total %d", n))
+	}
 	lines = append(lines,
 		fmt.Sprintf("tg_gateway_storage_degraded{plane=\"bot\"} %d", degraded),
 		fmt.Sprintf("tg_gateway_loop_lag_seconds{plane=\"bot\"} %v", round2(a.Beat.Lag())),

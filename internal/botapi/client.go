@@ -17,9 +17,9 @@ type httpRequest struct {
 	Body    map[string]any // JSON body (marshaled when RawBody is nil)
 	RawBody []byte         // pre-encoded body (push mode, raw forward)
 	// Reader streams a pre-sized body (multipart uploads) instead of
-	// buffering. ContentLength is REQUIRED alongside it: api.telegram.org
-	// rejects chunked requests, and a generic io.Reader makes net/http
-	// send chunked unless ContentLength is set explicitly.
+	// buffering. ContentLength must be set alongside it so the request
+	// is sent with Content-Length preserved (a generic io.Reader alone
+	// makes net/http send chunked).
 	Reader        io.Reader
 	ContentLength int64
 	Header        map[string]string

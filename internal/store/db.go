@@ -92,9 +92,6 @@ func CheckOrQuarantine(path string, backupsDir string, h *health.Storage) {
 	}
 	ts := time.Now().Format("20060102-150405")
 	quarantine := fmt.Sprintf("%s.corrupt-%s", path, ts)
-	// best effort: fold the WAL into the quarantined file so the
-	// evidence is complete
-	checkpointWAL(path)
 	if err := os.Rename(path, quarantine); err != nil {
 		slog.Error("cannot quarantine corrupt DB", "path", path, "err", err)
 		return
@@ -111,18 +108,6 @@ func CheckOrQuarantine(path string, backupsDir string, h *health.Storage) {
 	if restoreNewestBackup(path, backupsDir) {
 		slog.Warn("restored from backup (data since last backup is lost)", "path", path)
 	}
-}
-
-// checkpointWAL folds a SQLite write-ahead log into its main file on a
-// throwaway connection (ignored on failure — quarantine is best-effort
-// evidence preservation).
-func checkpointWAL(path string) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return
-	}
-	defer func() { _ = db.Close() }()
-	_, _ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 }
 
 func restoreNewestBackup(path, backupsDir string) bool {

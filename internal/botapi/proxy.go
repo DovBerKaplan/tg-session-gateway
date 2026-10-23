@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/rateguard"
@@ -222,12 +223,20 @@ func (p *Proxy) forwardRaw(ctx context.Context, s *BotSession, method string, ra
 // keyed on the chat_id form field (mined from the prefix), verbatim
 // forwarding (buffered or streamed), 429 learning, raw passthrough of
 // the response.
+// multipartChatUnresolved counts multipart writes whose chat_id form
+// field was not in the streamed prefix (e.g. the file part arrives
+// first) — the global bucket covers them.
+var multipartChatUnresolved atomic.Int64
+
 func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method string, prefix []byte, body io.Reader, total int64, contentType string) *gwResponse {
 	var chatID *int64
 	if mm := multipartChatIDRe.FindSubmatch(prefix); mm != nil {
 		if v, err := strconv.ParseInt(string(mm[1]), 10, 64); err == nil {
 			chatID = &v
 		}
+	}
+	if chatID == nil {
+		multipartChatUnresolved.Add(1)
 	}
 	// a multipart write IS the reply — stop the auto-typing loop first
 	p.mgr.Typing().Stop(s, chatID)

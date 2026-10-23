@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,57 +114,63 @@ func TestLockHelperProcess(t *testing.T) {
 	select {} // never reached
 }
 
-// TestSweepDirSkipsHeldLocks: housekeeping must not touch a live
-// holder's file, and must clean stale unheld ones (by truncation —
-// never unlink, which would race open+flock into two winners).
-func TestSweepDirSkipsHeldLocks(t *testing.T) {
+// TestPythonHolderFreshRefused: during the 0.1.x transition a live
+// PYTHON sidecar's lock file (4-line format, fresh mtime) must make
+// Acquire refuse — its O_EXCL lock is invisible to flock.
+func TestPythonHolderFreshRefused(t *testing.T) {
 	dir := t.TempDir()
-
-	held := &Lock{Alias: "held", LockDir: dir}
-	if !held.Acquire() {
-		t.Fatal("acquire held")
+	lockPath := filepath.Join(dir, "py.lock")
+	ts := float64(time.Now().UnixNano()) / 1e9
+	content := fmt.Sprintf("4242\noldhost\nbootid\n%f\n", ts)
+	if err := os.WriteFile(lockPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	defer held.Release()
-	// age it past StaleAfter: mtime only, flock still ours
+	l := &Lock{Alias: "py", LockDir: dir}
+	if l.Acquire() {
+		t.Fatal("acquire must refuse while a fresh Python-format lock exists")
+	}
+	if l.Held() {
+		t.Fatal("refused lock must not be held")
+	}
+}
+
+// TestPythonHolderStaleProceeds: an OLD Python lock file (dead sidecar)
+// must not block — flock acquires and the transition check ignores it.
+func TestPythonHolderStaleProceeds(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "py.lock")
+	stale := float64(time.Now().Add(-2*time.Minute).UnixNano()) / 1e9
+	content := fmt.Sprintf("4242\noldhost\nbootid\n%f\n", stale)
+	if err := os.WriteFile(lockPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().Add(-2 * time.Minute)
-	if err := os.Chtimes(held.Path(), old, old); err != nil {
+	if err := os.Chtimes(lockPath, old, old); err != nil {
 		t.Fatal(err)
 	}
+	l := &Lock{Alias: "py", LockDir: dir}
+	if !l.Acquire() {
+		t.Fatal("stale Python lock must not block acquire")
+	}
+	defer l.Release()
+}
 
-	// an unheld stale file (dead holder left it behind)
-	stalePath := filepath.Join(dir, "gone.lock")
-	if err := os.WriteFile(stalePath, []byte("999999\noldhost\n\n1.0\n"), 0o644); err != nil {
-		t.Fatal(err)
+// TestGoWrittenFileDoesNotTripPythonGuard: a released Go lock leaves a
+// fresh holder file behind — the "tggw" 5th line must keep the
+// transitional Python guard from firing on it (release → immediate
+// re-acquire must succeed).
+func TestGoWrittenFileDoesNotTripPythonGuard(t *testing.T) {
+	dir := t.TempDir()
+	l1 := &Lock{Alias: "g", LockDir: dir}
+	if !l1.Acquire() {
+		t.Fatal("first acquire")
 	}
-	if err := os.Chtimes(stalePath, old, old); err != nil {
-		t.Fatal(err)
+	l1.Release() // leaves a fresh 5-line (tggw-marked) file on disk
+	l2 := &Lock{Alias: "g", LockDir: dir}
+	if !l2.Acquire() {
+		t.Fatal("re-acquire after release must not trip the Python guard")
 	}
-
-	if cleaned := SweepDir(dir); cleaned != 1 {
-		t.Fatalf("SweepDir cleaned %d, want 1 (the unheld stale file)", cleaned)
-	}
-	if _, err := os.Stat(held.Path()); err != nil {
-		t.Fatalf("live holder's lock file must survive: %v", err)
-	}
-	info, err := os.Stat(stalePath)
-	if err != nil {
-		t.Fatalf("stale file must survive as a truncated inode: %v", err)
-	}
-	if info.Size() != 0 {
-		t.Fatalf("stale unheld file must be truncated, size=%d", info.Size())
-	}
-	if ReclaimsTotal() < 1 {
-		t.Fatal("reclaim metric must count the cleanup")
-	}
-
-	// fresh unheld files are left alone
-	fresh := filepath.Join(dir, "fresh.lock")
-	if err := os.WriteFile(fresh, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if cleaned := SweepDir(dir); cleaned != 0 {
-		t.Fatalf("fresh unheld file must not be cleaned, got %d", cleaned)
-	}
+	l2.Release()
 }
 
 // TestRefusalMessageContainsHolder: the diagnostic identity written at

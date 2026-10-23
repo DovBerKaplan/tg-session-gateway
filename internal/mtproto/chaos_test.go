@@ -20,8 +20,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/DovBerKaplan/tg-session-gateway/internal/lock"
 )
 
 // TestKillNineRestartNoDuplicatesNoLoss: two manager LIFETIMES on the
@@ -118,9 +116,9 @@ func TestStaleLockReclaimedExactlyOneOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if removed := lock.SweepDir(sessDir); removed != 1 {
-		t.Fatalf("boot janitor removed %d stale locks, want 1", removed)
-	}
+	// the planted file is unheld — flock acquires over it regardless
+	// (SweepDir is gone: lock files are never deleted, see ADR-0003)
+	_ = lockPath
 
 	fake := &fakeMTClient{}
 	app, ts := newTestAppKey(t, fake, dir, mustTestKey())
