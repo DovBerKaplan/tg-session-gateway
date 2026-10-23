@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adherence to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Go rewrite of both planes — single static binary `tggw`, native
+Kubernetes, zero client-service dependencies. **Pre-release**: the
+Python images remain the production path until the Go build soaks
+against real Telegram. Reasoning: [ADR-0002](docs/adr/0002-go-rewrite.md).
+
+### Added
+- `go/` module: both planes (`tggw botapi` / `tggw mtproto`) behind
+  the same HTTP contract, `GW_*` env and metric names; modernc SQLite
+  opens the existing `gateway.db`/`queue.db`/`mtgateway.db` in place;
+  Redis removed (StatefulSet replicas:1 + ReadWriteOncePod PVC + file
+  lock) — stages/commits: 7de9f17 (foundations), 52907ed (Bot API),
+  73e437c (MTProto + `tggw migrate`, cutover gate `Telegram logins
+  required: 0`), 61253f2 (Helm chart + install.yaml + distroless
+  21.9MB image + compose), 45ea717 (CI: race/lint/conformance/image),
+  2978157 (kind verification + multi-arch release), df7e0fc (golden
+  files from the real Python sidecar, GW_ADMIN_PORT admin split with
+  admin Services + preStop `tggw terminate`, real media
+  upload/download via gotd uploader/downloader, chaos/soak black-box,
+  automated kind acceptance `deploy/helm/verify-kind.sh`).
+- Measured on kind v1.31: idle 1m CPU / 7Mi RAM per pod (Python
+  baseline 80–150MB); pod-kill recovery ~4s with exactly-once replay;
+  NetworkPolicy enforced both directions (label-gated ingress,
+  CIDR-listed egress).
+- CI jobs: go-test (race), go-lint (golangci-lint, 0 issues),
+  go-conformance (real binary vs fake Telegram, 8/8), go-image,
+  go-kind (full cluster acceptance).
+
+### Fixed
+- Pre-existing flake in the Python plane: same-millisecond backups
+  collided on the filename (`backup_db` failed with "output file
+  already exists"); the destination now bumps a counter.
+
 ## [0.0.5] — 2026-10-21
 
 Full hardening pass over both planes (the verified external review +

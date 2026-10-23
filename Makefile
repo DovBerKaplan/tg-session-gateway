@@ -25,3 +25,23 @@ docker-down:
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .pytest_cache
+
+# ── Go build (tggw) ────────────────────────────────────────────────
+GO ?= go
+
+go-build:
+	cd go && CGO_ENABLED=0 $(GO) build -o /tmp/tggw ./cmd/tggw
+
+go-test:
+	cd go && $(GO) test -race -count=1 ./...
+
+go-lint:
+	cd go && golangci-lint run --timeout 5m
+
+go-conformance: go-build
+	TGGW_BIN=/tmp/tggw .venv/bin/python -m pytest -q tests/conformance_go
+
+go-kind:
+	deploy/helm/verify-kind.sh
+
+.PHONY: go-build go-test go-lint go-conformance go-kind

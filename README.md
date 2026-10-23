@@ -135,6 +135,37 @@ that owns the Telegram connection, enforces the official
 you deploy your application freely — no FloodWait, no Conflict, no
 AUTH_KEY_DUPLICATED.
 
+## Go rewrite (`tggw`) — pre-release
+
+Both planes are being rewritten in Go as a single static binary —
+`tggw botapi` / `tggw mtproto` — with embedded SQLite on a PVC, no
+Redis, and a native Kubernetes chart. Status: **implemented,
+conformance-tested and kind-verified, not yet the default** — the
+Python images above stay the production path until the Go build soaks
+against real Telegram traffic.
+
+What exists under `go/` (module
+`github.com/DovBerKaplan/tg-session-gateway/go`):
+
+- Both planes behind the same HTTP contract, the same `GW_*` env and
+  the same metric names, opening the existing SQLite files **in place**
+  (near-free data migration)
+- `tggw migrate` — pyrofork sessions → gotd sessions with no re-login;
+  `Telegram logins required: 0` is the cutover gate
+- Helm chart + rendered `install.yaml`, distroless image (~22MB),
+  ReadWriteOncePod PVC, NetworkPolicy (ingress by namespace label,
+  egress to Telegram CIDRs only), PDB, preStop drain hook, and a split
+  admin port (`GW_ADMIN_PORT`) so operators keep `/admin` off the API
+  Service
+- Measured on kind: **idle 1m CPU / 7Mi RAM** per pod (Python baseline
+  80–150MB), pod-kill recovery in ~4s with exactly-once update replay
+
+Try it: `docker compose -f docker-compose.tggw.yml up` (same `.env`),
+or [the Helm chart →](deploy/helm/tggw/README.md). The verification is
+reproducible: `deploy/helm/verify-kind.sh` and `tests/conformance_go/`
+run the real binary black-box. Reasoning: [ADR-0002](docs/adr/0002-go-rewrite.md);
+phases in the [changelog](CHANGELOG.md).
+
 ## Bot API Gateway
 
 Drop-in `api.telegram.org` replacement for HTTP Bot API bots.
@@ -350,6 +381,8 @@ long-lived sidecar for the client you already have.
 | [Roadmap](docs/roadmap-10-of-10.md) | Path to v1.0 |
 | [Gap Analysis](docs/gap-analysis-report.md) | External review findings |
 | [Compatibility](docs/compatibility.md) | Pyrogram / pyrofork / Telethon support matrix |
+| [Helm chart](deploy/helm/tggw/README.md) | Kubernetes install for the Go build (tggw) |
+| [ADR-0002](docs/adr/0002-go-rewrite.md) | Why and how the Go rewrite happened |
 
 ## License
 

@@ -8,6 +8,13 @@ Docker paths assume the compose volumes (`tg-gateway-data` /
 `tg-mtgateway-data`). Alert rules: [`monitoring/alerts.yml`](../monitoring/alerts.yml);
 alert-level runbook: [`docs/alerting.md`](alerting.md).
 
+> **Go build (`tggw`)**: the same scenarios apply — same routes, same
+> secrets, same metric names. On Kubernetes the platform replaces the
+> Docker mechanics: probes replace autoheal, `preStop` replaces
+> `safe-restart.sh`, and the admin surface sits on `GW_ADMIN_PORT`
+> (8081, NetworkPolicy-blocked — `kubectl port-forward`). See
+> [`deploy/helm/tggw/README.md`](../deploy/helm/tggw/README.md).
+
 ## Session stuck in `error`
 
 ```bash
