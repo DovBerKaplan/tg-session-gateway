@@ -1,6 +1,6 @@
 module github.com/DovBerKaplan/tg-session-gateway/go
 
-go 1.26.0
+go 1.23
 
 require (
 	github.com/fernet/fernet-go v0.0.0-20240119011108-303da6aec611
