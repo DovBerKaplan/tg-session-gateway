@@ -16,6 +16,28 @@ spec:
     app.kubernetes.io/instance: {{ .Release.Name }}
     tggw/component: botapi
 ---
+{{- if gt (int .Values.service.adminPort) 0 }}
+# admin surface on its own port — NOT opened by the NetworkPolicy, so
+# it is reachable only via kubectl port-forward by the operator
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-admin
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: admin
+      port: {{ .Values.service.adminPort }}
+      targetPort: admin
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    tggw/component: botapi
+{{- end }}
+---
 {{- if .Values.mtproto.enabled }}
 apiVersion: v1
 kind: Service
@@ -34,4 +56,24 @@ spec:
     app.kubernetes.io/name: tggw
     app.kubernetes.io/instance: {{ .Release.Name }}
     tggw/component: mtproto
+{{- if gt (int .Values.service.adminPort) 0 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-mtproto-admin
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: admin
+      port: {{ .Values.service.adminPort }}
+      targetPort: admin
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    tggw/component: mtproto
+{{- end }}
 {{- end }}

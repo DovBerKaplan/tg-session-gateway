@@ -599,7 +599,9 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 					go m.pushToConsumer(url, u)
 				}
 			}
-		} else {
+		} else if s.CurrentState() == StateError {
+			// recover from a transient error state; never stomp a
+			// pause/drain that landed mid-poll
 			s.setState(StateLive)
 		}
 	}

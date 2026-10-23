@@ -49,7 +49,7 @@ func SerializeUpdate(u tg.UpdateClass) map[string]any {
 			"user_id", up.UserID,
 			"peer", SerializePeer(up.Peer),
 			"msg_id", up.MsgID,
-			"chat_instance", strconv.FormatInt(up.ChatInstance, 10),
+			"chat_instance", up.ChatInstance,
 			"data", string(up.Data),
 		)
 	case *tg.UpdateInlineBotCallbackQuery:
@@ -57,7 +57,7 @@ func SerializeUpdate(u tg.UpdateClass) map[string]any {
 			"query_id", up.QueryID,
 			"user_id", up.UserID,
 			"msg_data", "inline",
-			"chat_instance", strconv.FormatInt(up.ChatInstance, 10),
+			"chat_instance", up.ChatInstance,
 			"data", string(up.Data),
 		)
 	case *tg.UpdateBotCommands:

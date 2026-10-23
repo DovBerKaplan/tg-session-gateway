@@ -1,0 +1,37 @@
+{
+  "_": "UpdateNewMessage",
+  "message": {
+    "_": "Message",
+    "date": 1700000000,
+    "entities": [
+      {
+        "_": "MessageEntityBold",
+        "length": 5,
+        "offset": 0
+      },
+      {
+        "_": "MessageEntityBlockquote",
+        "collapsed": true,
+        "length": 5,
+        "offset": 6
+      }
+    ],
+    "from_id": {
+      "_": "PeerUser",
+      "user_id": 20
+    },
+    "id": 42,
+    "media": null,
+    "message": "hello world",
+    "out": false,
+    "peer_id": {
+      "_": "PeerUser",
+      "user_id": 10
+    },
+    "reply_markup": null,
+    "reply_to": null
+  },
+  "pts": 100,
+  "pts_count": 1,
+  "update_id": 9001
+}

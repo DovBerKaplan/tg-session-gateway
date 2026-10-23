@@ -1,0 +1,17 @@
+{
+  "_": "UpdateNewChannelMessage",
+  "message": {
+    "_": "Message",
+    "date": 1700000002,
+    "entities": [],
+    "id": 44,
+    "message": "channel post",
+    "peer_id": {
+      "_": "PeerChannel",
+      "channel_id": 1234
+    }
+  },
+  "pts": 102,
+  "pts_count": 1,
+  "update_id": 9003
+}

@@ -1,0 +1,30 @@
+{
+  "_": "UpdateNewMessage",
+  "message": {
+    "_": "Message",
+    "date": 1700000003,
+    "id": 45,
+    "message": "pick one",
+    "peer_id": {
+      "_": "PeerUser",
+      "user_id": 10
+    },
+    "reply_markup": {
+      "_": "ReplyInlineMarkup",
+      "rows": [
+        {
+          "_": "KeyboardButtonRow",
+          "buttons": [
+            {
+              "_": "KeyboardButton",
+              "text": "Open"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "pts": 104,
+  "pts_count": 1,
+  "update_id": 9006
+}

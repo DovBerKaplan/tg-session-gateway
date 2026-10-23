@@ -15,6 +15,7 @@
 #        kubectl label ns <consumer-ns> tg-gateway.io/client=true
 #      (the NetworkPolicy denies everything else)
 ---
+---
 # Source: tggw/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -221,6 +222,30 @@ spec:
     tggw/component: botapi
 ---
 # Source: tggw/templates/service.yaml
+# admin surface on its own port — NOT opened by the NetworkPolicy, so
+# it is reachable only via kubectl port-forward by the operator
+apiVersion: v1
+kind: Service
+metadata:
+  name: tggw-admin
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  type: ClusterIP
+  ports:
+    - name: admin
+      port: 8081
+      targetPort: admin
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    tggw/component: botapi
+---
+# Source: tggw/templates/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
@@ -237,6 +262,28 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+  selector:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    tggw/component: mtproto
+---
+# Source: tggw/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tggw-mtproto-admin
+  namespace: tg-gateway
+  labels:
+    app.kubernetes.io/name: tggw
+    app.kubernetes.io/instance: tggw
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: tggw-0.1.0
+spec:
+  type: ClusterIP
+  ports:
+    - name: admin
+      port: 8081
+      targetPort: admin
   selector:
     app.kubernetes.io/name: tggw
     app.kubernetes.io/instance: tggw
@@ -292,6 +339,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: admin
+              containerPort: 8081
           env:
             - name: GW_DATA_DIR
               value: /data
@@ -299,6 +348,8 @@ spec:
               value: 0.0.0.0
             - name: GW_PORT
               value: "8080"
+            - name: GW_ADMIN_PORT
+              value: "8081"
             - name: GW_ON_LIMIT
               value: "queue"
             - name: GW_UPSTREAM
@@ -318,6 +369,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          lifecycle:
+            preStop:
+              # begin the graceful drain (flush offsets, persist state,
+              # release locks) before the runtime's own SIGTERM
+              exec:
+                command: ["/tggw", "terminate"]
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2
@@ -399,6 +456,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: admin
+              containerPort: 8081
           env:
             - name: GW_DATA_DIR
               value: /data
@@ -406,6 +465,8 @@ spec:
               value: 0.0.0.0
             - name: GW_PORT
               value: "8080"
+            - name: GW_ADMIN_PORT
+              value: "8081"
           envFrom:
             - secretRef:
                 name: tggw-secrets
@@ -421,6 +482,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          lifecycle:
+            preStop:
+              # begin the graceful drain (flush offsets, persist state,
+              # release locks) before the runtime's own SIGTERM
+              exec:
+                command: ["/tggw", "terminate"]
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2

@@ -112,6 +112,27 @@ jobs:
       - run: docker run --rm tggw:ci version
       - run: docker run --rm --entrypoint /tggw tggw:ci healthcheck http://127.0.0.1:1 && exit 1 || exit 0
 
+  go-kind:
+    name: Go K8s Acceptance (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go/go.mod}
+      - name: Install helm + kind + kubectl
+        run: |
+          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/
+          curl -sSfL -o kind https://github.com/kubernetes-sigs/kind/releases/download/v0.25.0/kind-linux-amd64
+          sudo install kind /usr/local/bin/
+          curl -sSfL -o kubectl https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl
+          sudo install kubectl /usr/local/bin/
+      - name: Build image
+        run: docker build -f docker/Dockerfile.tggw -t tggw:verify .
+      - name: Run kind acceptance (chart install, traffic, pod-kill, NetworkPolicy)
+        run: deploy/helm/verify-kind.sh
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest

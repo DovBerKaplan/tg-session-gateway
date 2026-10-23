@@ -7,6 +7,7 @@ package mtproto
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sort"
 	"strings"
@@ -63,6 +64,19 @@ type SendParams struct {
 	ReplyMarkup   map[string]any
 	ReplyToMsgID  int64
 	DisableNotify bool
+	// Media, when set, sends the message as a media attachment instead
+	// of plain text (send_photo / send_video / send_document / send_audio).
+	Media *MediaAttach
+}
+
+// MediaAttach is the neutral media description the Client resolves to
+// its own upload/reference types.
+type MediaAttach struct {
+	Kind     string // photo | video | document | audio
+	Handle   string // upload handle returned by UploadMedia
+	URL      string // or: Telegram fetches this URL itself
+	MimeType string
+	FileName string
 }
 
 // EditTextParams is edit_message_text.
@@ -324,41 +338,51 @@ func adaptAnswerCallback(ctx context.Context, c Client, args map[string]any) (an
 		argStr(args, "url"), cacheTime)
 }
 
-// adaptUploadSend sends local media by URL or raw bytes: consumers pass
-// either file bytes (multipart upload already unwrapped to data) or an
-// HTTP URL Telegram fetches itself.
+// adaptUploadSend sends media three ways: an upload handle from POST
+// /upload (file_id "upload:…"), inline base64 bytes (data), or a URL
+// Telegram fetches itself (url).
 func adaptUploadSend(kind string) adapter {
 	return func(ctx context.Context, c Client, args map[string]any) (any, error) {
 		chatID, ok := argInt(args, "chat_id", "chat_username", "chat")
 		if !ok {
 			return nil, fmt.Errorf("chat_id required")
 		}
-		caption := argStr(args, "caption")
-		// media arrives as a file-id reference, an upload handle, or is
-		// delegated to the dedicated upload endpoint
-		fileRef := argStr(args, "file_id")
-		if fileRef == "" {
-			return nil, fmt.Errorf("file_id required (or POST /upload first)")
+		attach := &MediaAttach{Kind: kind, FileName: argStr(args, "file_name")}
+		switch {
+		case strings.HasPrefix(argStr(args, "file_id"), "upload:"):
+			attach.Handle = argStr(args, "file_id")
+		case argStr(args, "url") != "":
+			attach.URL = argStr(args, "url")
+		case argStr(args, "data") != "":
+			raw, err := base64.StdEncoding.DecodeString(argStr(args, "data"))
+			if err != nil {
+				return nil, fmt.Errorf("data must be base64: %w", err)
+			}
+			name := attach.FileName
+			if name == "" {
+				name = "upload." + kind
+			}
+			handle, err := c.UploadMedia(ctx, kind, name, raw)
+			if err != nil {
+				return nil, err
+			}
+			attach.Handle = handle
+		default:
+			return nil, fmt.Errorf(
+				"media required: file_id (upload handle from /upload), base64 data, or url")
 		}
-		data, err := c.DownloadMedia(ctx, fileRef)
-		if err != nil {
-			return nil, err
-		}
-		newRef, err := c.UploadMedia(ctx, kind, "upload", data)
-		if err != nil {
-			return nil, err
-		}
+
 		p := SendParams{
 			ChatID:        chatID,
-			Text:          caption,
+			Text:          argStr(args, "caption"),
 			ParseMode:     argStr(args, "parse_mode"),
 			ReplyMarkup:   argMarkup(args),
 			DisableNotify: argBool(args, "disable_notification"),
+			Media:         attach,
 		}
 		if rid, ok := argInt(args, "reply_to_message_id"); ok {
 			p.ReplyToMsgID = rid
 		}
-		_ = newRef
 		return c.SendMessage(ctx, p)
 	}
 }

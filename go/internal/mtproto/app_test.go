@@ -41,6 +41,8 @@ type fakeMTClient struct {
 	connectCalls int
 	connected    bool
 	sent         []sentRec
+	sentMedia    []*MediaAttach
+	uploads      []string
 	floodOnceCh  int64 // >0: first send to this chat raises FloodWait(42)
 	flooded      bool
 }
@@ -87,6 +89,7 @@ func (f *fakeMTClient) SendMessage(ctx context.Context, p SendParams) (SentMessa
 		return SentMessage{}, fmt.Errorf("Telegram flood: FloodWait(42)")
 	}
 	f.sent = append(f.sent, sentRec{p.ChatID, p.Text})
+	f.sentMedia = append(f.sentMedia, p.Media)
 	return SentMessage{ID: int64(len(f.sent)), ChatID: p.ChatID}, nil
 }
 
@@ -134,7 +137,21 @@ func (f *fakeMTClient) DownloadMedia(ctx context.Context, fileID string) ([]byte
 }
 
 func (f *fakeMTClient) UploadMedia(ctx context.Context, kind, filename string, data []byte) (string, error) {
-	return "", fmt.Errorf("upload not wired in fake")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	handle := fmt.Sprintf("upload:%d", len(f.sent)+1)
+	f.uploads = append(f.uploads, handle)
+	return handle, nil
+}
+
+// lastMedia returns the most recent media attachment recorded.
+func (f *fakeMTClient) lastMedia() *MediaAttach {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sentMedia) == 0 {
+		return nil
+	}
+	return f.sentMedia[len(f.sentMedia)-1]
 }
 
 func (f *fakeMTClient) startCalls() int {
@@ -199,7 +216,7 @@ func mustTestKey() string {
 
 func newTestApp(t *testing.T, fake *fakeMTClient, dir string) (*App, *httptest.Server) {
 	t.Helper()
-	app, err := NewApp(itestConfig(dir))
+	app, err := newApp(itestConfig(dir), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +231,7 @@ func newTestApp(t *testing.T, fake *fakeMTClient, dir string) (*App, *httptest.S
 
 func newTestAppKey(t *testing.T, fake *fakeMTClient, dir, key string) (*App, *httptest.Server) {
 	t.Helper()
-	app, err := NewApp(itestConfigWithKey(dir, key))
+	app, err := newApp(itestConfigWithKey(dir, key), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,4 +707,44 @@ func TestSafeModeReadyz(t *testing.T) {
 		t.Fatalf("ack = %d %v", code, body)
 	}
 	waitUntil(t, "restore after ack", 5*time.Second, func() bool { return fake.startCalls() == 1 })
+}
+
+// TestAdminPortSplit pins GW_ADMIN_PORT: the public listener keeps the
+// consumer surface (/v1/sessions/*), the admin listener carries
+// /v1/admin/* and /metrics (the Helm chart's 8080/8081 layout).
+func TestAdminPortSplit(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeMTClient{}
+	cfg := itestConfigWithKey(dir, mustTestKey())
+	cfg.AdminPort = 18101
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Mgr.ClientFactory = func(alias string) Client { return fake }
+	t.Cleanup(app.Close)
+
+	pub := httptest.NewServer(app.srv.Handler)
+	adm := httptest.NewServer(app.adminSrv.Handler)
+	t.Cleanup(pub.Close)
+	t.Cleanup(adm.Close)
+
+	// public: consumer surface + probes only
+	if code := mtRaw(t, "GET", pub.URL+"/healthz", "", "").code; code != 200 {
+		t.Fatalf("public /healthz = %d", code)
+	}
+	if code := mtRaw(t, "GET", pub.URL+"/metrics", "", "").code; code != 404 {
+		t.Fatalf("public /metrics = %d, want 404", code)
+	}
+	if code := mtRaw(t, "GET", pub.URL+"/v1/admin/status", "", itestADM).code; code != 404 {
+		t.Fatalf("public /v1/admin/status = %d, want 404", code)
+	}
+
+	// admin: operator surface + metrics
+	if code := mtRaw(t, "GET", adm.URL+"/v1/admin/status", "", itestADM).code; code != 200 {
+		t.Fatalf("admin /v1/admin/status = %d, want 200", code)
+	}
+	if code := mtRaw(t, "GET", adm.URL+"/metrics", "", "").code; code != 200 {
+		t.Fatalf("admin /metrics = %d, want 200", code)
+	}
 }

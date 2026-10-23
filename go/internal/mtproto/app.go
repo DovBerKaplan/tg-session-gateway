@@ -52,10 +52,20 @@ type App struct {
 	houseStop chan struct{}
 	closeOnce sync.Once
 	srv       *http.Server
+	// adminSrv is non-nil when GW_ADMIN_PORT splits the operator surface
+	// onto its own (unexposed) listener.
+	adminSrv *http.Server
 }
 
 // NewApp wires everything (production client factory: gotd).
 func NewApp(cfg config.MTProto) (*App, error) {
+	return newApp(cfg, false)
+}
+
+// newApp builds the app; skipRestore defers RestoreAll to the caller —
+// in-package tests use it to inject a fake ClientFactory BEFORE any
+// supervisor starts (boot restore would otherwise dial real Telegram).
+func newApp(cfg config.MTProto, skipRestore bool) (*App, error) {
 	h := health.NewStorage()
 	st, err := store.OpenMT(cfg.DataDir, cfg.FernetKey, cfg.Storage.Durability, cfg.DataDir+"/backups", h)
 	if err != nil {
@@ -71,17 +81,27 @@ func NewApp(cfg config.MTProto) (*App, error) {
 		houseStop: make(chan struct{}),
 	}
 	app.Beat = health.NewBeat()
-	app.buildLifecycle()
+	app.buildLifecycle(skipRestore)
 
 	mux := http.NewServeMux()
-	app.routes(mux)
+	if cfg.AdminPort > 0 {
+		app.publicRoutes(mux)
+		adminMux := http.NewServeMux()
+		app.adminRoutes(adminMux)
+		app.adminSrv = &http.Server{
+			Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.AdminPort),
+			Handler: adminMux,
+		}
+	} else {
+		app.routes(mux)
+	}
 	app.srv = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: mux}
 	return app, nil
 }
 
 // buildLifecycle runs the boot sequence (safe-mode check, restore,
 // housekeeping and maintenance loops).
-func (a *App) buildLifecycle() {
+func (a *App) buildLifecycle(skipRestore bool) {
 	go a.housekeepingLoop()
 	go a.maintenanceLoop()
 
@@ -92,6 +112,8 @@ func (a *App) buildLifecycle() {
 	if safe {
 		slog.Error("SAFE MODE: boots in the last window — sessions stay on disk, nothing auto-connects. Ack via POST /v1/admin/safe-mode/ack",
 			"boots", boots, "window_s", 600)
+	} else if skipRestore {
+		// caller restores after wiring the client factory
 	} else {
 		restored = a.Mgr.RestoreAll(context.Background())
 	}
@@ -163,11 +185,21 @@ func (a *App) Close() {
 	})
 }
 
-// ListenAndServe blocks serving HTTP.
-func (a *App) ListenAndServe() error { return a.srv.ListenAndServe() }
+// ListenAndServe blocks serving HTTP (both listeners when split).
+func (a *App) ListenAndServe() error {
+	if a.adminSrv != nil {
+		go func() { _ = a.adminSrv.ListenAndServe() }()
+	}
+	return a.srv.ListenAndServe()
+}
 
 // Shutdown gracefully drains in-flight requests.
-func (a *App) Shutdown(ctx context.Context) error { return a.srv.Shutdown(ctx) }
+func (a *App) Shutdown(ctx context.Context) error {
+	if a.adminSrv != nil {
+		_ = a.adminSrv.Shutdown(ctx)
+	}
+	return a.srv.Shutdown(ctx)
+}
 
 // RunServe blocks until SIGTERM/SIGINT.
 func (a *App) RunServe() error {
@@ -192,6 +224,13 @@ func (a *App) RunServe() error {
 // ── routing ────────────────────────────────────────────────────────
 
 func (a *App) routes(mux *http.ServeMux) {
+	a.publicRoutes(mux)
+	a.adminRoutes(mux)
+}
+
+// publicRoutes is the consumer surface: method proxy, getUpdates, WS
+// push, files and the kubelet probes.
+func (a *App) publicRoutes(mux *http.ServeMux) {
 	// the dedicated getUpdates route is strictly more specific than
 	// {method}, so ServeMux picks it — no delegation needed.
 	mux.HandleFunc("POST /v1/sessions/{alias}/getUpdates", a.handleGetUpdates)
@@ -203,6 +242,12 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/sessions/{alias}/health", a.handleSessionHealth)
 	mux.HandleFunc("GET /v1/sessions/{alias}/files/{file_id}", a.handleDownloadFile)
 
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
+	mux.HandleFunc("GET /readyz", a.handleReadyz)
+}
+
+// adminRoutes is the operator surface: /v1/admin/* and /metrics.
+func (a *App) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/sessions", a.adminRegister)
 	mux.HandleFunc("GET /v1/admin/status", a.adminStatus)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/pause", a.adminPause)
@@ -218,8 +263,6 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/paid", a.adminSetPaid)
 	mux.HandleFunc("GET /v1/admin/audit", a.adminAudit)
 
-	mux.HandleFunc("GET /healthz", a.handleHealthz)
-	mux.HandleFunc("GET /readyz", a.handleReadyz)
 	mux.HandleFunc("GET /metrics", a.handleMetrics)
 }
 

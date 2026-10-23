@@ -153,6 +153,9 @@ type BotAPI struct {
 	Host     string
 	Port     int
 	Upstream string
+	// AdminPort > 0 splits the admin surface (/admin/*, /metrics) onto
+	// a second listener; 0 keeps the classic single-port layout.
+	AdminPort int
 
 	AdminSecret string
 	AppSecret   string
@@ -174,6 +177,7 @@ func BotAPIFromEnv() BotAPI {
 	return BotAPI{
 		Host:               envStr("GW_HOST", "0.0.0.0"),
 		Port:               envInt("GW_PORT", 8080),
+		AdminPort:          envInt("GW_ADMIN_PORT", 0),
 		Upstream:           envStr("GW_UPSTREAM", "https://api.telegram.org"),
 		AdminSecret:        envStr("GW_ADMIN_SECRET", ""),
 		AppSecret:          envStr("GW_APP_SECRET", ""),
@@ -194,6 +198,9 @@ type MTProto struct {
 	Host   string
 	Port   int
 	WSAddr string // informational: GW_WS_PORT kept for compatibility
+	// AdminPort > 0 splits the admin surface (/v1/admin/*, /metrics)
+	// onto a second listener; 0 keeps the classic single-port layout.
+	AdminPort int
 
 	AdminSecret string
 	AppSecret   string
@@ -225,6 +232,7 @@ func MTProtoFromEnv() MTProto {
 	cfg := MTProto{
 		Host:            envStr("GW_HOST", "0.0.0.0"),
 		Port:            envInt("GW_PORT", 8080),
+		AdminPort:       envInt("GW_ADMIN_PORT", 0),
 		AdminSecret:     envStr("GW_ADMIN_SECRET", ""),
 		AppSecret:       envStr("GW_APP_SECRET", ""),
 		DataDir:         dataDir,

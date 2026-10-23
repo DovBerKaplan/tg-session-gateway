@@ -79,8 +79,10 @@ func TestSerializeCallbackQuery(t *testing.T) {
 	if d["data"] != "payload" {
 		t.Fatalf("data = %v", d["data"])
 	}
-	if s, ok := d["chat_instance"].(string); !ok || s != "99" {
-		t.Fatalf("chat_instance = %v", d["chat_instance"])
+	// chat_instance stays a NUMBER (pinned by the Python-sidecar golden;
+	// classic Pyrogram to_dict carried the raw int)
+	if ci := d["chat_instance"]; ci != int64(99) {
+		t.Fatalf("chat_instance = %v (%T)", ci, ci)
 	}
 }
 

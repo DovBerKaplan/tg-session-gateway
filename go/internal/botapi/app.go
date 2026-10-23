@@ -38,6 +38,9 @@ type App struct {
 	maintStop chan struct{}
 	closeOnce sync.Once
 	srv       *http.Server
+	// adminSrv is non-nil when GW_ADMIN_PORT splits the operator surface
+	// onto its own (unexposed) listener.
+	adminSrv *http.Server
 }
 
 // NewApp wires everything. The HTTPClient is injectable so tests fake
@@ -59,7 +62,17 @@ func NewApp(cfg config.BotAPI, client HTTPClient) (*App, error) {
 	app.buildLifecycle()
 
 	mux := http.NewServeMux()
-	app.routes(mux)
+	if cfg.AdminPort > 0 {
+		app.publicRoutes(mux)
+		adminMux := http.NewServeMux()
+		app.adminRoutes(adminMux)
+		app.adminSrv = &http.Server{
+			Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.AdminPort),
+			Handler: adminMux,
+		}
+	} else {
+		app.routes(mux)
+	}
 	app.srv = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: mux}
 	return app, nil
 }
@@ -119,11 +132,21 @@ func (a *App) Close() {
 	})
 }
 
-// ListenAndServe blocks serving HTTP.
-func (a *App) ListenAndServe() error { return a.srv.ListenAndServe() }
+// ListenAndServe blocks serving HTTP (both listeners when split).
+func (a *App) ListenAndServe() error {
+	if a.adminSrv != nil {
+		go func() { _ = a.adminSrv.ListenAndServe() }()
+	}
+	return a.srv.ListenAndServe()
+}
 
 // Shutdown gracefully drains in-flight requests.
-func (a *App) Shutdown(ctx context.Context) error { return a.srv.Shutdown(ctx) }
+func (a *App) Shutdown(ctx context.Context) error {
+	if a.adminSrv != nil {
+		_ = a.adminSrv.Shutdown(ctx)
+	}
+	return a.srv.Shutdown(ctx)
+}
 
 // RunServe boots and blocks until SIGTERM/SIGINT.
 func (a *App) RunServe() error {
@@ -148,6 +171,14 @@ func (a *App) RunServe() error {
 // ── routing ────────────────────────────────────────────────────────
 
 func (a *App) routes(mux *http.ServeMux) {
+	a.publicRoutes(mux)
+	a.adminRoutes(mux)
+}
+
+// publicRoutes is the consumer surface: proxy, alias routes, files and
+// the kubelet probes. When GW_ADMIN_PORT splits the listeners, this is
+// everything the API Service exposes.
+func (a *App) publicRoutes(mux *http.ServeMux) {
 	// token-in-path routes need manual parsing: ServeMux wildcards must
 	// occupy a whole segment, and "/tgapi/bot<token>/<method>" embeds the
 	// token mid-segment.
@@ -157,6 +188,12 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /file/", a.handleFileRoute)
 	mux.HandleFunc("GET /tgapi/file/", a.handleFileRoute)
 
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
+	mux.HandleFunc("GET /readyz", a.handleReadyz)
+}
+
+// adminRoutes is the operator surface: /admin/* and /metrics.
+func (a *App) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/bots", a.adminRegister)
 	mux.HandleFunc("GET /admin/status", a.adminStatus)
 	mux.HandleFunc("POST /admin/bots/{alias}/pause", a.adminPause)
@@ -171,8 +208,6 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/safe_mode/ack", a.adminSafeModeAck)
 	mux.HandleFunc("GET /admin/audit", a.adminAudit)
 
-	mux.HandleFunc("GET /healthz", a.handleHealthz)
-	mux.HandleFunc("GET /readyz", a.handleReadyz)
 	mux.HandleFunc("GET /metrics", a.handleMetrics)
 }
 

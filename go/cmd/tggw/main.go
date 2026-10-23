@@ -41,6 +41,8 @@ func main() {
 		err = runMigrate(os.Args[2:])
 	case "healthcheck":
 		err = runHealthcheck(os.Args[2:])
+	case "terminate":
+		err = runTerminate()
 	case "version":
 		fmt.Println(botapi.Version)
 	default:
@@ -63,6 +65,8 @@ commands:
   migrate    pyrofork session file → gotd session (no re-login)
   healthcheck GET /healthz on localhost (exit 0 = alive; container
              healthcheck for shell-less distroless images)
+  terminate  SIGTERM to PID 1 — the K8s preStop drain hook (starts
+             flush offsets + release locks before the runtime's signal)
   version    print the version`)
 }
 

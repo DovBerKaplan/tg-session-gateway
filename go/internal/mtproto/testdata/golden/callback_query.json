@@ -1,0 +1,13 @@
+{
+  "_": "UpdateBotCallbackQuery",
+  "chat_instance": -5500000000000000000,
+  "data": "payload",
+  "msg_id": 7,
+  "peer": {
+    "_": "PeerUser",
+    "user_id": 10
+  },
+  "query_id": 555,
+  "update_id": 9005,
+  "user_id": 20
+}

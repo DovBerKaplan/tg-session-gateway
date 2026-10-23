@@ -1,0 +1,17 @@
+{
+  "_": "UpdateEditMessage",
+  "message": {
+    "_": "Message",
+    "date": 1700000000,
+    "entities": [],
+    "id": 42,
+    "message": "hello world (edited)",
+    "peer_id": {
+      "_": "PeerUser",
+      "user_id": 10
+    }
+  },
+  "pts": 103,
+  "pts_count": 0,
+  "update_id": 9004
+}

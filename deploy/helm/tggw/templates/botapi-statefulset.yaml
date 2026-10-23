@@ -51,6 +51,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: admin
+              containerPort: {{ .Values.service.adminPort }}
           env:
             - name: GW_DATA_DIR
               value: /data
@@ -58,6 +60,8 @@ spec:
               value: 0.0.0.0
             - name: GW_PORT
               value: "8080"
+            - name: GW_ADMIN_PORT
+              value: {{ .Values.service.adminPort | quote }}
             {{- range $k, $v := .Values.botapi.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -72,6 +76,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          lifecycle:
+            preStop:
+              # begin the graceful drain (flush offsets, persist state,
+              # release locks) before the runtime's own SIGTERM
+              exec:
+                command: ["/tggw", "terminate"]
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2

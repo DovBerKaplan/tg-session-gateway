@@ -63,6 +63,10 @@ mtproto:
 service:
   type: ClusterIP
   port: 8080
+  # admin listener: split from the API port when >0. The admin Service
+  # has no NetworkPolicy ingress rule — default-deny keeps it cluster-
+  # operator-only (kubectl port-forward).
+  adminPort: 8081
 
 # ── hardening ──────────────────────────────────────────────────────
 networkPolicy:

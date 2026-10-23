@@ -1,24 +1,33 @@
 package mtproto
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/config"
 	"github.com/DovBerKaplan/tg-session-gateway/go/internal/store"
 )
+
+// uploadCounter serializes upload handles across clients in-process.
+var uploadCounter atomic.Int64
 
 // gotdClient is the production Client: a gotd telegram.Client per bot
 // token with the session persisted in our SQLite — a migrated pyrofork
@@ -30,11 +39,21 @@ type gotdClient struct {
 	alias   string
 	storeDB *store.MT
 
-	client    *telegram.Client
-	raw       *tg.Client
-	runCancel context.CancelFunc
-
+	client        *telegram.Client
+	raw           *tg.Client
+	runCancel     context.CancelFunc
 	updateHandler func(map[string]any)
+
+	// uploads maps this-session upload handles to their InputFile
+	// (InputFileBig is reusable until consumed server-side).
+	upMu    sync.Mutex
+	uploads map[string]tg.InputFileClass
+
+	// media locations seen in updates (id → photo/document with
+	// access_hash + file_reference) so "photo:<id>" refs can download.
+	mediaMu   sync.Mutex
+	photoLocs map[int64]*tg.Photo
+	docLocs   map[int64]*tg.Document
 }
 
 // sqliteSessionStorage persists gotd session blobs in mtgateway.db —
@@ -70,7 +89,14 @@ func (s sqliteSessionStorage) StoreSession(ctx context.Context, data []byte) err
 }
 
 func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
-	g := &gotdClient{cfg: cfg, alias: alias, storeDB: st}
+	g := &gotdClient{
+		cfg:       cfg,
+		alias:     alias,
+		storeDB:   st,
+		uploads:   map[string]tg.InputFileClass{},
+		photoLocs: map[int64]*tg.Photo{},
+		docLocs:   map[int64]*tg.Document{},
+	}
 	storage := sqliteSessionStorage{db: st.DB, alias: alias}
 	g.client = telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: &storage,
@@ -81,17 +107,49 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 }
 
 // onUpdatesClass fans a Telegram updates batch out into serialized
-// Pyrogram-shaped single updates.
+// Pyrogram-shaped single updates, and remembers media locations so
+// "photo:<id>" / "document:<id>" refs can download later.
 func (g *gotdClient) onUpdatesClass(ctx context.Context, class tg.UpdatesClass) error {
-	if g.updateHandler == nil {
-		return nil
-	}
 	for _, u := range flattenUpdates(class) {
-		if d := SerializeUpdate(u); d != nil {
-			g.updateHandler(d)
+		g.cacheMediaLocations(u)
+		if g.updateHandler != nil {
+			if d := SerializeUpdate(u); d != nil {
+				g.updateHandler(d)
+			}
 		}
 	}
 	return nil
+}
+
+// cacheMediaLocations stores photos/documents carried by message
+// updates (access_hash + file_reference are needed to download).
+func (g *gotdClient) cacheMediaLocations(u tg.UpdateClass) {
+	var msg *tg.Message
+	switch up := u.(type) {
+	case *tg.UpdateNewMessage:
+		msg, _ = up.Message.(*tg.Message)
+	case *tg.UpdateNewChannelMessage:
+		msg, _ = up.Message.(*tg.Message)
+	case *tg.UpdateEditMessage:
+		msg, _ = up.Message.(*tg.Message)
+	case *tg.UpdateEditChannelMessage:
+		msg, _ = up.Message.(*tg.Message)
+	}
+	if msg == nil || msg.Media == nil {
+		return
+	}
+	g.mediaMu.Lock()
+	defer g.mediaMu.Unlock()
+	switch media := msg.Media.(type) {
+	case *tg.MessageMediaPhoto:
+		if photo, ok := media.Photo.(*tg.Photo); ok {
+			g.photoLocs[photo.ID] = photo
+		}
+	case *tg.MessageMediaDocument:
+		if doc, ok := media.Document.(*tg.Document); ok {
+			g.docLocs[doc.ID] = doc
+		}
+	}
 }
 
 // flattenUpdates expands an UpdatesClass batch into individual updates.
@@ -226,7 +284,13 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 	}
 	var updates tg.UpdatesClass
 	var err error
-	if strings.EqualFold(p.ParseMode, "html") {
+	if p.Media != nil {
+		input, mErr := g.buildInputMedia(ctx, p.Media)
+		if mErr != nil {
+			return SentMessage{}, mErr
+		}
+		updates, err = builder.Media(ctx, message.Media(input, captionOptions(p)...))
+	} else if strings.EqualFold(p.ParseMode, "html") {
 		updates, err = builder.StyledText(ctx, html.String(nil, p.Text))
 	} else {
 		updates, err = builder.Text(ctx, p.Text)
@@ -235,6 +299,161 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 		return SentMessage{}, err
 	}
 	return extractSentMessage(updates, p.ChatID), nil
+}
+
+// captionOptions styles the media caption the same way message text is
+// styled (HTML parse mode rides through).
+func captionOptions(p SendParams) []message.StyledTextOption {
+	if strings.EqualFold(p.ParseMode, "html") && p.Text != "" {
+		return []message.StyledTextOption{html.String(nil, p.Text)}
+	}
+	if p.Text != "" {
+		return []message.StyledTextOption{styling.Plain(p.Text)}
+	}
+	return nil
+}
+
+var mediaMimeTypes = map[string]string{
+	"photo":    "image/jpeg",
+	"video":    "video/mp4",
+	"audio":    "audio/mpeg",
+	"document": "application/octet-stream",
+}
+
+// buildInputMedia resolves a MediaAttach into the gotd input media.
+func (g *gotdClient) buildInputMedia(ctx context.Context, m *MediaAttach) (tg.InputMediaClass, error) {
+	mime := m.MimeType
+	if mime == "" {
+		mime = mediaMimeTypes[m.Kind]
+	}
+	name := m.FileName
+	if name == "" {
+		name = "upload." + m.Kind
+	}
+
+	if m.URL != "" {
+		// Telegram fetches the URL itself
+		if m.Kind == "photo" {
+			return &tg.InputMediaPhotoExternal{URL: m.URL}, nil
+		}
+		return &tg.InputMediaDocumentExternal{URL: m.URL}, nil
+	}
+
+	g.upMu.Lock()
+	file, ok := g.uploads[m.Handle]
+	g.upMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown upload handle %q (uploads live per session; re-POST /upload after a restart)", m.Handle)
+	}
+
+	if m.Kind == "photo" {
+		return &tg.InputMediaUploadedPhoto{File: file}, nil
+	}
+	attrs := []tg.DocumentAttributeClass{&tg.DocumentAttributeFilename{FileName: name}}
+	switch m.Kind {
+	case "video":
+		attrs = append(attrs, &tg.DocumentAttributeVideo{SupportsStreaming: true})
+	case "audio":
+		attrs = append(attrs, &tg.DocumentAttributeAudio{})
+	}
+	return &tg.InputMediaUploadedDocument{
+		File:       file,
+		MimeType:   mime,
+		Attributes: attrs,
+	}, nil
+}
+
+// UploadMedia uploads bytes to Telegram and returns a session-scoped
+// handle ("upload:<id>") that send_photo/video/document/audio accept.
+func (g *gotdClient) UploadMedia(ctx context.Context, kind, filename string, data []byte) (string, error) {
+	if filename == "" {
+		filename = "upload." + kind
+	}
+	if g.raw == nil {
+		return "", fmt.Errorf("client not connected")
+	}
+	file, err := uploader.NewUploader(g.raw).FromBytes(ctx, filename, data)
+	if err != nil {
+		return "", err
+	}
+	handle := fmt.Sprintf("upload:%d", uploadCounter.Add(1))
+	g.upMu.Lock()
+	g.uploads[handle] = file
+	g.upMu.Unlock()
+	return handle, nil
+}
+
+// DownloadMedia streams a "photo:<id>" / "document:<id>" reference
+// (as SerializeMedia renders) to bytes. Locations come from updates
+// this session observed — Telegram needs access_hash + file_reference,
+// which a bare id does not carry.
+func (g *gotdClient) DownloadMedia(ctx context.Context, fileID string) ([]byte, error) {
+	kind, idStr, ok := strings.Cut(fileID, ":")
+	if !ok {
+		return nil, fmt.Errorf("file id must be photo:<id> or document:<id>")
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("bad file id %q", fileID)
+	}
+
+	var loc tg.InputFileLocationClass
+	g.mediaMu.Lock()
+	switch kind {
+	case "photo":
+		photo, ok := g.photoLocs[id]
+		if !ok {
+			g.mediaMu.Unlock()
+			return nil, fmt.Errorf("photo %d not seen in this session's updates (no access_hash to download it)", id)
+		}
+		thumb := largestThumbSize(photo.Sizes)
+		loc = &tg.InputPhotoFileLocation{
+			ID:            photo.ID,
+			AccessHash:    photo.AccessHash,
+			FileReference: photo.FileReference,
+			ThumbSize:     thumb,
+		}
+	case "document":
+		doc, ok := g.docLocs[id]
+		if !ok {
+			g.mediaMu.Unlock()
+			return nil, fmt.Errorf("document %d not seen in this session's updates (no access_hash to download it)", id)
+		}
+		loc = &tg.InputDocumentFileLocation{
+			ID:            doc.ID,
+			AccessHash:    doc.AccessHash,
+			FileReference: doc.FileReference,
+		}
+	default:
+		g.mediaMu.Unlock()
+		return nil, fmt.Errorf("unknown media kind %q", kind)
+	}
+	g.mediaMu.Unlock()
+
+	if g.raw == nil {
+		return nil, fmt.Errorf("client not connected")
+	}
+	var buf bytes.Buffer
+	if _, err := downloader.NewDownloader().Download(g.raw, loc).Stream(ctx, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// largestThumbSize picks the biggest photo size type ("y" beats "x"…).
+func largestThumbSize(sizes []tg.PhotoSizeClass) string {
+	best, bestArea := "", -1
+	for _, s := range sizes {
+		if psz, ok := s.(*tg.PhotoSize); ok {
+			if area := psz.W * psz.H; area > bestArea {
+				bestArea, best = area, psz.Type
+			}
+		}
+	}
+	if best == "" {
+		return "m" // sane default Telegram always has
+	}
+	return best
 }
 
 func inputPeerOf(chatID int64) tg.InputPeerClass {
@@ -467,14 +686,6 @@ func (g *gotdClient) AnswerCallbackQuery(ctx context.Context, id, text string, s
 		CacheTime: cacheTime,
 	})
 	return EditResult{Ok: err == nil}, err
-}
-
-func (g *gotdClient) DownloadMedia(ctx context.Context, fileID string) ([]byte, error) {
-	return nil, fmt.Errorf("media download is served by GET /v1/sessions/{alias}/files/{file_id}")
-}
-
-func (g *gotdClient) UploadMedia(ctx context.Context, kind, filename string, data []byte) (string, error) {
-	return "", fmt.Errorf("media upload is served by POST /v1/sessions/{alias}/upload")
 }
 
 // UpdateState reports the tracked pts/qts (polled by PersistStates).

@@ -560,3 +560,68 @@ func waitFor(t *testing.T, timeout time.Duration, what string, pred func() bool)
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// TestAdminPortSplit pins GW_ADMIN_PORT: the public listener loses the
+// operator surface, the admin listener gains it (the Helm chart's
+// 8080/8081 layout).
+func TestAdminPortSplit(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testCfg(dir)
+	cfg.AdminPort = 18101
+	app, err := NewApp(cfg, newFakeTelegram(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(app.Close)
+
+	pub := httptest.NewServer(app.srv.Handler)
+	adm := httptest.NewServer(app.adminSrv.Handler)
+	t.Cleanup(pub.Close)
+	t.Cleanup(adm.Close)
+
+	// public: consumer surface + probes only
+	if code := httpStatus(t, pub.URL+"/healthz"); code != 200 {
+		t.Fatalf("public /healthz = %d", code)
+	}
+	if code := httpStatus(t, pub.URL+"/metrics"); code != 404 {
+		t.Fatalf("public /metrics = %d, want 404", code)
+	}
+	if code := httpStatusAuth(t, pub.URL+"/admin/status", "adm-secret"); code != 404 {
+		t.Fatalf("public /admin/status = %d, want 404", code)
+	}
+
+	// admin: operator surface + metrics
+	if code := httpStatusAuth(t, adm.URL+"/admin/status", "adm-secret"); code != 200 {
+		t.Fatalf("admin /admin/status = %d, want 200", code)
+	}
+	if code := httpStatus(t, adm.URL+"/metrics"); code != 200 {
+		t.Fatalf("admin /metrics = %d, want 200", code)
+	}
+	if code := httpStatus(t, adm.URL+"/tgapi/bot123:x/getUpdates"); code != 404 {
+		t.Fatalf("admin /tgapi = %d, want 404 (proxy must not live here)", code)
+	}
+}
+
+func httpStatus(t *testing.T, url string) int {
+	t.Helper()
+	resp, err := httpClientDefault.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+func httpStatusAuth(t *testing.T, url, secret string) int {
+	t.Helper()
+	req, _ := httpNewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := httpClientDefault.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}

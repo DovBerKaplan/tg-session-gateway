@@ -1,0 +1,17 @@
+{
+  "_": "UpdateNewMessage",
+  "message": {
+    "_": "Message",
+    "date": 1700000001,
+    "entities": [],
+    "id": 43,
+    "message": "in the group",
+    "peer_id": {
+      "_": "PeerChat",
+      "chat_id": 77
+    }
+  },
+  "pts": 101,
+  "pts_count": 1,
+  "update_id": 9002
+}
