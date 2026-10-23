@@ -122,7 +122,7 @@ func (f *fakeMTClient) ForwardMessages(ctx context.Context, p ForwardParams) ([]
 }
 
 func (f *fakeMTClient) GetChat(ctx context.Context, chatID int64) (map[string]any, error) {
-	return dict("_", "Chat", "id", chatID, "type", "private"), nil
+	return mapOf("_", "Chat", "id", chatID, "type", "private"), nil
 }
 
 func (f *fakeMTClient) ResolveUsername(ctx context.Context, username string) (int64, error) {

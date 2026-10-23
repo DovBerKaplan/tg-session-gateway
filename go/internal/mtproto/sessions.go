@@ -278,7 +278,7 @@ func (m *Manager) supervise(s *Session) {
 				s.setError(fmt.Sprintf("start failed (retry in %.0fs): %s", backoff, err))
 				slog.Warn("start failed — backing off", "alias", s.Alias, "wait_s", int64(backoff), "err", err)
 				s.setRetryAt(monoNow() + backoff)
-				backoff = minF(backoff*2, 300.0)
+				backoff = min(backoff*2, 300.0)
 				continue
 			}
 		}
@@ -903,20 +903,6 @@ func monoNow() float64 { return float64(time.Now().UnixNano()) / 1e9 }
 func wallNow() float64 { return float64(time.Now().UnixNano()) / 1e9 }
 
 func round1(f float64) float64 { return float64(int64(f*10+0.5)) / 10 }
-
-func minF(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 func sleepCtx(stop <-chan struct{}, d time.Duration) {
 	select {

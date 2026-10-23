@@ -543,7 +543,7 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 			if !sleepJittered(ctx, backoff) {
 				return
 			}
-			backoff = minF(backoff*2, m.cfg.PollBackoffMax)
+			backoff = min(backoff*2, m.cfg.PollBackoffMax)
 			s.setState(StateLive)
 			continue
 		}
@@ -558,7 +558,7 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 			if !sleepJittered(ctx, backoff) {
 				return
 			}
-			backoff = minF(backoff*2, m.cfg.PollBackoffMax)
+			backoff = min(backoff*2, m.cfg.PollBackoffMax)
 			continue
 		}
 		if !data.Ok {
@@ -575,7 +575,7 @@ func (m *Manager) poller(ctx context.Context, s *BotSession) {
 			if !sleepJittered(ctx, backoff) {
 				return
 			}
-			backoff = minF(backoff*2, m.cfg.PollBackoffMax)
+			backoff = min(backoff*2, m.cfg.PollBackoffMax)
 			continue
 		}
 		backoff = 1.0
@@ -631,13 +631,6 @@ func sleepJittered(ctx context.Context, base float64) bool {
 	case <-time.After(d):
 		return true
 	}
-}
-
-func minF(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func numberOf(v any) float64 {

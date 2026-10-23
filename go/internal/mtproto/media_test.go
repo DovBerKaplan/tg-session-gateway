@@ -68,7 +68,7 @@ func TestSendDocumentWithUploadHandleAndURL(t *testing.T) {
 	// missing media → clear error listing the three shapes
 	code, body := mtDo(t, "POST", base, "/v1/sessions/b1/send_photo",
 		`{"chat_id":10}`, itestAPP)
-	if code != 500 || !strings.Contains(fmt0(body["description"]), "media required") {
+	if code != 500 || !strings.Contains(strOf(body["description"]), "media required") {
 		t.Fatalf("missing media = %d %v", code, body)
 	}
 }
@@ -186,7 +186,7 @@ func TestLargestThumbSize(t *testing.T) {
 }
 
 // fmt0 renders any value as a string without importing fmt everywhere.
-func fmt0(v any) string {
+func strOf(v any) string {
 	if s, ok := v.(string); ok {
 		return s
 	}

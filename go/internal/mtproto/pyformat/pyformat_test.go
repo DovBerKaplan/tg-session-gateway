@@ -107,7 +107,7 @@ func modeOf(name string) Mode {
 }
 
 func typeName(e tg.MessageEntityClass) string {
-	s := fmt0(e)
+	s := entityName(e)
 	return s
 }
 
@@ -122,7 +122,7 @@ func sortByOffset(in []tg.MessageEntityClass) []tg.MessageEntityClass {
 				break
 			}
 			if a.GetOffset() == b.GetOffset() && a.GetLength() == b.GetLength() &&
-				fmt0(a) <= fmt0(b) {
+				entityName(a) <= entityName(b) {
 				break
 			}
 			out[j-1], out[j] = out[j], out[j-1]
@@ -137,12 +137,12 @@ func describe(in []tg.MessageEntityClass) string {
 		if i > 0 {
 			s += " "
 		}
-		s += fmt0(e) + " " + itoa(int(e.GetOffset())) + "/" + itoa(int(e.GetLength()))
+		s += entityName(e) + " " + itoa(int(e.GetOffset())) + "/" + itoa(int(e.GetLength()))
 	}
 	return s + "]"
 }
 
-func fmt0(e tg.MessageEntityClass) string {
+func entityName(e tg.MessageEntityClass) string {
 	raw := ""
 	switch e.(type) {
 	case *tg.MessageEntityBold:

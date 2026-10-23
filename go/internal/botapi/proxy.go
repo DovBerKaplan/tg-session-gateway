@@ -134,14 +134,14 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 	for !s.guard.TryAcquire(m, chatID) {
 		if s.EffectiveOnLimit() == "reject" || kind != "write" {
 			s.noteSynthetic429()
-			retry := maxF(1.0, minF(s.guard.WaitTime(m, chatID), 60.0))
+			retry := max(1.0, min(s.guard.WaitTime(m, chatID), 60.0))
 			return jsonResp(429, map[string]any{
 				"ok": false, "error_code": 429,
 				"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
 				"parameters":  map[string]any{"retry_after": int(retry)},
 			})
 		}
-		wait := minF(s.guard.WaitTime(m, chatID), 2.0)
+		wait := min(s.guard.WaitTime(m, chatID), 2.0)
 		if waited+wait > p.queueWaitTimeout {
 			s.noteSynthetic429()
 			return jsonResp(429, map[string]any{
@@ -233,7 +233,7 @@ func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method stri
 	p.mgr.Typing().Stop(s, chatID)
 	if !s.guard.TryAcquire(method, chatID) {
 		s.noteSynthetic429()
-		retry := maxF(1, minF(s.guard.WaitTime(method, chatID), 60))
+		retry := max(1, min(s.guard.WaitTime(method, chatID), 60))
 		return jsonResp(429, map[string]any{
 			"ok": false, "error_code": 429,
 			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
@@ -280,7 +280,7 @@ func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method stri
 // internalGetUpdates serves from the internal queue with Bot API
 // long-poll semantics.
 func (p *Proxy) internalGetUpdates(ctx context.Context, s *BotSession, body map[string]any) *gwResponse {
-	timeout := minF(numberOf(body["timeout"]), 50.0)
+	timeout := min(numberOf(body["timeout"]), 50.0)
 	limit := int(numberOf(body["limit"]))
 	if limit == 0 {
 		limit = 100
@@ -432,7 +432,7 @@ func cloneMapAny(m map[string]any) map[string]any {
 	return out
 }
 
-func maxF(a, b float64) float64 {
+func max(a, b float64) float64 {
 	if a > b {
 		return a
 	}

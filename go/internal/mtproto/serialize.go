@@ -9,7 +9,7 @@ import (
 )
 
 // Pyrogram-shaped serialization: the JSON consumers receive must keep
-// the dict shapes pyrofork's to_dict() produced — "_" carries the
+// the dict shapes pyrofork's to_mapOf() produced — "_" carries the
 // constructor name and fields are snake_case. These are the shapes the
 // existing consumers (KOT) parse; golden files recorded from the
 // Python sidecar pin them at cutover.
@@ -24,27 +24,27 @@ func SerializeUpdate(u tg.UpdateClass) map[string]any {
 		if msg == nil {
 			return nil
 		}
-		return dict("_", "UpdateNewMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
+		return mapOf("_", "UpdateNewMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
 	case *tg.UpdateNewChannelMessage:
 		msg := SerializeMessage(up.Message)
 		if msg == nil {
 			return nil
 		}
-		return dict("_", "UpdateNewChannelMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
+		return mapOf("_", "UpdateNewChannelMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
 	case *tg.UpdateEditMessage:
 		msg := SerializeMessage(up.Message)
 		if msg == nil {
 			return nil
 		}
-		return dict("_", "UpdateEditMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
+		return mapOf("_", "UpdateEditMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
 	case *tg.UpdateEditChannelMessage:
 		msg := SerializeMessage(up.Message)
 		if msg == nil {
 			return nil
 		}
-		return dict("_", "UpdateEditChannelMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
+		return mapOf("_", "UpdateEditChannelMessage", "message", msg, "pts", up.Pts, "pts_count", up.PtsCount)
 	case *tg.UpdateBotCallbackQuery:
-		return dict("_", "UpdateBotCallbackQuery",
+		return mapOf("_", "UpdateBotCallbackQuery",
 			"query_id", up.QueryID,
 			"user_id", up.UserID,
 			"peer", SerializePeer(up.Peer),
@@ -53,7 +53,7 @@ func SerializeUpdate(u tg.UpdateClass) map[string]any {
 			"data", string(up.Data),
 		)
 	case *tg.UpdateInlineBotCallbackQuery:
-		return dict("_", "UpdateInlineBotCallbackQuery",
+		return mapOf("_", "UpdateInlineBotCallbackQuery",
 			"query_id", up.QueryID,
 			"user_id", up.UserID,
 			"msg_data", "inline",
@@ -63,13 +63,13 @@ func SerializeUpdate(u tg.UpdateClass) map[string]any {
 	case *tg.UpdateBotCommands:
 		commands := []any{}
 		for _, cmd := range up.Commands {
-			commands = append(commands, dict("_", "BotCommand", "command", cmd.Command, "description", cmd.Description))
+			commands = append(commands, mapOf("_", "BotCommand", "command", cmd.Command, "description", cmd.Description))
 		}
-		return dict("_", "UpdateBotCommands", "peer", SerializePeer(up.Peer), "commands", commands)
+		return mapOf("_", "UpdateBotCommands", "peer", SerializePeer(up.Peer), "commands", commands)
 	}
 	// unknown-but-valid updates pass through with their constructor name
 	// so consumers can see them instead of them vanishing
-	return dict("_", constructorName(u))
+	return mapOf("_", constructorName(u))
 }
 
 func constructorName(u tg.UpdateClass) string {
@@ -89,7 +89,7 @@ func SerializeMessage(m tg.MessageClass) map[string]any {
 	if !ok {
 		return nil
 	}
-	out := dict(
+	out := mapOf(
 		"_", "Message",
 		"id", int64(msg.ID),
 		"date", int64(msg.Date),
@@ -131,13 +131,13 @@ func SerializeMessage(m tg.MessageClass) map[string]any {
 func SerializePeer(p tg.PeerClass) map[string]any {
 	switch peer := p.(type) {
 	case *tg.PeerUser:
-		return dict("_", "PeerUser", "user_id", peer.UserID)
+		return mapOf("_", "PeerUser", "user_id", peer.UserID)
 	case *tg.PeerChat:
-		return dict("_", "PeerChat", "chat_id", peer.ChatID)
+		return mapOf("_", "PeerChat", "chat_id", peer.ChatID)
 	case *tg.PeerChannel:
-		return dict("_", "PeerChannel", "channel_id", peer.ChannelID)
+		return mapOf("_", "PeerChannel", "channel_id", peer.ChannelID)
 	}
-	return dict("_", "PeerEmpty")
+	return mapOf("_", "PeerEmpty")
 }
 
 // SerializeChat renders the message's peer as the "chat" dict consumers
@@ -146,20 +146,20 @@ func SerializePeer(p tg.PeerClass) map[string]any {
 func SerializeChat(p tg.PeerClass) map[string]any {
 	switch peer := p.(type) {
 	case *tg.PeerUser:
-		return dict("_", "Chat", "id", peer.UserID, "type", "private")
+		return mapOf("_", "Chat", "id", peer.UserID, "type", "private")
 	case *tg.PeerChat:
-		return dict("_", "Chat", "id", -peer.ChatID, "type", "chat")
+		return mapOf("_", "Chat", "id", -peer.ChatID, "type", "chat")
 	case *tg.PeerChannel:
-		return dict("_", "Chat", "id", peer.ChannelID, "type", "channel")
+		return mapOf("_", "Chat", "id", peer.ChannelID, "type", "channel")
 	}
-	return dict("_", "Chat", "id", int64(0), "type", "empty")
+	return mapOf("_", "Chat", "id", int64(0), "type", "empty")
 }
 
 // SerializeEntity renders message entities (the blockquote expandable
 // flag rides as "collapsed").
 func SerializeEntity(e tg.MessageEntityClass) map[string]any {
 	base := func(name string, kv ...any) map[string]any {
-		d := dict("_", name)
+		d := mapOf("_", name)
 		for i := 0; i+1 < len(kv); i += 2 {
 			d[kv[i].(string)] = kv[i+1]
 		}
@@ -218,10 +218,10 @@ func SerializeMedia(m tg.MessageMediaClass) map[string]any {
 		sizes := []any{}
 		for _, s := range photo.Sizes {
 			if psz, ok := s.(*tg.PhotoSize); ok {
-				sizes = append(sizes, dict("_", "PhotoSize", "w", int64(psz.W), "h", int64(psz.H), "size", int64(psz.Size)))
+				sizes = append(sizes, mapOf("_", "PhotoSize", "w", int64(psz.W), "h", int64(psz.H), "size", int64(psz.Size)))
 			}
 		}
-		return dict("_", "MessageMediaPhoto", "photo", dict(
+		return mapOf("_", "MessageMediaPhoto", "photo", mapOf(
 			"_", "Photo", "id", int64(photo.ID), "sizes", sizes,
 			"file_id", formatFileRef("photo", photo.ID)))
 	case *tg.MessageMediaDocument:
@@ -229,11 +229,11 @@ func SerializeMedia(m tg.MessageMediaClass) map[string]any {
 		if !ok {
 			return nil
 		}
-		return dict("_", "MessageMediaDocument", "document", dict(
+		return mapOf("_", "MessageMediaDocument", "document", mapOf(
 			"_", "Document", "id", int64(doc.ID), "mime_type", doc.MimeType,
 			"size", int64(doc.Size), "file_id", formatFileRef("document", doc.ID)))
 	case *tg.MessageMediaWebPage:
-		return dict("_", "MessageMediaWebPage")
+		return mapOf("_", "MessageMediaWebPage")
 	}
 	return nil
 }
@@ -255,35 +255,35 @@ func SerializeReplyMarkup(m tg.ReplyMarkupClass) map[string]any {
 			}
 			rows = append(rows, r)
 		}
-		return dict("_", "InlineKeyboardMarkup", "inline_keyboard", rows)
+		return mapOf("_", "InlineKeyboardMarkup", "inline_keyboard", rows)
 	case *tg.ReplyKeyboardMarkup:
 		rows := []any{}
 		for _, row := range kb.Rows {
 			r := []any{}
 			for _, btn := range row.Buttons {
-				r = append(r, dict("_", "KeyboardButton", "text", btn.Text))
+				r = append(r, mapOf("_", "KeyboardButton", "text", btn.Text))
 			}
 			rows = append(rows, r)
 		}
-		return dict("_", "ReplyKeyboardMarkup", "keyboard", rows,
+		return mapOf("_", "ReplyKeyboardMarkup", "keyboard", rows,
 			"resize_keyboard", kb.Resize, "is_persistent", kb.Persistent)
 	case *tg.ReplyKeyboardHide:
-		return dict("_", "ReplyKeyboardRemove", "remove_keyboard", true)
+		return mapOf("_", "ReplyKeyboardRemove", "remove_keyboard", true)
 	case *tg.ReplyKeyboardForceReply:
-		return dict("_", "ForceReply", "force_reply", true)
+		return mapOf("_", "ForceReply", "force_reply", true)
 	}
 	return nil
 }
 
 func serializeInlineButton(btn tg.KeyboardInlineButton) map[string]any {
-	out := dict("_", "InlineKeyboardButton", "text", btn.Text)
+	out := mapOf("_", "InlineKeyboardButton", "text", btn.Text)
 	switch t := btn.Type.(type) {
 	case *tg.InlineButtonTypeURL:
 		out["url"] = t.URL
 	case *tg.InlineButtonTypeCallback:
 		out["callback_data"] = string(t.Data)
 	case *tg.InlineButtonTypeWebView:
-		out["web_app"] = dict("url", t.URL)
+		out["web_app"] = mapOf("url", t.URL)
 	case *tg.InlineButtonTypeSwitchInline:
 		out["switch_inline_query"] = t.Query
 		out["same_peer"] = t.SamePeer
@@ -293,7 +293,7 @@ func serializeInlineButton(btn tg.KeyboardInlineButton) map[string]any {
 	return out
 }
 
-func dict(kv ...any) map[string]any {
+func mapOf(kv ...any) map[string]any {
 	out := make(map[string]any, len(kv)/2)
 	for i := 0; i+1 < len(kv); i += 2 {
 		if k, ok := kv[i].(string); ok {

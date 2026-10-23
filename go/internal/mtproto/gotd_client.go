@@ -639,7 +639,7 @@ func (g *gotdClient) GetChat(ctx context.Context, chatID int64) (map[string]any,
 			return nil, fmt.Errorf("chat not found: %d", chatID)
 		}
 		if u, ok := users[0].(*tg.User); ok {
-			return dict("_", "Chat", "id", u.ID, "type", "private", "username", u.Username,
+			return mapOf("_", "Chat", "id", u.ID, "type", "private", "username", u.Username,
 				"first_name", u.FirstName, "last_name", u.LastName), nil
 		}
 	case *tg.InputPeerChat:
@@ -650,7 +650,7 @@ func (g *gotdClient) GetChat(ctx context.Context, chatID int64) (map[string]any,
 		chatList := full.Chats
 		if len(chatList) > 0 {
 			if c, ok := chatList[0].(*tg.Chat); ok {
-				return dict("_", "Chat", "id", c.ID, "type", "chat", "title", c.Title), nil
+				return mapOf("_", "Chat", "id", c.ID, "type", "chat", "title", c.Title), nil
 			}
 		}
 	case *tg.InputPeerChannel:
@@ -667,7 +667,7 @@ func (g *gotdClient) GetChat(ctx context.Context, chatID int64) (map[string]any,
 		}
 		if len(chatList) > 0 {
 			if c, ok := chatList[0].(*tg.Channel); ok {
-				return dict("_", "Chat", "id", c.ID, "type", "channel", "title", c.Title, "username", c.Username), nil
+				return mapOf("_", "Chat", "id", c.ID, "type", "channel", "title", c.Title, "username", c.Username), nil
 			}
 		}
 	}
