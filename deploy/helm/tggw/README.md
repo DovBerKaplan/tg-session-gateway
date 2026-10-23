@@ -10,8 +10,11 @@ plain HTTP + Prometheus text exposition (no operator, no CRDs).
 ```sh
 helm install tggw deploy/helm/tggw \
   --namespace tg-gateway --create-namespace \
-  --set secrets.fernetKey=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway genkey) \
+  --set secrets.fernetKey=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go genkey) \
   --set secrets.apiID=12345 --set secrets.apiHash=...
+
+# one-time namespace hardening (the pods already satisfy restricted PSA)
+kubectl label --overwrite ns tg-gateway pod-security.kubernetes.io/enforce=restricted
 ```
 
 `GW_ADMIN_SECRET`/`GW_APP_SECRET` are generated once by the chart and

@@ -5,10 +5,12 @@
 # before any Telegram connect().
 
 namespace: tg-gateway
-createNamespace: true
+# Install with --create-namespace (a chart cannot create its own
+# namespace). After install, enforce restricted PSA with:
+#   kubectl label --overwrite ns tg-gateway pod-security.kubernetes.io/enforce=restricted
 
 image:
-  repository: ghcr.io/dovberkaplan/tg-session-gateway
+  repository: ghcr.io/dovberkaplan/tg-session-gateway-go
   # empty → appVersion
   tag: ""
   pullPolicy: IfNotPresent

@@ -1,0 +1,10 @@
+{{- /*
+The install namespace is created by helm itself (--create-namespace);
+a chart cannot create its own namespace — helm stores release state
+there before any object exists. PSA enforcement is one operator line:
+
+  kubectl label --overwrite ns {{ .Values.namespace }} \
+    pod-security.kubernetes.io/enforce=restricted
+
+The pod securityContexts already satisfy restricted PSA without it.
+*/ -}}

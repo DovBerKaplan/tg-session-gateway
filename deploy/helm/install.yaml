@@ -15,16 +15,6 @@
 #        kubectl label ns <consumer-ns> tg-gateway.io/client=true
 #      (the NetworkPolicy denies everything else)
 ---
-# Source: tggw/templates/namespace.yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: tg-gateway
-  labels:
-    pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/warn: restricted
----
 # Source: tggw/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -296,7 +286,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: botapi
-          image: ghcr.io/dovberkaplan/tg-session-gateway:0.1.0-go
+          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0-go
           imagePullPolicy: IfNotPresent
           args: ["botapi"]
           ports:
@@ -403,7 +393,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mtproto
-          image: ghcr.io/dovberkaplan/tg-session-gateway:0.1.0-go
+          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0-go
           imagePullPolicy: IfNotPresent
           args: ["mtproto"]
           ports:

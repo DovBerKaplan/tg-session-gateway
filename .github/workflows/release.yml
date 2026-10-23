@@ -40,6 +40,12 @@ jobs:
           - dockerfile: docker/Dockerfile.mtgateway
             image: ${{ github.repository }}-mtproto  # ghcr.io/<owner>/<repo>-mtproto
             mirror: dovberkaplan/tg-session-gateway-mtproto
+          # the Go rewrite: one image, both planes (botapi|mtproto args).
+          # Distinct name while Python and Go coexist; it becomes the
+          # primary image at cutover.
+          - dockerfile: docker/Dockerfile.tggw
+            image: ${{ github.repository }}-go      # ghcr.io/<owner>/<repo>-go
+            mirror: dovberkaplan/tggw
     steps:
       - uses: actions/checkout@v4
 
