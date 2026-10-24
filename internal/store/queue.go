@@ -279,7 +279,9 @@ func (q *Queue) Pull(offset *int64, timeout float64, limit int, done <-chan stru
 }
 
 // Ack drops everything up to and including lastSeen — consumers ack
-// exactly like against Telegram.
+// exactly like against Telegram. The DB writes use a snapshot taken
+// under the lock: concurrent Acks must not read consumerOffset outside
+// the mutex (data race, and a torn DELETE/INSERT pair across acks).
 func (q *Queue) Ack(lastSeen int64) {
 	q.mu.Lock()
 	if lastSeen > q.consumerOffset {
@@ -293,14 +295,15 @@ func (q *Queue) Ack(lastSeen int64) {
 		q.q.Remove(q.q.Front())
 		delete(q.seen, front.UpdateID)
 	}
+	acked := q.consumerOffset
 	q.mu.Unlock()
 	if q.db != nil {
-		_, err := q.db.Exec("DELETE FROM update_queue WHERE bot_alias = ? AND update_id <= ?", q.botAlias, q.consumerOffset)
+		_, err := q.db.Exec("DELETE FROM update_queue WHERE bot_alias = ? AND update_id <= ?", q.botAlias, acked)
 		if err == nil {
 			_, err = q.db.Exec(
 				"INSERT INTO consumer_offsets (bot_alias, consumer_offset) VALUES (?, ?) "+
 					"ON CONFLICT(bot_alias) DO UPDATE SET consumer_offset = excluded.consumer_offset",
-				q.botAlias, q.consumerOffset)
+				q.botAlias, acked)
 		}
 		if err != nil {
 			q.notePersistFailure("queue.ack:"+q.botAlias, err)

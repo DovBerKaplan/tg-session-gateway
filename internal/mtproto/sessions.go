@@ -322,8 +322,6 @@ func (m *Manager) startClient(s *Session) error {
 	s.ConnectedSince = wallNow()
 	s.mu.Unlock()
 
-	s.sessionLock.StartHeartbeat()
-
 	info, err := client.Me(context.Background())
 	if err == nil {
 		slog.Info("live", "alias", s.Alias, "username", info.Username, "id", info.ID)

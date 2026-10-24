@@ -51,11 +51,32 @@ class FakeTelegram:
         self.lock = threading.Lock()
         self.getupdates_calls = 0
         self.sent: list[dict] = []
+        # updates the test injects after boot (simulates Telegram
+        # delivering an update mid-session); served like the batch:
+        # everything with update_id >= the poller's offset, until acked
+        self.pending: list[dict] = []
+        # when set, every method EXCEPT getUpdates answers 500 (upstream
+        # outage simulation without tearing down the server)
+        self.fails = False
+        self._closed = False
+        # long-poll wake: like real Telegram, getUpdates with
+        # timeout > 0 HOLDS until an update for that offset arrives —
+        # without this the gateway's poller hot-spins (timeout=0) and
+        # a pure-Python fake becomes the bottleneck of every benchmark
+        self._cond = threading.Condition()
         self.batch = [
             {"update_id": 1001, "message": {"text": "first"}},
             {"update_id": 1002, "message": {"text": "second"}},
         ]
         handler = type("H", (BaseHTTPRequestHandler,), {"log_message": lambda *a: None})
+        # production-realistic socket behavior: without these, the fake
+        # itself becomes the benchmark bottleneck — HTTP/1.0 closes
+        # every connection, and with Nagle ON the second small write
+        # stalls ~40ms on the client's delayed ACK (the classic
+        # Nagle+delayed-ACK interplay). Real api.telegram.org has
+        # TCP_NODELAY + keep-alive; the fake must too.
+        handler.protocol_version = "HTTP/1.1"
+        handler.disable_nagle_algorithm = True
         handler.do_POST = lambda rh, _f=self: _f._do_post(rh)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self.server.server_address[1]
@@ -67,17 +88,36 @@ class FakeTelegram:
         if length:
             body = json.loads(handler.rfile.read(length) or b"{}")
         path = handler.path
+        if self.fails and not path.endswith("/getUpdates"):
+            payload = json.dumps({"ok": False, "error_code": 500,
+                                  "description": "fake upstream outage"}).encode()
+            handler.send_response(500)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", str(len(payload)))
+            handler.end_headers()
+            handler.wfile.write(payload)
+            return
         result, status = {"ok": True, "result": True}, 200
 
         if path.endswith("/deleteWebhook"):
             result = {"ok": True, "result": True}
         elif path.endswith("/getUpdates"):
-            with self.lock:
+            with self._cond:
                 self.getupdates_calls += 1
                 calls = self.getupdates_calls
-            offset = int(body.get("offset") or 0)
-            pending = [u for u in self.batch if u["update_id"] >= offset] if calls == 1 else []
-            result = {"ok": True, "result": pending}
+                offset = int(body.get("offset") or 0)
+                source = self.batch if calls == 1 else self.pending
+
+                def _avail():
+                    return any(u["update_id"] >= offset for u in source)
+
+                if not _avail():
+                    hold = float(body.get("timeout") or 0)
+                    if hold > 0 and not self._closed:
+                        self._cond.wait_for(
+                            lambda: self._closed or _avail(), timeout=hold)
+                updates = [u for u in source if u["update_id"] >= offset]
+            result = {"ok": True, "result": updates}
         elif path.endswith("/sendMessage"):
             with self.lock:
                 self.sent.append(body)
@@ -92,17 +132,32 @@ class FakeTelegram:
         handler.end_headers()
         handler.wfile.write(payload)
 
+    def deliver(self, update: dict) -> None:
+        """Inject one update as if Telegram had just produced it.
+        Wakes any held long-poll, exactly like Telegram would."""
+        with self._cond:
+            self.pending.append(update)
+            self._cond.notify_all()
+
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
     def close(self):
+        # idempotent + closes the LISTENING socket, so a test can kill
+        # the upstream mid-life and observe real connection-refused
+        if self._closed:
+            return
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()  # release held long-polls
         self.server.shutdown()
+        self.server.server_close()
 
 
 class Gateway:
     """One tggw botapi process lifetime."""
 
-    def __init__(self, data_dir: str, upstream: str):
+    def __init__(self, data_dir: str, upstream: str, extra_env: dict | None = None):
         self.port = free_port()
         self.proc = subprocess.Popen(
             [
@@ -121,6 +176,7 @@ class Gateway:
                 "GW_POLL_TIMEOUT": "0",
                 "GW_POLL_BACKOFF_MAX": "0.1",
                 "GW_ALLOW_EPHEMERAL_DATA": "1",
+                **(extra_env or {}),
             },
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -1,4 +1,37 @@
+# Local binary output
 /tggw
-.venv/
-__pycache__/
+/bin/
+/dist/
+/coverage.out
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Environment / secrets
 .env
+.env.*
+!.env.example
+.zcode/
+
+# Python / virtualenv cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+htmlcov/
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
