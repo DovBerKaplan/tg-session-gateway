@@ -17,7 +17,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.parser import Parser
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUT = os.path.join(REPO, "go", "internal", "mtproto", "pyformat", "testdata", "cases.json")
+OUT = os.path.join(REPO, "internal", "mtproto", "pyformat", "testdata", "cases.json")
 
 CORPUS = [
     # plain
@@ -32,7 +32,7 @@ CORPUS = [
     "**outer __inner__ tail**",
     # links + emoji
     "see [the docs](https://example.com/a?b=1) now",
-    "![🎉](tg://emoji?id=5222424)",
+    "![party](tg://emoji?id=5222424)",
     # html tags in DEFAULT mode are ACTIVE (combined)
     "mix <b>html bold</b> and **md bold**",
     "<blockquote>quoted</blockquote> after",
@@ -46,7 +46,7 @@ CORPUS = [
     # unmatched/edge
     "unbalanced **bold",
     "escape ]( test",
-    "unicode: Café 中文 😀 emoji",
+    "unicode: Café 中文 𠀀 astral",
     # NOTE: "![x](https://non-tg)" is deliberately NOT in the corpus:
     # pyrogram's own parser CRASHES on it (int('https://...') ValueError
     # in the emoji branch) — the Go port degrades gracefully instead of
@@ -98,7 +98,7 @@ async def main() -> None:
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as fh:
         json.dump(cases, fh, indent=1, sort_keys=True)
-        fh.write("\\n")
+        fh.write(chr(10))
     print(f"recorded {len(cases)} cases → {OUT}")
 
 

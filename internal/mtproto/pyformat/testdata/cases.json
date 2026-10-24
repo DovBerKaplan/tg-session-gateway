@@ -257,32 +257,32 @@
   "entities": [
    {
     "document_id": 5222424,
-    "length": 2,
+    "length": 5,
     "offset": 0,
     "type": "MessageEntityCustomEmoji"
    }
   ],
-  "input": "![\ud83c\udf89](tg://emoji?id=5222424)",
-  "message": "\ud83c\udf89",
+  "input": "![party](tg://emoji?id=5222424)",
+  "message": "party",
   "mode": "combined"
  },
  {
   "entities": [
    {
     "document_id": 5222424,
-    "length": 2,
+    "length": 5,
     "offset": 0,
     "type": "MessageEntityCustomEmoji"
    }
   ],
-  "input": "![\ud83c\udf89](tg://emoji?id=5222424)",
-  "message": "\ud83c\udf89",
+  "input": "![party](tg://emoji?id=5222424)",
+  "message": "party",
   "mode": "markdown"
  },
  {
   "entities": [],
-  "input": "![\ud83c\udf89](tg://emoji?id=5222424)",
-  "message": "![\ud83c\udf89](tg://emoji?id=5222424)",
+  "input": "![party](tg://emoji?id=5222424)",
+  "message": "![party](tg://emoji?id=5222424)",
   "mode": "html"
  },
  {
@@ -553,20 +553,20 @@
  },
  {
   "entities": [],
-  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
-  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud840\udc00 astral",
+  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud840\udc00 astral",
   "mode": "combined"
  },
  {
   "entities": [],
-  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
-  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud840\udc00 astral",
+  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud840\udc00 astral",
   "mode": "markdown"
  },
  {
   "entities": [],
-  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
-  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud83d\ude00 emoji",
+  "input": "unicode: Caf\u00e9 \u4e2d\u6587 \ud840\udc00 astral",
+  "message": "unicode: Caf\u00e9 \u4e2d\u6587 \ud840\udc00 astral",
   "mode": "html"
  }
 ]
