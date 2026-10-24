@@ -26,14 +26,14 @@ FloodWait backoff, and a crash-safe update queue.
 ```bash
 # one-time: the token-encryption key. The image refuses to invent
 # secrets inside the container (they'd die with it) — postgres, not nginx
-docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go:latest genkey
+docker run --rm ghcr.io/dovberkaplan/tg-session-gateway:latest genkey
 
 docker run -d --name tggw -p 8080:8080 \
   -e GW_ADMIN_SECRET=$(openssl rand -hex 16) \
   -e GW_APP_SECRET=$(openssl rand -hex 16) \
-  -e GW_FERNET_KEY=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go:latest genkey) \
+  -e GW_FERNET_KEY=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway:latest genkey) \
   -v tggw-data:/data \
-  ghcr.io/dovberkaplan/tg-session-gateway-go:latest botapi
+  ghcr.io/dovberkaplan/tg-session-gateway:latest botapi
 # then the ONLY change in your bot:
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
@@ -161,7 +161,7 @@ What this tree contains (module
 - Measured on kind: **idle 1m CPU / 7Mi RAM** per pod (Python baseline
   80–150MB), pod-kill recovery in ~4s with exactly-once update replay
 
-Try it: `docker compose -f docker-compose.tggw.yml up` (same `.env`),
+Try it: `docker compose up` (same `.env`),
 or [the Helm chart →](deploy/helm/tggw/README.md). The verification is
 reproducible: `deploy/helm/verify-kind.sh` and `tests/conformance_go/`
 run the real binary black-box. Reasoning: [ADR-0002](docs/adr/0002-go-rewrite.md);
@@ -315,7 +315,7 @@ docker network create tg-gateway-net
 printf 'GW_ADMIN_SECRET=%s\nGW_APP_SECRET=%s\nGW_FERNET_KEY=%s\n' \
   "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" \
   "$(CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw && /tmp/tggw genkey)" > .env
-docker compose -f docker-compose.tggw.yml up -d   # builds + starts on 127.0.0.1:8080
+docker compose up -d   # builds + starts on 127.0.0.1:8080
 curl -s localhost:8080/healthz
 ```
 
@@ -341,8 +341,8 @@ identical tags. Pin the version — `latest` moves only on stable
 releases, never pre-releases:
 
 ```bash
-docker pull ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0   # = dovberkaplan/tggw:0.1.0
-docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0 mtproto \
+docker pull ghcr.io/dovberkaplan/tg-session-gateway:0.1.0   # = dovberkaplan/tggw:0.1.0
+docker run --rm ghcr.io/dovberkaplan/tg-session-gateway:0.1.0 mtproto \
   -e GW_API_ID -e GW_API_HASH ...   # same image, MTProto plane
 ```
 
@@ -382,6 +382,7 @@ long-lived sidecar for the client you already have.
 | [Compatibility](docs/compatibility.md) | Pyrogram / pyrofork / Telethon support matrix |
 | [Helm chart](deploy/helm/tggw/README.md) | Kubernetes install for the Go build (tggw) |
 | [ADR-0002](docs/adr/0002-go-rewrite.md) | Why and how the Go rewrite happened |
+| [ADR-0003](docs/adr/0003-flock-single-ownership.md) | flock locking; Redis lease backend removed (supersedes ADR-0001) |
 
 ## License
 

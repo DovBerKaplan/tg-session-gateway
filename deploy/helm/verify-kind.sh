@@ -189,6 +189,47 @@ log "egress: gateway must still reach its (allowed) upstream"
 EGRESS=$("${KCTX[@]}" -n "$NS" exec tggw-botapi-0 -- /tggw healthcheck 2>&1)
 echo "$EGRESS" | grep -q 'healthcheck ok' || fail "gateway unhealthy after policy: $EGRESS"
 
+log "push egress: labeled consumer namespace RECEIVES, unlabeled never does"
+# receiver: any HTTP POST lands in a file the test can read
+"${KCTX[@]}" -n faketg apply -f - <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: push-receiver, namespace: faketg}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: push-receiver}}
+  template:
+    metadata: {labels: {app: push-receiver}}
+    spec:
+      containers:
+        - name: rx
+          image: python:3.12-alpine
+          command: ["python", "-c"]
+          args:
+            - |
+              import http.server, subprocess
+              class H(http.server.BaseHTTPRequestHandler):
+                  def do_POST(self):
+                      open("/tmp/received","a").write("hit\n")
+                      self.send_response(200); self.end_headers()
+                  def log_message(self, *a): pass
+              http.server.HTTPServer(("0.0.0.0", 8099), H).serve_forever()
+YAML
+"${KCTX[@]}" -n faketg wait --for=condition=available --timeout=300s deployment/push-receiver
+"${KCTX[@]}" -n faketg expose deployment push-receiver --port=8099 >/dev/null 2>&1 || true
+# faketg carries the client label from the ingress test → egress allowed
+PUSH_OK=$("${KCTX[@]}" -n "$NS" exec tggw-botapi-0 -- /tggw healthcheck http://push-receiver.faketg.svc.cluster.local:8099/healthz 2>&1 || true)
+if ! echo "$PUSH_OK" | grep -qE "healthcheck ok|healthz status"; then
+  fail "push egress to labeled ns broken: $PUSH_OK"
+fi
+# unlabeled namespace: egress denied by the policy
+"${KCTX[@]}" create ns nolabel >/dev/null 2>&1 || true
+PUSH_BLOCKED=$("${KCTX[@]}" -n "$NS" exec tggw-botapi-0 -- /tggw healthcheck http://fake-tg.nolabel.svc.cluster.local:18090 2>&1 || true)
+if echo "$PUSH_BLOCKED" | grep -q "healthcheck ok"; then
+  fail "push egress reached an UNLABELED namespace: $PUSH_BLOCKED"
+fi
+echo "push egress: labeled=ok, unlabeled=blocked"
+
 # ── 5. idle resources (crictl — no metrics-server needed) ─────────
 log "idle resources via crictl"
 sleep 5

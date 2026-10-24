@@ -1,6 +1,6 @@
 # ADR-0001: Session lock backends — file (single-host) + Redis lease (multi-host)
 
-Status: accepted (2026-09-09) · Charter: goals 1+2
+Status: superseded by [ADR-0003](0003-flock-single-ownership.md) (2026-10-24) · Charter: goals 1+2
 
 ## Context
 

@@ -6,6 +6,24 @@ adherence to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking changes (Python → Go, 0.1.0)
+- **MTProto method surface is an explicit allowlist** — unknown
+  methods answer 501 with the supported list (the Python sidecar
+  getattr'd every Pyrogram method). 19 methods supported.
+- **Default parse_mode is pyrogram's combined markdown+HTML** (was:
+  plain text in the early Go builds; the Python sidecar always parsed).
+- **Redis lock backend removed** — single ownership comes from
+  StatefulSet replicas:1 + ReadWriteOncePod PVC + flock (ADR-0003).
+- **One image, one binary**: `ghcr.io/dovberkaplan/tg-session-gateway`
+  serves both planes (`tggw botapi` / `tggw mtproto`); the `-go` and
+  `-mtproto` image names are gone. Python images ≤0.0.5 stay for
+  rollback.
+- **urlencoded forms forward verbatim** — the Python plane coerced
+  `007`→7 / `true`→bool, corrupting user text (bug fix, but a
+  behavior change for anyone depending on the coercion).
+- Session migration is `tggw migrate` (pyrofork `.session` → gotd,
+  no re-login; gate: `Telegram logins required: 0`).
+
 **The repository is now Go-only** — the Python implementation moved to
 the [`legacy-python`](../../tree/legacy-python) branch (tagged v0.0.6
 as its final state; rollback images ≤0.0.5 stay on GHCR). The Go

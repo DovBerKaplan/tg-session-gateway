@@ -69,7 +69,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}-go
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
           # v1.2.3 → 1.2.3, 1.2, 1 — matching the chart's appVersion
           # default; latest moves ONLY on stable tags, never rc/manual
           tags: |
@@ -128,12 +128,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - {goos: linux, goarch: amd64}
           - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -148,7 +152,7 @@ jobs:
           sha256sum /out/tggw > /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
           mv /out/tggw /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}
       - name: Create GitHub Release (gh CLI — official tooling)
-        if: matrix.goarch == 'amd64'
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -157,11 +161,48 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" --generate-notes \
             /out/tggw-* /out/*.tgz || true
-      - name: Upload arm64 assets
-        if: matrix.goarch == 'arm64'
+      - name: Upload ${{ matrix.goos }}/${{ matrix.goarch }} assets
+        if: ! (matrix.goos == 'linux' && matrix.goarch == 'amd64')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
-          helm package deploy/helm/tggw -d /out 2>/dev/null || true
           gh release upload "${{ github.ref_name }}" /out/tggw-* --clobber
+
+  sign:
+    name: Sign (cosign keyless) + publish chart OCI
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      packages: write
+      id-token: write # keyless signing ONLY in this job
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cosign + helm (official binaries via curl — no third-party actions in this repo)
+        run: |
+          curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          chmod +x cosign && sudo mv cosign /usr/local/bin/
+          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/
+      - name: Sign the image (keyless, by digest)
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:${{ github.ref_name }}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          cosign sign --yes "$IMAGE@$DIGEST"
+      - name: Sign checksums.txt (detached blob signature)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ github.ref_name }}" --pattern "*.sha256" --dir /tmp/rel
+          cat /tmp/rel/*.sha256 | sort > /tmp/checksums.txt
+          gh release upload "${{ github.ref_name }}" /tmp/checksums.txt --clobber
+          cosign sign-blob --yes /tmp/checksums.txt --output-signature /tmp/checksums.txt.sig --output-certificate /tmp/checksums.txt.pem
+          gh release upload "${{ github.ref_name }}" /tmp/checksums.txt.sig /tmp/checksums.txt.pem --clobber
+      - name: Push Helm chart to OCI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package deploy/helm/tggw -d /tmp/chart
+          helm push /tmp/chart/*.tgz oci://ghcr.io/dovberkaplan/charts

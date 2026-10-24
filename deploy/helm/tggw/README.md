@@ -10,7 +10,7 @@ plain HTTP + Prometheus text exposition (no operator, no CRDs).
 ```sh
 helm install tggw deploy/helm/tggw \
   --namespace tg-gateway --create-namespace \
-  --set secrets.fernetKey=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway-go genkey) \
+  --set secrets.fernetKey=$(docker run --rm ghcr.io/dovberkaplan/tg-session-gateway genkey) \
   --set secrets.apiID=12345 --set secrets.apiHash=...
 
 # one-time namespace hardening (the pods already satisfy restricted PSA)

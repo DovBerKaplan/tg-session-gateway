@@ -17,6 +17,7 @@
 ---
 ---
 ---
+---
 # Source: tggw/templates/networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -363,7 +364,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: botapi
-          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0
+          image: ghcr.io/dovberkaplan/tg-session-gateway:0.1.0
           imagePullPolicy: IfNotPresent
           args: ["botapi"]
           ports:
@@ -480,7 +481,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mtproto
-          image: ghcr.io/dovberkaplan/tg-session-gateway-go:0.1.0
+          image: ghcr.io/dovberkaplan/tg-session-gateway:0.1.0
           imagePullPolicy: IfNotPresent
           args: ["mtproto"]
           ports:

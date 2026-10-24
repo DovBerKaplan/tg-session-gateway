@@ -126,13 +126,19 @@ The Go build is functionally complete and kind-verified; this list is
 what production must confirm BEFORE the README/image defaults stop
 calling it a soak:
 
+0. **STOP the Python sidecar before the Go binary mounts the same
+   `/data`.** The transitional lock guard (a fresh Python-format lock
+   file makes `Acquire` refuse) is a safety net, NOT a substitute —
+   flock cannot see the Python sidecar's O_EXCL lock, and two live
+   owners of one auth_key risk AUTH_KEY_DUPLICATED.
 1. `tggw migrate --dry-run --from <copy of real /data>` ⇒
    `Telegram logins required: 0` (any non-zero is a stop).
 2. Extract the REAL method inventory from the consumer's production
    logs (`POST /v1/sessions/...` lines) and diff against
    `tggw`'s allowlist (`501` responses are the loud miss).
-3. Side-by-side against a test account: updates flow, send /
-   getUpdates / offset-ack behave, WS push stays connected for hours.
+3. `v0.1.0-rc.N` side-by-side against a test account: updates flow,
+   send / getUpdates / offset-ack behave, WS push stays connected for
+   hours.
 4. Re-record the golden updates from real consumer traffic
    (`tests/conformance_go/record_golden_mt.py` records from the
    legacy sidecar; the production re-record replaces the corpus) and

@@ -10,7 +10,7 @@ namespace: tg-gateway
 #   kubectl label --overwrite ns tg-gateway pod-security.kubernetes.io/enforce=restricted
 
 image:
-  repository: ghcr.io/dovberkaplan/tg-session-gateway-go
+  repository: ghcr.io/dovberkaplan/tg-session-gateway
   # empty → appVersion
   tag: ""
   pullPolicy: IfNotPresent

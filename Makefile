@@ -23,10 +23,10 @@ docker-build:
 	docker build -f docker/Dockerfile.tggw -t tggw:dev .
 
 docker-up:
-	docker compose -f docker-compose.tggw.yml up -d
+	docker compose up -d
 
 docker-down:
-	docker compose -f docker-compose.tggw.yml down
+	docker compose down
 
 clean:
 	python3 -c "import shutil,glob; [shutil.rmtree(p, ignore_errors=True) for p in glob.glob('**/__pycache__', recursive=True)]"
