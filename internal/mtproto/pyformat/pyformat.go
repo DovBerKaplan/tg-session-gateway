@@ -62,29 +62,61 @@ func ModeFromName(name string) Mode {
 
 // Apply parses text per pyrogram semantics and writes the tokens into
 // the gotd entity builder.
-func Apply(b *entity.Builder, text string, mode Mode) error {
-	if mode == ModeDisabled {
-		b.Plain(text)
-		return nil
+func Apply(b *entity.Builder, text string, mode Mode, opts ...Opt) error {
+	var o options
+	for _, fn := range opts {
+		fn(&o)
 	}
-	if mode == ModeHTML {
-		return applyHTML(b, text)
-	}
-	transformed := markdownToHTML(text, mode == ModeMarkdown)
-	return applyHTML(b, transformed)
+	return applyWithOptions(b, text, mode, &o)
+}
+
+// UserResolver resolves a tg://user?id=N mention to an InputUser the
+// API accepts (the bare id lacks the access_hash Telegram requires).
+// Returning an error surfaces as a clear send failure — never a panic.
+type UserResolver func(id int64) (tg.InputUserClass, error)
+
+type options struct {
+	resolveUser UserResolver
+}
+
+// Opt is a parser option.
+type Opt func(*options)
+
+// WithUserResolver wires mention resolution (gotdClient passes its
+// peer resolver; the default constructs a bare InputUser, which the
+// API may reject — matching the no-resolver pyrogram behavior of
+// failing server-side rather than panicking client-side).
+func WithUserResolver(r UserResolver) Opt {
+	return func(o *options) { o.resolveUser = r }
 }
 
 // Build is the send-path entrypoint: parse, complete (UTF-16 offsets)
 // and merge adjacent same-type entities — the exact wire shape
 // pyrogram produced (one Bold across a nested Italic, not three
 // per-segment Bolds).
-func Build(text string, mode Mode) (string, []tg.MessageEntityClass, error) {
+func Build(text string, mode Mode, opts ...Opt) (string, []tg.MessageEntityClass, error) {
+	var o options
+	for _, fn := range opts {
+		fn(&o)
+	}
 	b := &entity.Builder{}
-	if err := Apply(b, text, mode); err != nil {
+	if err := applyWithOptions(b, text, mode, &o); err != nil {
 		return "", nil, err
 	}
 	msg, entities := b.Complete()
 	return msg, MergeAdjacent(entities), nil
+}
+
+func applyWithOptions(b *entity.Builder, text string, mode Mode, o *options) error {
+	if mode == ModeDisabled {
+		b.Plain(text)
+		return nil
+	}
+	if mode == ModeHTML {
+		return applyHTMLOpts(b, text, o)
+	}
+	transformed := markdownToHTML(text, mode == ModeMarkdown)
+	return applyHTMLOpts(b, transformed, o)
 }
 
 // MergeAdjacent coalesces entities of the same type and attributes
@@ -336,9 +368,12 @@ type span struct {
 // applyHTML strips whitespace around the outer tags (pyrogram's two
 // HTML.parse subs), tokenizes into offset spans, drops zero-length
 // spans, and emits builder tokens segment by segment.
-func applyHTML(b *entity.Builder, text string) error {
+func applyHTMLOpts(b *entity.Builder, text string, o *options) error {
 	text = stripOuterWhitespace(text)
-	plain, spans := tokenizeHTML(text)
+	plain, spans, err := tokenizeHTMLOpts(text, o)
+	if err != nil {
+		return err
+	}
 	spans = dropZeroLength(spans)
 	emitTokens(b, plain, spans)
 	return nil
@@ -430,7 +465,7 @@ type openFrame struct {
 // references unescaped) and pyrogram-style GROWING spans: every open
 // frame extends with each text run, so a Bold surrounding an Italic
 // ends up as one covering span — pyrogram's exact nesting semantics.
-func tokenizeHTML(text string) (string, []span) {
+func tokenizeHTMLOpts(text string, o *options) (string, []span, error) {
 	var plain strings.Builder
 	var open []openFrame
 	var closed []span
@@ -480,7 +515,11 @@ func tokenizeHTML(text string) (string, []span) {
 			}
 			// unmatched closer: ignored (pyrogram logs debug and continues)
 		} else {
-			open = append(open, openFrame{tag: tag, formatter: formatterFor(tag, attrs)})
+			f, err := formatterForOpts(tag, attrs, o)
+			if err != nil {
+				return "", nil, err
+			}
+			open = append(open, openFrame{tag: tag, formatter: f})
 		}
 		plainStart = at + consumed
 		i = plainStart
@@ -488,45 +527,52 @@ func tokenizeHTML(text string) (string, []span) {
 	if len(text) > plainStart {
 		appendRun(html.UnescapeString(text[plainStart:]))
 	}
-	return plain.String(), closed
+	return plain.String(), closed, nil
 }
 
 // formatterFor maps a supported tag+attrs to its entity formatter;
 // nil for unknown tags (content kept, unformatted — pyrogram ignores
 // unknown tags but keeps their text).
-func formatterFor(tag string, attrs map[string]string) entity.Formatter {
+func formatterForOpts(tag string, attrs map[string]string, o *options) (entity.Formatter, error) {
 	switch tag {
 	case "b", "strong":
-		return entity.Bold()
+		return entity.Bold(), nil
 	case "i", "em":
-		return entity.Italic()
+		return entity.Italic(), nil
 	case "u":
-		return entity.Underline()
+		return entity.Underline(), nil
 	case "s", "del", "strike":
-		return entity.Strike()
+		return entity.Strike(), nil
 	case "blockquote":
 		_, expandable := attrs["expandable"]
-		return entity.Blockquote(expandable)
+		return entity.Blockquote(expandable), nil
 	case "code":
-		return entity.Code()
+		return entity.Code(), nil
 	case "pre":
-		return entity.Pre(attrs["language"])
+		return entity.Pre(attrs["language"]), nil
 	case "spoiler":
-		return entity.Spoiler()
+		return entity.Spoiler(), nil
 	case "a":
 		url := attrs["href"]
 		if m := mentionRe.FindStringSubmatch(url); m != nil {
 			var id int64
 			_, _ = fmt.Sscan(m[1], &id)
-			return entity.MentionName(&tg.InputUser{UserID: id})
+			if o.resolveUser != nil {
+				user, err := o.resolveUser(id)
+				if err != nil {
+					return nil, fmt.Errorf("resolve tg://user?id=%d: %w", id, err)
+				}
+				return entity.MentionName(user), nil
+			}
+			return entity.MentionName(&tg.InputUser{UserID: id}), nil
 		}
-		return entity.TextURL(url)
+		return entity.TextURL(url), nil
 	case "emoji":
 		var id int64
 		_, _ = fmt.Sscan(attrs["id"], &id)
-		return entity.CustomEmoji(id)
+		return entity.CustomEmoji(id), nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -379,30 +380,18 @@ func (a *App) callRoute(w http.ResponseWriter, r *http.Request, s *BotSession, m
 			tooLarge(w, maxFormBody)
 			return
 		}
-		parsed := map[string]any{}
-		for _, kv := range strings.Split(string(raw), "&") {
-			if kv == "" {
-				continue
-			}
-			parts := strings.SplitN(kv, "=", 2)
-			k := urlUnescape(parts[0])
-			v := ""
-			if len(parts) == 2 {
-				v = urlUnescape(parts[1])
-			}
-			if isNumeric(v) {
-				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-					parsed[k] = n
-					continue
-				}
-			}
-			if v == "true" || v == "false" {
-				parsed[k] = v == "true"
-				continue
-			}
-			parsed[k] = v
+		// urlencoded bodies forward VERBATIM (data-integrity fix over
+		// the Python plane, which coerced "007"→7 and "true"→boolean —
+		// corrupting user text; see CHANGELOG). Only the chat_id field
+		// is parsed, for the rate guard. Gateway-owned methods (the
+		// gateway answers them itself) still see a parsed dict.
+		m := strings.ToLower(method)
+		if gatewayOwned[m] {
+			a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, parseFormBody(raw), "", nil, r.Header.Get("Idempotency-Key")))
+			return
 		}
-		a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, parsed, "", nil, r.Header.Get("Idempotency-Key")))
+		chatID := formChatID(raw)
+		a.writeGwResponse(w, a.Proxy.CallRawWithChat(r.Context(), s, method, raw, ctype, chatID, r.Header.Get("Idempotency-Key")))
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
@@ -428,38 +417,38 @@ func isTooLarge(err error) bool {
 	return errors.As(err, &maxErr)
 }
 
-func urlUnescape(s string) string {
-	if !strings.Contains(s, "%") && !strings.Contains(s, "+") {
-		return s
+// formChatID extracts ONLY the chat_id field for rate-guard scoping —
+// the rest of the body forwards verbatim (url.ParseQuery, no value
+// coercion). Returns nil when absent (global bucket).
+func formChatID(raw []byte) *int64 {
+	vals, err := url.ParseQuery(string(raw))
+	if err != nil {
+		return nil
 	}
-	replacer := strings.NewReplacer("+", " ")
-	s = replacer.Replace(s)
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		if s[i] == '%' && i+2 < len(s) {
-			hi, ok1 := unhex(s[i+1])
-			lo, ok2 := unhex(s[i+2])
-			if ok1 && ok2 {
-				out = append(out, hi<<4|lo)
-				i += 2
-				continue
-			}
-		}
-		out = append(out, s[i])
+	v := vals.Get("chat_id")
+	if v == "" {
+		return nil
 	}
-	return string(out)
+	id, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
-func unhex(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
+// parseFormBody builds a map for GATEWAY-OWNED methods (they answer
+// locally and need the args). Values stay STRINGS — the gateway-owned
+// handlers parse what they need; no silent "007"→7 corruption.
+func parseFormBody(raw []byte) map[string]any {
+	vals, err := url.ParseQuery(string(raw))
+	if err != nil {
+		return map[string]any{}
 	}
-	return 0, false
+	out := map[string]any{}
+	for k := range vals {
+		out[k] = vals.Get(k)
+	}
+	return out
 }
 
 func (a *App) handleByAlias(w http.ResponseWriter, r *http.Request) {

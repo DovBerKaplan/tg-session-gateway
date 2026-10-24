@@ -530,14 +530,19 @@ func TestGatewayOwnedMethods(t *testing.T) {
 	}
 }
 
+// TestFormURLEncodedBody pins the DATA-INTEGRITY fix: urlencoded
+// bodies forward VERBATIM — "007" stays "007", "true" stays a string
+// (the Python plane coerced them and corrupted user text). Only the
+// rate-guard's chat_id is parsed, from the raw bytes.
 func TestFormURLEncodedBody(t *testing.T) {
 	fake := newFakeTelegram(nil)
 	_, ts := newTestApp(t, fake, t.TempDir())
 	base := ts.URL
 	post(t, base, "/admin/bots", `{"token":"`+token+`","alias":"fm"}`,
 		map[string]string{"Authorization": "Bearer adm-secret"})
+	form := "chat_id=007&text=form+sent&disable_notification=true"
 	req, _ := httpNewRequest("POST", base+"/bots/fm/sendMessage",
-		strings.NewReader("chat_id=10&text=form+sent&disable_notification=true"))
+		strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Bearer app-secret")
 	resp, err := httpClientDefault.Do(req)
@@ -547,14 +552,11 @@ func TestFormURLEncodedBody(t *testing.T) {
 	resp.Body.Close()
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.sent) != 1 {
+	if len(fake.rawSends) != 1 {
 		t.Fatal("form send never reached upstream")
 	}
-	if fake.sent[0]["text"] != "form sent" {
-		t.Fatalf("form decode = %v", fake.sent[0])
-	}
-	if fake.sent[0]["chat_id"] != int64(10) && fake.sent[0]["chat_id"] != float64(10) {
-		t.Fatalf("chat_id coercion = %v (%T)", fake.sent[0]["chat_id"], fake.sent[0]["chat_id"])
+	if string(fake.rawSends[0]) != form {
+		t.Fatalf("body mutated: %q", string(fake.rawSends[0]))
 	}
 }
 

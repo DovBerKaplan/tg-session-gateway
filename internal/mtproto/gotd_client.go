@@ -289,14 +289,14 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 		if mErr != nil {
 			return SentMessage{}, mErr
 		}
-		updates, err = builder.Media(ctx, message.Media(input, captionOption(p)...))
+		updates, err = builder.Media(ctx, message.Media(input, captionOption(g, p)...))
 	} else {
 		// pyformat: pyrogram's parse_mode contract — DEFAULT is combined
 		// markdown+HTML, exactly what the Python sidecar's consumers
 		// got (the old code silently downgraded it to plain text).
 		// Sent through a raw request so the merged entity list rides
 		// verbatim (builder tokens would re-split nested entities).
-		msg, entities, pErr := pyformat.Build(p.Text, pyformat.ModeFromName(p.ParseMode))
+		msg, entities, pErr := pyformat.Build(p.Text, pyformat.ModeFromName(p.ParseMode), pyformat.WithUserResolver(g.resolveUser))
 		if pErr != nil {
 			return SentMessage{}, pErr
 		}
@@ -324,14 +324,37 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 // captionOption styles the media caption through the same pyformat
 // contract (captions go through gotd's builder, so the merged-entity
 // path is not available — captions rarely nest, documented gap).
-func captionOption(p SendParams) []message.StyledTextOption {
+func captionOption(g *gotdClient, p SendParams) []message.StyledTextOption {
 	if p.Text == "" {
 		return nil
 	}
 	mode := pyformat.ModeFromName(p.ParseMode)
 	return []message.StyledTextOption{styling.Custom(func(eb *entity.Builder) error {
-		return pyformat.Apply(eb, p.Text, mode)
+		return pyformat.Apply(eb, p.Text, mode, pyformat.WithUserResolver(g.resolveUser))
 	})}
+}
+
+// resolveUser answers tg://user?id=N mentions with an InputUser that
+// carries the access_hash Telegram requires (bare ids are rejected).
+// Unknown peers resolve to a clear error — the send fails loudly,
+// never panics.
+func (g *gotdClient) resolveUser(id int64) (tg.InputUserClass, error) {
+	if g.raw == nil {
+		return nil, fmt.Errorf("client not connected")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	users, err := g.raw.UsersGetUsers(ctx, []tg.InputUserClass{&tg.InputUser{UserID: id}})
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, fmt.Errorf("user %d not found for mention", id)
+	}
+	if u, ok := users[0].(*tg.User); ok {
+		return &tg.InputUser{UserID: u.ID, AccessHash: u.AccessHash}, nil
+	}
+	return nil, fmt.Errorf("user %d resolved to a non-user object", id)
 }
 
 var mediaMimeTypes = map[string]string{
@@ -529,7 +552,7 @@ func walkMessages(u tg.UpdatesClass, fn func(*tg.Message) bool) {
 
 func (g *gotdClient) EditMessageText(ctx context.Context, p EditTextParams) (EditResult, error) {
 	// pyformat: pyrogram's parse_mode contract (DEFAULT = combined)
-	msg, entities, err := pyformat.Build(p.Text, pyformat.ModeFromName(p.ParseMode))
+	msg, entities, err := pyformat.Build(p.Text, pyformat.ModeFromName(p.ParseMode), pyformat.WithUserResolver(g.resolveUser))
 	if err != nil {
 		return EditResult{}, err
 	}

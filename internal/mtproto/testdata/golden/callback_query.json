@@ -1,13 +1,12 @@
 {
-  "_": "UpdateBotCallbackQuery",
+  "_": "types.UpdateBotCallbackQuery",
   "chat_instance": -5500000000000000000,
-  "data": "payload",
+  "data": "b'payload'",
   "msg_id": 7,
   "peer": {
-    "_": "PeerUser",
+    "_": "types.PeerUser",
     "user_id": 10
   },
   "query_id": 555,
-  "update_id": 9005,
   "user_id": 20
 }

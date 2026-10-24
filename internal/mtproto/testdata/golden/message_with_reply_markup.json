@@ -1,23 +1,33 @@
 {
-  "_": "UpdateNewMessage",
+  "_": "types.UpdateNewMessage",
   "message": {
-    "_": "Message",
+    "_": "types.Message",
     "date": 1700000003,
     "id": 45,
     "message": "pick one",
     "peer_id": {
-      "_": "PeerUser",
+      "_": "types.PeerUser",
       "user_id": 10
     },
     "reply_markup": {
-      "_": "ReplyInlineMarkup",
+      "_": "types.ReplyInlineMarkup",
       "rows": [
         {
-          "_": "KeyboardButtonRow",
+          "_": "types.KeyboardButtonRow",
           "buttons": [
             {
-              "_": "KeyboardButton",
+              "_": "types.KeyboardButton",
               "text": "Open"
+            },
+            {
+              "_": "types.KeyboardButtonCallback",
+              "data": "b'go'",
+              "text": "Go"
+            },
+            {
+              "_": "types.KeyboardButtonUrl",
+              "text": "Docs",
+              "url": "https://example.com"
             }
           ]
         }
@@ -25,6 +35,5 @@
     }
   },
   "pts": 104,
-  "pts_count": 1,
-  "update_id": 9006
+  "pts_count": 1
 }

@@ -1,22 +1,25 @@
 package mtproto
 
-// Golden-file conformance: the recorded JSON is what the REAL Python
-// sidecar (mtgateway, FakeClient harness — only Telegram faked)
-// delivered to consumers via getUpdates for classic Pyrogram to_dict
-// shapes. Regenerate with:
+// Golden-file conformance against pyrofork's OWN serialization: the
+// recorded JSON is json.loads(str(raw_update)) for raw TL objects
+// built with the real pyrofork constructors — the natural update
+// contract (stage 2.0/2.3 of the revised plan). The Python sidecar
+// never delivered this shape (pyrofork has no to_dict — it dropped
+// real updates); the GO sidecar's SerializeUpdate implements it.
+// Regenerate: .venv/bin/python tests/conformance_go/record_golden_raw.py
 //
-//	.venv/bin/python tests/conformance_go/record_golden_mt.py
-//
-// SerializeUpdate is Go's port of that contract. The Python dicts carry
-// the raw-params layout (peer_id, from_id, …); the Go serializer emits
-// the consumer-facing subset (chat, from_user_id, …) — the assertions
-// below pin each equivalence explicitly instead of byte-comparing
-// trees that are documented supersets/subsets of each other.
+// The raw shape carries the raw-params layout ("types."-prefixed
+// constructor names, peer_id/from_id, bytes as their repr); the Go
+// serializer emits the consumer-facing subset (bare constructor
+// names, chat, from_user_id, data as string) — every assertion below
+// pins the equivalence explicitly.
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -135,9 +138,11 @@ func TestGoldenAgainstPythonSidecar(t *testing.T) {
 			// assigned at pushUpdate time (persisted as the queue id)
 			got["update_id"] = tc.updateID
 
-			// constructor + envelope fields match verbatim
-			assertEq(t, golden, got, "_")
-			assertEq(t, golden, got, "update_id")
+			// constructor matches modulo the raw "types." namespace prefix
+			if want := strings.TrimPrefix(fmt.Sprint(golden["_"]), "types."); fmt.Sprint(got["_"]) != want {
+				t.Fatalf("constructor: raw=%v go=%v", golden["_"], got["_"])
+			}
+			// update_id is a delivery-layer field (assigned at push time)
 			for _, k := range []string{"pts", "pts_count"} {
 				if golden[k] != nil {
 					assertEq(t, golden, got, k)
@@ -146,10 +151,14 @@ func TestGoldenAgainstPythonSidecar(t *testing.T) {
 
 			switch tc.name {
 			case "callback_query":
-				// every consumer field matches verbatim (data pinned as
-				// str — Python dead-letters real bytes payloads)
-				for _, k := range []string{"query_id", "user_id", "msg_id", "data", "chat_instance"} {
+				// data rides as bytes in the raw shape → str() renders
+				// the repr (b'payload'); Go emits the decoded string
+				for _, k := range []string{"query_id", "user_id", "msg_id", "chat_instance"} {
 					assertEq(t, golden, got, k)
+				}
+				want := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprint(golden["data"]), "b'"), "'")
+				if fmt.Sprint(got["data"]) != want {
+					t.Fatalf("data: raw=%v go=%v", golden["data"], got["data"])
 				}
 				gp := golden["peer"].(map[string]any)
 				assertPeerMatches(t, gp, got["peer"].(map[string]any))
@@ -238,7 +247,7 @@ func negNum(v any) any {
 
 func assertPeerMatches(t *testing.T, goldenPeer, gotPeer map[string]any) {
 	t.Helper()
-	if goldenPeer["_"] != gotPeer["_"] {
+	if want := strings.TrimPrefix(fmt.Sprint(goldenPeer["_"]), "types."); fmt.Sprint(gotPeer["_"]) != want {
 		t.Fatalf("peer constructor: golden=%v go=%v", goldenPeer["_"], gotPeer["_"])
 	}
 	for _, k := range []string{"user_id", "chat_id", "channel_id"} {
@@ -261,7 +270,10 @@ func assertEntities(t *testing.T, goldenMsg, gotMsg map[string]any) {
 	for i, ge := range gEnts {
 		g := ge.(map[string]any)
 		got := gotEnts[i].(map[string]any)
-		for _, k := range []string{"_", "offset", "length"} {
+		if want := strings.TrimPrefix(fmt.Sprint(g["_"]), "types."); fmt.Sprint(got["_"]) != want {
+			t.Fatalf("entity %d constructor: raw=%v go=%v", i, g["_"], got["_"])
+		}
+		for _, k := range []string{"offset", "length"} {
 			assertEq(t, g, got, k)
 		}
 		// the pyrofork migration reason: expandable blockquote flag

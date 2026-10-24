@@ -10,7 +10,9 @@ package pyformat
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -195,4 +197,19 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// TestUserResolverErrorIsClear: a failing resolver surfaces as an
+// error from Build (never a panic) with the user id in the message.
+func TestUserResolverErrorIsClear(t *testing.T) {
+	_, _, err := Build(`hello <a href="tg://user?id=77">you</a>`, ModeHTML,
+		WithUserResolver(func(id int64) (tg.InputUserClass, error) {
+			return nil, fmt.Errorf("peer not cached")
+		}))
+	if err == nil {
+		t.Fatal("resolver failure must error the build")
+	}
+	if !strings.Contains(err.Error(), "id=77") && !strings.Contains(err.Error(), "77") {
+		t.Fatalf("error lacks the user id: %v", err)
+	}
 }

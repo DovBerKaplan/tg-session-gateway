@@ -204,6 +204,79 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 	return &gwResponse{status: resp.StatusCode, raw: resp.Body}
 }
 
+// CallRawWithChat forwards a pre-read body VERBATIM (urlencoded forms)
+// with an explicit rate-guard chat scope (parsed by the caller via
+// url.ParseQuery — no value coercion). Same admission, typing and
+// idempotency semantics as the JSON path.
+func (p *Proxy) CallRawWithChat(ctx context.Context, s *BotSession, method string, raw []byte, contentType string, chatID *int64, idemKey string) *gwResponse {
+	m := strings.ToLower(method)
+	kind := rateguard.MethodKind(m)
+
+	idemActive := idemKey != "" && kind == "write"
+	if idemActive {
+		verdict := p.mgr.store.IdempotencyClaim(s.Alias, idemKey)
+		if verdict == "replay" {
+			return jsonResp(200, map[string]any{
+				"ok": true, "result": nil, "idempotent_replay": true,
+				"description": "duplicate send suppressed (Idempotency-Key already seen)",
+			})
+		}
+	}
+	if kind == "write" {
+		p.mgr.Typing().Stop(s, chatID)
+	}
+	if !s.guard.TryAcquire(m, chatID) {
+		s.noteSynthetic429()
+		retry := max(1, min(s.guard.WaitTime(m, chatID), 60))
+		return jsonResp(429, map[string]any{
+			"ok": false, "error_code": 429,
+			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
+			"parameters":  map[string]any{"retry_after": int(retry)},
+		})
+	}
+	resp, err := p.client.Do(&httpRequest{
+		Method:  "POST",
+		URL:     "/bot" + s.Token + "/" + method,
+		RawBody: raw,
+		Header:  map[string]string{"Content-Type": contentType},
+		ctx:     ctx,
+	})
+	if idemActive {
+		if err != nil || resp.StatusCode >= 500 {
+			p.mgr.store.IdempotencyFail(s.Alias, idemKey)
+		} else {
+			p.mgr.store.IdempotencyFinish(s.Alias, idemKey)
+		}
+	}
+	if err != nil {
+		return jsonResp(502, map[string]any{
+			"ok": false, "error_code": 502, "description": "upstream: " + err.Error(),
+		})
+	}
+	s.noteSend()
+	if resp.StatusCode == 429 {
+		s.noteReal429()
+		retry := 5.0
+		var parsed map[string]any
+		if json.Unmarshal(resp.Body, &parsed) == nil {
+			if params, ok := parsed["parameters"].(map[string]any); ok {
+				if v := numberOf(params["retry_after"]); v > 0 {
+					retry = v
+				}
+			}
+		}
+		s.guard.Report429(chatID, retry)
+		p.mgr.RecordBackoff(s, chatID, retry)
+		s.mu.Lock()
+		s.last429 = map[string]any{
+			"method": m, "chat_id": nullableInt(chatID),
+			"retry_after": retry, "at": wallNow(),
+		}
+		s.mu.Unlock()
+	}
+	return &gwResponse{status: resp.StatusCode, raw: resp.Body}
+}
+
 // ForwardStream passes a pre-sized multipart body through verbatim
 // WITHOUT buffering it in full: prefix (the leading bytes, already
 // read so the chat_id form field can be mined) is re-joined with the

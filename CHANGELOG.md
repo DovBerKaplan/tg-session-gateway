@@ -40,6 +40,12 @@ against real Telegram. Reasoning: [ADR-0002](docs/adr/0002-go-rewrite.md).
   go-kind (full cluster acceptance).
 
 ### Fixed
+- **urlencoded forms no longer corrupt values** (2.4 of the revised
+  plan): the Python plane coerced `text=007` to `7` and `text=true` to
+  a boolean before forwarding — silently mutating user text. Forms now
+  forward VERBATIM; only the rate-guard's `chat_id` is parsed (via
+  url.ParseQuery). Gateway-owned methods (answered locally) receive
+  string-valued maps.
 - Pre-existing flake in the Python plane: same-millisecond backups
   collided on the filename (`backup_db` failed with "output file
   already exists"); the destination now bumps a counter.
