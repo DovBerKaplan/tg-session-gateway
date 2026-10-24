@@ -610,9 +610,8 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 		_ = a.Store.QueueAck(s.Alias, off-1)
 		deadline := monoNow() + timeout
 		for {
-			snapshot := a.Store.QueuePull(s.Alias, off-1, limit)
-			if len(snapshot) > 0 {
-				writeJSON(w, 200, map[string]any{"ok": true, "result": snapshot})
+			if raws := a.Store.QueuePullRaw(s.Alias, off-1, limit); len(raws) > 0 {
+				writeRawSplice(w, raws)
 				return
 			}
 			remaining := deadline - monoNow()
@@ -662,6 +661,24 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(time.Duration(remaining * float64(time.Second))):
 		}
 	}
+}
+
+// writeRawSplice answers getUpdates by joining the persisted JSON
+// fragments verbatim — no per-update decode/re-encode on the hot
+// consumer-pull path.
+func writeRawSplice(w http.ResponseWriter, raws []store.RawUpdate) {
+	var b strings.Builder
+	b.WriteString(`{"ok":true,"result":[`)
+	for i, r := range raws {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(r.JSON)
+	}
+	b.WriteString("]}")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, _ = io.WriteString(w, b.String())
 }
 
 func drainUpdateCh(s *Session, limit int) []map[string]any {

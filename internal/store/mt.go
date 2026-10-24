@@ -275,6 +275,30 @@ func (m *MT) QueuePush(alias string, updateID int64, updateJSON string) error {
 // QueuePull returns persisted updates with id > offset, in order,
 // re-attached with their persisted _gw_seq and payload fields.
 func (m *MT) QueuePull(alias string, offset int64, limit int) []map[string]any {
+	raws := m.QueuePullRaw(alias, offset, limit)
+	out := make([]map[string]any, 0, len(raws))
+	for _, r := range raws {
+		var update map[string]any
+		if err := json.Unmarshal(r.JSON, &update); err != nil || update == nil {
+			continue
+		}
+		update["update_id"] = r.ID
+		out = append(out, update)
+	}
+	return out
+}
+
+// RawUpdate is one persisted update passed through UNDECODED — the
+// hot consumer-pull path splices the raw JSON straight into the
+// response instead of decode→re-encode per update.
+type RawUpdate struct {
+	ID   int64
+	JSON json.RawMessage
+}
+
+// QueuePullRaw reads persisted updates with their bytes intact. The
+// update_id from the row rides alongside; the payload is untouched.
+func (m *MT) QueuePullRaw(alias string, offset int64, limit int) []RawUpdate {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -286,22 +310,14 @@ func (m *MT) QueuePull(alias string, offset int64, limit int) []map[string]any {
 		return nil
 	}
 	defer func() { _ = rows.Close() }()
-	var out []map[string]any
+	var out []RawUpdate
 	for rows.Next() {
 		var uid int64
 		var ujson string
-		if err := rows.Scan(&uid, &ujson); err != nil {
+		if err := rows.Scan(&uid, &ujson); err != nil || ujson == "" {
 			continue
 		}
-		var update map[string]any
-		if err := json.Unmarshal([]byte(ujson), &update); err != nil {
-			continue
-		}
-		if update == nil {
-			update = map[string]any{}
-		}
-		update["update_id"] = uid
-		out = append(out, update)
+		out = append(out, RawUpdate{ID: uid, JSON: json.RawMessage(ujson)})
 	}
 	return out
 }
