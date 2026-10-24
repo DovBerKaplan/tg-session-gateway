@@ -15,6 +15,7 @@
 .env.*
 !.env.example
 .zcode/
+.agent/
 
 # Python / virtualenv cache
 .venv/
