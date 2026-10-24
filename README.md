@@ -47,10 +47,10 @@ releases — never pre-releases. Identical tags live on GHCR
 
 | | Direct Bot API | Local Bot API server | MTProxy | **Session Gateway** |
 |---|---|---|---|---|
-| Session lifecycle independent of app deploys | ❌ | partial | ❌ | ✅ |
-| Zero-downtime bot deploys | ❌ | ❌ | ❌ | ✅ |
-| Built-in rate guard + 429 isolation per chat | ❌ | ❌ | — | ✅ |
-| Update queue that survives kill -9 | ❌ | ❌ | — | ✅ |
+| Session lifecycle independent of app deploys | no | partial | no | yes |
+| Zero-downtime bot deploys | no | no | no | yes |
+| Built-in rate guard + 429 isolation per chat | no | no | — | yes |
+| Update queue that survives kill -9 | no | no | — | yes |
 
 ## The problem
 

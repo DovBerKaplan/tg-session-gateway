@@ -6,10 +6,10 @@ Honest positioning — including when you should NOT use this project.
 
 | | Direct polling (aiogram/PTB default) | Webhooks | **Bot API Gateway** |
 |---|---|---|---|
-| Deploy without dropping updates | ❌ poller dies with the process; gap until restart | ✅ Telegram retries | ✅ queue survives app restarts |
-| Works without public HTTPS | ✅ | ❌ needs TLS endpoint | ✅ outbound-only |
-| Multiple app replicas | ❌ one poller per token, ever | ✅ | ✅ replicas pull from the queue |
-| Rate-limit protection | library-dependent | library-dependent | ✅ FAQ buckets + queueing at the gateway |
+| Deploy without dropping updates | no poller dies with the process; gap until restart | yes Telegram retries | yes queue survives app restarts |
+| Works without public HTTPS | yes | no needs TLS endpoint | yes outbound-only |
+| Multiple app replicas | no one poller per token, ever | yes | yes replicas pull from the queue |
+| Rate-limit protection | library-dependent | library-dependent | yes FAQ buckets + queueing at the gateway |
 | Latency | ~long-poll (fast) | push (fastest) | ~long-poll (same as direct) |
 | Extra moving part | none | none (but ingress) | one small service + volume |
 | Migration effort | — | rewrite receive path | change `base_url`, that's it |
@@ -27,8 +27,8 @@ deploys are rare. The gateway is plumbing; not every bot needs it.
 
 | | Pyrogram in-process | **MTProto sidecar** |
 |---|---|---|
-| Deploy without re-auth risk | ❌ every deploy reconnects; duplicate-connection risk during rolling overlap | ✅ sidecar owns the auth_key; app deploys are HTTP-level |
-| Multiple replicas | ❌ `AUTH_KEY_DUPLICATED` | ✅ replicas share the sidecar |
+| Deploy without re-auth risk | no every deploy reconnects; duplicate-connection risk during rolling overlap | yes sidecar owns the auth_key; app deploys are HTTP-level |
+| Multiple replicas | no `AUTH_KEY_DUPLICATED` | yes replicas share the sidecar |
 | Rate limits | your problem | FAQ buckets + `FloodWait` parsing + per-peer backoff |
 | App language | Python (Pyrogram) | anything that speaks HTTP/WS |
 | Latency | in-process (fastest) | one HTTP hop |

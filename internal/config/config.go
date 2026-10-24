@@ -119,7 +119,7 @@ type TypingConfig struct {
 }
 
 // DefaultTypingTimeoutText mirrors the Python default byte-for-byte.
-const DefaultTypingTimeoutText = "⚠️ Sorry, this bot is temporarily unavailable due to a problem on the provider side. Please try again later."
+const DefaultTypingTimeoutText = "Sorry, this bot is temporarily unavailable due to a problem on the provider side. Please try again later."
 
 func DefaultTyping() TypingConfig {
 	return TypingConfig{

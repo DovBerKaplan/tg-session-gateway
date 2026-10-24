@@ -1,6 +1,4 @@
 /tggw
-.claude-flow/
 .venv/
 __pycache__/
 .env
-.zcode/
