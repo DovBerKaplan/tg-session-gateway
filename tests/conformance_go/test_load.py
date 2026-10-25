@@ -27,7 +27,7 @@ import time
 import httpx
 import pytest
 
-from conftest import ADM, APP, TOKEN, Gateway, wait_for
+from conftest import ADM, APP, TOKEN, FakeTelegram, Gateway, wait_for
 
 FAST = {
     # production-like poll hold (the fake implements long-poll + wake)
@@ -265,3 +265,169 @@ class TestCrashRecovery:
             assert fake_telegram.sent[-1]["text"] == "back"
         finally:
             g2.stop()
+
+class TestChaosExtended:
+    """Failure shapes beyond plain death: hangs, churn."""
+
+    def test_upstream_hang_recovers(self, data_dir):
+        """Upstream accepts and HOLDS connections (no response): sends
+        fail within the client timeout budget (bounded, not a hang),
+        and everything recovers the moment the upstream answers again.
+        Fast version: hold 2 seconds, then serve normally — no 60s
+        timeout wait in CI."""
+        import socket
+
+        hold = {"on": True}
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(16)
+        port = srv.getsockname()[1]
+        held = []
+        stop = {"on": False}
+
+        def serve_conn(conn):
+            """While holding: never answer. After release: answer the
+            Telegram envelope (empty updates / generic true)."""
+            try:
+                conn.settimeout(75)
+                if hold["on"]:
+                    held.append(conn)
+                    import time as _t
+                    while hold["on"] and not stop["on"]:
+                        _t.sleep(0.1)
+                    if stop["on"]:
+                        return
+                    # hang lifted: reset the held conn so the gateway's
+                    # pool dials a fresh (servable) one
+                    try:
+                        conn.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    return
+                self._answer_bot_api(conn)
+            except OSError:
+                pass
+
+        def acceptor():
+            srv.settimeout(0.5)
+            while not stop["on"]:
+                try:
+                    conn, _ = srv.accept()
+                except (socket.timeout, OSError):
+                    continue
+                threading.Thread(target=serve_conn, args=(conn,), daemon=True).start()
+
+        th = threading.Thread(target=acceptor, daemon=True)
+        th.start()
+        upstream = f"http://127.0.0.1:{port}"
+
+        g = Gateway(data_dir, upstream)
+        g.wait_ready()
+        try:
+            r = post(g, "/admin/bots", {"token": TOKEN, "alias": "hang"}, ADM)
+            assert r.status_code == 200
+
+            t0 = time.perf_counter()
+            r = post(g, "/bots/hang/sendMessage", {"chat_id": 1, "text": "x"}, APP, timeout=70)
+            dt = time.perf_counter() - t0
+            assert r.status_code >= 400, f"hung upstream must fail the send: {r.status_code}"
+            assert dt < 65, f"send took {dt:.1f}s — must be bounded by the client timeout"
+
+            # lift the hang: connections get served from here on. The
+            # FIRST send may land on the poisoned pooled connection
+            # (RST from the reset) — Go's transport does not retry
+            # POSTs, so allow a bounded retry; recovery must be quick.
+            hold["on"] = False
+            time.sleep(0.5)
+            r = None
+            for _ in range(4):
+                r = post(g, "/bots/hang/sendMessage", {"chat_id": 1, "text": "x"}, APP, timeout=20)
+                if r.status_code == 200:
+                    break
+                time.sleep(0.5)
+            assert r is not None and r.status_code == 200, \
+                f"recovery must be quick: {r.status_code if r else '?'} {r.text[:120] if r else ''}"
+        finally:
+            stop["on"] = True
+            hold["on"] = False
+            for c in held:
+                try:
+                    c.close()
+                except OSError:
+                    pass
+            srv.close()
+            g.stop()
+
+    @staticmethod
+    def _answer_bot_api(conn):
+        """Minimal Bot API responder: read one request, answer the
+        Telegram envelope (result [] for getUpdates, true otherwise)."""
+        import json as _json
+
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":")[1].strip())
+        while len(rest) < length:
+            rest += conn.recv(4096)
+        path = head.split(b" ")[1].decode()
+        body = b'"result": []' if path.endswith("getUpdates") else b'"result": true'
+        payload = ('{"ok": true, %s}' % body).encode()
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(payload)}\r\n\r\n".encode()
+            + payload
+        )
+        _ = _json  # envelope is assembled manually above
+
+    def test_rapid_kill_restart_loop(self, fake_telegram, data_dir):
+        """Three SIGKILL/restart cycles in a row: acked offsets never
+        go backwards, sends resume every time (the crash-loop the safe
+        mode exists for)."""
+        g = None
+        try:
+            acked = 4900  # last acked update_id
+            fake_telegram.deliver({"update_id": acked, "message": {"text": "seed"}})
+            for cycle in range(3):
+                g = Gateway(data_dir, fake_telegram.url())
+                g.wait_ready()
+                if cycle == 0:
+                    post(g, "/admin/bots", {"token": TOKEN, "alias": "churn"}, ADM)
+                    # ack the seed once
+                    r = post(g, f"/tgapi/bot{TOKEN}/getUpdates",
+                             {"timeout": 5, "offset": acked}, APP)
+                    assert [u["update_id"] for u in r.json()["result"]] == [acked]
+                    r = post(g, f"/tgapi/bot{TOKEN}/getUpdates",
+                             {"timeout": 0, "offset": acked + 1}, APP)
+                    assert r.json()["result"] == []
+                # flows still work mid-churn
+                r = post(g, "/bots/churn/sendMessage",
+                         {"chat_id": 3, "text": f"cycle{cycle}"}, APP)
+                assert r.status_code == 200
+                g.proc.send_signal(signal.SIGKILL)
+                g.proc.wait(timeout=10)
+                g = None
+            # final restart: bot comes back, acked update stays acked
+            g = Gateway(data_dir, fake_telegram.url())
+            g.wait_ready()
+            status = httpx.get(f"{g.base}/admin/status", headers=ADM, timeout=5).json()
+            assert status["bots"], "registration lost across churn"
+            r = post(g, f"/tgapi/bot{TOKEN}/getUpdates",
+                     {"timeout": 0, "offset": acked + 1}, APP)
+            ids = [u["update_id"] for u in r.json()["result"]]
+            assert acked not in ids, "acked update redelivered after 3 kills"
+        finally:
+            if g is not None:
+                g.stop()

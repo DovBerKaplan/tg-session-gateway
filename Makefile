@@ -1,4 +1,4 @@
-.PHONY: test go-build go-test go-lint go-conformance go-kind docker-build docker-up docker-down clean
+.PHONY: test go-build go-test go-lint go-conformance load-test latency coverage go-kind docker-build docker-up docker-down clean
 
 # default target: the product's own tests (Go). Black-box conformance
 # lives under go-conformance (needs the venv's httpx+pytest).
@@ -15,6 +15,18 @@ go-lint:
 
 go-conformance: go-build
 	TGGW_BIN=/tmp/tggw .venv/bin/python -m pytest -q tests/conformance_go
+
+load-test: go-build
+	TGGW_BIN=/tmp/tggw .venv/bin/python -m pytest -q tests/conformance_go/test_load.py -s
+
+latency: go-build
+	TGGW_BIN=/tmp/tggw .venv/bin/python -m pytest -q tests/conformance_go/test_latency.py -s
+
+# coverage ratchet: only test-bearing packages (the local toolchain
+# lacks covdata for the rest; CI's setup-go is complete)
+coverage:
+	go test -count=1 -coverprofile=/tmp/cover.out $$(go list ./... | grep -vE "/cmd/|/config$$|/version$$|/examples/")
+	python3 scripts/coverage-gate.py /tmp/cover.out
 
 go-kind:
 	deploy/helm/verify-kind.sh

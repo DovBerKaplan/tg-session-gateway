@@ -436,7 +436,11 @@ func (s *BotSession) PushURL() string {
 }
 
 func (m *Manager) pushHealthcheck(ctx context.Context, s *BotSession) {
-	t := time.NewTicker(time.Duration(m.cfg.PushHealthInterval * float64(time.Second)))
+	interval := m.cfg.PushHealthInterval
+	if interval <= 0 {
+		interval = 5.0 // floor: NewTicker panics on <=0 (misconfigured env)
+	}
+	t := time.NewTicker(time.Duration(interval * float64(time.Second)))
 	defer t.Stop()
 	for {
 		select {

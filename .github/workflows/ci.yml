@@ -33,6 +33,42 @@ jobs:
         with:
             args: --timeout=5m
 
+  go-coverage:
+    name: Coverage (ratchet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - run: go test -count=1 -coverprofile=/tmp/cover.out ./...
+      - name: Per-package table + ratchet gate
+        run: |
+          python3 scripts/coverage-gate.py /tmp/cover.out
+      - name: HTML report artifact
+        if: always()
+        run: go tool cover -html=/tmp/cover.out -o coverage.html
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-html
+          path: coverage.html
+
+  e2e-botapi:
+    name: E2E (real Telegram, Bot API)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # secrets are unavailable on fork PRs; the script skips loudly
+    # when they are absent so first-time contributors stay green
+    env:
+      TG_TEST_BOT_TOKEN: ${{ secrets.TG_TEST_BOT_TOKEN }}
+      TG_TEST_CHAT_ID: ${{ secrets.TG_TEST_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - run: tests/conformance_go/e2e_botapi.sh
+
   go-conformance:
     name: Go Black-box Conformance
     runs-on: ubuntu-latest
