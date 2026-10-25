@@ -2,7 +2,7 @@
 
 ## Requirements Specification
 
-**Status:** Draft  
+**Status:** Implemented for 0.1.0 — the shipped surface is pinned in section 10; requirements below remain the design contract.  
 **Scope:** MTProto bot/userbot sessions that must survive frequent deploys and user-driven load without Telegram-imposed downtime.
 
 ---
@@ -228,3 +228,46 @@ Only the last row meets this spec.
 ## 12. One-paragraph product definition
 
 A long-lived sidecar, outside the application Compose project, that is the sole MTProto client for each session. The application attaches to it locally and immediately. Deploys and rolling updates never touch Telegram. The sidecar enforces Bot FAQ limits and per-method/per-peer `FLOOD_WAIT`, and answers the application with a wait or a rejection — never with a process crash or a silent drop.
+
+---
+
+## 10. Implemented surface (0.1.0) — the shipped contract
+
+### 10.1 Method allowlist (exactly these 20)
+
+`send_message`, `edit_message_text`, `edit_message_reply_markup`,
+`edit_message_caption`, `send_chat_action`, `delete_messages`,
+`forward_messages`, `get_chat`, `resolve_username`,
+`answer_callback_query`, `send_photo`, `send_video`, `send_document`,
+`send_audio`, `send_voice`, `send_animation`, `send_media_group`,
+`copy_message`, `get_me`.
+
+Anything else answers **501** with the list (requirement F-surface:
+discoverability over getattr surprises). The inventory of consumer
+methods from production logs remains a cutover-gate item in the
+runbook's soak checklist.
+
+### 10.2 What is explicitly NOT in 0.1.0
+
+- **Telethon compatibility**: not shipped, not planned for 0.1.x. The
+  sidecar is a gotd-based HTTP facade shaped like Pyrogram's
+  serialization (the golden files pin it). Official statement: if you
+  need Telethon, keep Telethon — this sidecar does not replace it.
+- Every MTProto method beyond the list above: use
+  [TelegramApiServer](https://github.com/xtrime-ru/TelegramApiServer)
+  (the README's comparison table says the same).
+
+### 10.3 Connection supervision = the circuit breaker
+
+`internal/mtproto/sessions.go` supervise loop is the production
+reconnect policy, already implemented and load-tested:
+
+| Condition | Behavior |
+|---|---|
+| Start failure (generic) | retry with exponential backoff: 1s, 2s, 4s ... capped at **300s**, reset to 1s on success |
+| FloodWait from Telegram | sleep the FULL wait + 60s jitter (never hammer a server-side ban) |
+| Lock refused (another live holder) | fixed 60s retry — do not hammer the holder |
+| Terminal/quarantine error | session quarantined; admin restart answers 409 and instructs re-register |
+
+Rolling-deploy overlap against real Telegram stays a manual soak
+checklist item (runbook) — it needs a real second pod, not CI.
