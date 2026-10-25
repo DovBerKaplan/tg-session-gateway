@@ -178,7 +178,8 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.12.0
-          args: release --clean
+          # parallelism 2: 6 builds at full parallelism OOMs the runner
+          args: release --clean --parallelism 2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
