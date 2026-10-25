@@ -44,6 +44,39 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+class _TrackingHTTPServer(ThreadingHTTPServer):
+    """Remembers client sockets so close() can reset ESTABLISHED
+    connections too: with HTTP/1.1 keep-alive the gateway pools a
+    live connection, and a listening-socket-only close leaves that
+    connection servable (connection-refused tests would flake)."""
+
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.conns = set()
+
+    def process_request(self, request, client_address):
+        self.conns.add(request)
+        super().process_request(request, client_address)
+
+    def shutdown_request(self, request):
+        self.conns.discard(request)
+        super().shutdown_request(request)
+
+    def close_all(self):
+        for c in list(self.conns):
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                c.close()
+            except OSError:
+                pass
+        self.conns.clear()
+
+
 class FakeTelegram:
     """Answers Bot API calls like api.telegram.org would."""
 
@@ -78,7 +111,7 @@ class FakeTelegram:
         handler.protocol_version = "HTTP/1.1"
         handler.disable_nagle_algorithm = True
         handler.do_POST = lambda rh, _f=self: _f._do_post(rh)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.server = _TrackingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -151,6 +184,7 @@ class FakeTelegram:
             self._closed = True
             self._cond.notify_all()  # release held long-polls
         self.server.shutdown()
+        self.server.close_all()  # reset pooled keep-alive connections too
         self.server.server_close()
 
 

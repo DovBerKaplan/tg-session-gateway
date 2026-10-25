@@ -472,3 +472,7 @@ func (m *MT) GetAudit(limit int) []AuditEntry {
 	}
 	return out
 }
+
+// Box exposes the fernet handle for at-rest blob sealing (the session
+// storage encrypts gotd blobs with the same key as the tokens).
+func (m *MT) Box() *cryptoutil.Box { return m.box }

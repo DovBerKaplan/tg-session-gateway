@@ -18,6 +18,8 @@ import (
 	"github.com/gotd/td/session"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
 )
 
 // SessionReport is one .session file's outcome.
@@ -38,6 +40,7 @@ type Report struct {
 	Sessions       []SessionReport `json:"sessions"`
 	Migrated       int             `json:"migrated"`
 	Skipped        int             `json:"skipped"`
+	Reencrypted    int             `json:"reencrypted"` // legacy plaintext gotd blobs sealed at rest
 	Errors         int             `json:"errors"`
 	NeedsNewLogin  int             `json:"needs_new_login"` // registered aliases with no usable .session
 	LoginsRequired int             `json:"logins_required"`
@@ -126,7 +129,16 @@ func (m *memorySessionStore) StoreSession(ctx context.Context, data []byte) erro
 // into mtgateway.db's gotd_sessions table. Idempotent: an identical
 // existing blob is skipped, a changed one is overwritten (key rotation
 // means the .session file is newer). With dryRun nothing is written.
-func Run(dataDir string, dryRun bool) (*Report, error) {
+//
+// Every blob written or found at rest is SEALED with the volume's
+// fernet key (versioned envelope); legacy plaintext gotd blobs are
+// re-encrypted in place — run migrate after rotating GW_FERNET_KEY
+// volumes or upgrading from pre-0.1.0.
+func Run(dataDir, fernetKey string, dryRun bool) (*Report, error) {
+	box, err := cryptoutil.LoadKey(fernetKey, dataDir)
+	if err != nil {
+		return nil, err
+	}
 	sessionDir := filepath.Join(dataDir, "sessions")
 	entries, err := filepath.Glob(filepath.Join(sessionDir, "*.session"))
 	if err != nil {
@@ -171,20 +183,36 @@ func Run(dataDir string, dryRun bool) (*Report, error) {
 
 		var existing []byte
 		err = db.QueryRow("SELECT session_blob FROM gotd_sessions WHERE alias = ?", alias).Scan(&existing)
-		if err == nil && string(existing) == string(blob) {
-			r.Action = "skipped (already migrated)"
-			rep.Skipped++
-			rep.Sessions = append(rep.Sessions, r)
-			continue
+		if err == nil {
+			existingPlain, openErr := box.OpenBlob(existing)
+			if openErr != nil {
+				r.Action, r.Err = "error", openErr.Error()
+				rep.Errors++
+				rep.Sessions = append(rep.Sessions, r)
+				continue
+			}
+			if string(existingPlain) == string(blob) {
+				r.Action = "skipped (already migrated)"
+				rep.Skipped++
+				rep.Sessions = append(rep.Sessions, r)
+				continue
+			}
 		}
 
 		if dryRun {
 			r.Action = "would migrate"
 		} else {
+			sealed, sealErr := box.SealBlob(blob)
+			if sealErr != nil {
+				r.Action, r.Err = "error", sealErr.Error()
+				rep.Errors++
+				rep.Sessions = append(rep.Sessions, r)
+				continue
+			}
 			if _, err := db.Exec(
 				"INSERT INTO gotd_sessions (alias, session_blob) VALUES (?, ?) "+
 					"ON CONFLICT(alias) DO UPDATE SET session_blob = excluded.session_blob",
-				alias, blob); err != nil {
+				alias, sealed); err != nil {
 				r.Action, r.Err = "error", err.Error()
 				rep.Errors++
 				rep.Sessions = append(rep.Sessions, r)
@@ -194,6 +222,45 @@ func Run(dataDir string, dryRun bool) (*Report, error) {
 		}
 		rep.Migrated++
 		rep.Sessions = append(rep.Sessions, r)
+	}
+
+	// re-seal legacy PLAINTEXT gotd blobs (pre-0.1.0 volumes): load as
+	// raw bytes, seal under the envelope, write back — no re-login
+	rows, err := db.Query("SELECT alias, session_blob FROM gotd_sessions")
+	if err != nil {
+		return nil, err
+	}
+	var legacy []struct {
+		alias string
+		blob  []byte
+	}
+	for rows.Next() {
+		var alias string
+		var blob []byte
+		if err := rows.Scan(&alias, &blob); err == nil && !cryptoutil.IsSealed(blob) {
+			legacy = append(legacy, struct {
+				alias string
+				blob  []byte
+			}{alias, blob})
+		}
+	}
+	_ = rows.Close()
+	for _, l := range legacy {
+		if dryRun {
+			rep.Reencrypted++
+			continue
+		}
+		sealed, err := box.SealBlob(l.blob)
+		if err != nil {
+			rep.Errors++
+			continue
+		}
+		if _, err := db.Exec(
+			"UPDATE gotd_sessions SET session_blob = ? WHERE alias = ?", sealed, l.alias); err != nil {
+			rep.Errors++
+			continue
+		}
+		rep.Reencrypted++
 	}
 
 	// registered aliases with no migrated key would log in from scratch

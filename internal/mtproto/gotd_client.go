@@ -22,6 +22,7 @@ import (
 	"github.com/gotd/td/tgerr"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/config"
+	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/mtproto/pyformat"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
 )
@@ -57,10 +58,13 @@ type gotdClient struct {
 }
 
 // sqliteSessionStorage persists gotd session blobs in mtgateway.db —
-// the auth_key never sits on the container layer.
+// the auth_key never sits on the container layer. Blobs are sealed at
+// rest with the volume's fernet key (versioned envelope); legacy
+// plaintext rows load as-is and are re-sealed on the next write.
 type sqliteSessionStorage struct {
 	db    *sql.DB
 	alias string
+	box   *cryptoutil.Box
 }
 
 func (s sqliteSessionStorage) LoadSession(ctx context.Context) ([]byte, error) {
@@ -73,7 +77,10 @@ func (s sqliteSessionStorage) LoadSession(ctx context.Context) ([]byte, error) {
 	if err == sql.ErrNoRows {
 		return nil, session.ErrNotFound
 	}
-	return data, err
+	if err != nil {
+		return nil, err
+	}
+	return s.box.OpenBlob(data)
 }
 
 func (s sqliteSessionStorage) StoreSession(ctx context.Context, data []byte) error {
@@ -81,10 +88,14 @@ func (s sqliteSessionStorage) StoreSession(ctx context.Context, data []byte) err
 		"CREATE TABLE IF NOT EXISTS gotd_sessions (alias TEXT PRIMARY KEY, session_blob BLOB NOT NULL)"); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(
+	sealed, err := s.box.SealBlob(data)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
 		"INSERT INTO gotd_sessions (alias, session_blob) VALUES (?, ?) "+
 			"ON CONFLICT(alias) DO UPDATE SET session_blob = excluded.session_blob",
-		s.alias, data)
+		s.alias, sealed)
 	return err
 }
 
@@ -97,7 +108,7 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 		photoLocs: map[int64]*tg.Photo{},
 		docLocs:   map[int64]*tg.Document{},
 	}
-	storage := sqliteSessionStorage{db: st.DB, alias: alias}
+	storage := sqliteSessionStorage{db: st.DB, alias: alias, box: st.Box()}
 	g.client = telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: &storage,
 		UpdateHandler:  telegram.UpdateHandlerFunc(g.onUpdatesClass),

@@ -16,7 +16,14 @@ import (
 	"github.com/gotd/td/session"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
 )
+
+// testKey is the fixed fernet key every migrate test runs with —
+// identical to the conformance suite's, so sealed-blob assertions are
+// reproducible across runs.
+const testKey = "CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw="
 
 const pyroforkSchema = `
 CREATE TABLE sessions
@@ -86,7 +93,7 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 	writePyroforkSession(t, filepath.Join(dir, "sessions", "bot1.session"), 2, fakeAuthKey(), 42)
 
 	// dry-run reports but writes nothing
-	rep, err := Run(dir, true)
+	rep, err := Run(dir, testKey, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +109,7 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 	}
 
 	// real run
-	rep, err = Run(dir, false)
+	rep, err = Run(dir, testKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +121,9 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("session report = %+v", sr)
 	}
 
-	// the blob parses through gotd's own Loader — the auth survives
+	// the blob parses through gotd's own Loader — the auth survives.
+	// The stored blob must be SEALED (the at-rest invariant); open it
+	// the way the production session storage does before loading.
 	db, err = sql.Open("sqlite", filepath.Join(dir, "mtgateway.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -124,8 +133,19 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT session_blob FROM gotd_sessions WHERE alias = 'bot1'").Scan(&blob); err != nil {
 		t.Fatal(err)
 	}
+	box, err := cryptoutil.LoadKey(testKey, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cryptoutil.IsSealed(blob) {
+		t.Fatal("migrated gotd blob stored as plaintext — must be sealed at rest")
+	}
+	plain, err := box.OpenBlob(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mem := &session.StorageMemory{}
-	if err := mem.StoreSession(context.Background(), blob); err != nil {
+	if err := mem.StoreSession(context.Background(), plain); err != nil {
 		t.Fatal(err)
 	}
 	data, err := (&session.Loader{Storage: mem}).Load(context.Background())
@@ -151,7 +171,7 @@ func TestMigrateConvertsAndIsIdempotent(t *testing.T) {
 	}
 
 	// second run is a no-op (skipped, still zero logins)
-	rep, err = Run(dir, false)
+	rep, err = Run(dir, testKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +201,7 @@ func TestMigrateReportsMissingSessionsAsNewLogins(t *testing.T) {
 	}
 	_ = db.Close()
 
-	rep, err := Run(dir, false)
+	rep, err := Run(dir, testKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +214,7 @@ func TestMigrateRejectsCorruptAuthKey(t *testing.T) {
 	dir := t.TempDir()
 	writePyroforkSession(t, filepath.Join(dir, "sessions", "bad.session"), 2, []byte{1, 2, 3}, 1)
 
-	rep, err := Run(dir, false)
+	rep, err := Run(dir, testKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +229,7 @@ func TestMigrateRejectsCorruptAuthKey(t *testing.T) {
 func TestReportJSONShape(t *testing.T) {
 	dir := t.TempDir()
 	writePyroforkSession(t, filepath.Join(dir, "sessions", "b.session"), 1, fakeAuthKey(), 7)
-	rep, err := Run(dir, false)
+	rep, err := Run(dir, testKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}

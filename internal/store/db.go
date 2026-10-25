@@ -54,6 +54,12 @@ func Open(path, durability string, foreignKeys bool) (*sql.DB, error) {
 			return nil, fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
+	// harden at-rest permissions: the DB holds encrypted tokens,
+	// session blobs (auth_key material) and the audit trail
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("chmod %s: %w", path, err)
+	}
 	return db, nil
 }
 

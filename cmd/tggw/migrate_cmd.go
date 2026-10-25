@@ -32,7 +32,7 @@ func runMigrate(args []string) error {
 		return fmt.Errorf("--from or GW_DATA_DIR is required")
 	}
 
-	rep, err := migrate.Run(dataDir, *dryRun)
+	rep, err := migrate.Run(dataDir, config.MTProtoFromEnv().FernetKey, *dryRun)
 	if err != nil {
 		return err
 	}

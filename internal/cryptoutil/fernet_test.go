@@ -81,3 +81,65 @@ func TestGenerateKeyShape(t *testing.T) {
 		t.Fatalf("fernet key shape wrong: %q", k)
 	}
 }
+
+// otherKey is a second VALID fernet key — for wrong-key assertions the
+// key must parse (a malformed key is a different failure).
+const otherKey = "8uL5cJvWCElDsmuTGDh2Y8ycRYNa2AqX-1frOYlcX0c="
+
+func TestSealBlobRoundTrip(t *testing.T) {
+	b, err := LoadKey(pyKey, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte("gotd session blob with auth_key material")
+	sealed, err := b.SealBlob(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsSealed(sealed) {
+		t.Fatal("sealed blob carries no envelope prefix")
+	}
+	if bytes.Contains(sealed, plain) {
+		t.Fatal("plaintext visible in sealed blob")
+	}
+	got, err := b.OpenBlob(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Fatalf("round trip mismatch: %q", got)
+	}
+}
+
+func TestOpenBlobLegacyPlaintextTolerated(t *testing.T) {
+	b, err := LoadKey(pyKey, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte("pre-0.1.0 plaintext session blob")
+	got, err := b.OpenBlob(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, legacy) {
+		t.Fatalf("legacy blob altered: %q", got)
+	}
+}
+
+func TestOpenBlobWrongKeyIsHardError(t *testing.T) {
+	b, err := LoadKey(pyKey, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := b.SealBlob([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong, err := LoadKey(otherKey, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrong.OpenBlob(sealed); err == nil {
+		t.Fatal("wrong key must be a HARD error — silent misread corrupts sessions")
+	}
+}

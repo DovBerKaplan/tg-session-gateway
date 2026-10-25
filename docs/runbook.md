@@ -163,3 +163,23 @@ with zipfile.ZipFile(io.BytesIO(blob)) as z: z.extractall("/data/sessions")
 EOF
 # then a verified restart (stop the gateway first — never two owners)
 ```
+
+## Encryption at rest (0.1.0+)
+
+Bot tokens AND gotd session blobs (which contain the auth_key) are
+sealed with the volume's `GW_FERNET_KEY` — tokens as bare fernet
+tokens (python-compatible), session blobs with a versioned `tggw1:`
+envelope. Files: `gateway.db`, `mtgateway.db`, `sessions/*.db` are
+chmod 0600 on open; the `.fernet_key` file is 0600.
+
+- **Rotating GW_FERNET_KEY is data loss** for an existing volume
+  unless you re-seal first: back up `/data`, run
+  `tggw migrate --from /data` with the OLD key (re-seals everything),
+  then switch the key. Without that step the next start fails loudly
+  ("sealed blob failed to decrypt") instead of silently corrupting.
+- Legacy pre-0.1.0 volumes load plaintext session blobs transparently
+  and re-seal on the next write; `tggw migrate --from /data` re-seals
+  everything immediately (the report's `reencrypted` count).
+- Volume permissions: mount the data volume owned by the container
+  user (65532). The image initializes `/data` with nonroot ownership;
+  bind mounts must be pre-chowned (`chown 65532:65532 ./data`).

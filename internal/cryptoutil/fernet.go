@@ -72,3 +72,42 @@ func GenerateKey() (string, error) {
 	}
 	return k.Encode(), nil
 }
+
+// blobEnvelopeV1 marks fernet-sealed at-rest blobs (session files and
+// anything else that is NOT a python-compatible token). Tokens stay
+// bare fernet tokens for byte compatibility with the Python store;
+// every OTHER encrypted blob carries this prefix.
+var blobEnvelopeV1 = []byte("tggw1:")
+
+// SealBlob seals an at-rest blob with a versioned envelope. Unlike
+// Encrypt (python-compatible bare tokens), the envelope makes the
+// format explicit and lets reads distinguish "wrong key" from
+// "legacy plaintext".
+func (b *Box) SealBlob(plain []byte) ([]byte, error) {
+	token, err := b.Encrypt(plain)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(blobEnvelopeV1)+len(token))
+	out = append(out, blobEnvelopeV1...)
+	return append(out, token...), nil
+}
+
+// OpenBlob opens a SealBlob-sealed blob. Legacy PLAINTEXT blobs (the
+// pre-0.1.0 session storage) are returned as-is so an existing volume
+// migrates with zero downtime; the next write re-seals. A sealed blob
+// that fails to open is a hard error: with the wrong GW_FERNET_KEY the
+// data is unrecoverable and pretending otherwise corrupts sessions.
+func (b *Box) OpenBlob(blob []byte) ([]byte, error) {
+	if !bytes.HasPrefix(blob, blobEnvelopeV1) {
+		return blob, nil // legacy plaintext — re-sealed on next write
+	}
+	plain, ok := b.Decrypt(blob[len(blobEnvelopeV1):])
+	if !ok {
+		return nil, fmt.Errorf("sealed blob failed to decrypt: wrong GW_FERNET_KEY for this volume?")
+	}
+	return plain, nil
+}
+
+// IsSealed reports whether a blob carries the at-rest envelope.
+func IsSealed(blob []byte) bool { return bytes.HasPrefix(blob, blobEnvelopeV1) }
