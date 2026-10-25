@@ -232,10 +232,8 @@ jobs:
         run: |
           # goreleaser already generated + uploaded checksums.txt
           gh release download "${{ github.ref_name }}" --pattern "checksums.txt" --dir /tmp/rel
-          cosign sign-blob --yes /tmp/rel/checksums.txt \
-            --output-signature /tmp/checksums.txt.sig \
-            --output-certificate /tmp/checksums.txt.pem
-          gh release upload "${{ github.ref_name }}" /tmp/checksums.txt.sig /tmp/checksums.txt.pem --clobber
+          cosign sign-blob --yes --bundle /tmp/checksums.txt.bundle /tmp/rel/checksums.txt
+          gh release upload "${{ github.ref_name }}" /tmp/checksums.txt.bundle --clobber
       - name: Push the signed Helm chart to OCI
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
