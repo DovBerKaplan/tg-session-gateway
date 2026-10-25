@@ -187,7 +187,7 @@ jobs:
 
   sign:
     name: Sign (cosign keyless) + publish chart OCI
-    needs: release
+    needs: [release, publish] # publish directly: job outputs are not transitive
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/v')
