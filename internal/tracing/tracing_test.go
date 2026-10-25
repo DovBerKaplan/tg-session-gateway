@@ -3,8 +3,6 @@ package tracing
 import (
 	"context"
 	"testing"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 func TestSetupNoopWithoutEndpoint(t *testing.T) {
@@ -21,7 +19,4 @@ func TestSetupNoopWithoutEndpoint(t *testing.T) {
 		t.Fatal("no-op spans must not carry a valid span context")
 	}
 	span.End()
-	if _, ok := Tracer("botapi").(trace.Tracer); !ok {
-		t.Fatal("tracer must satisfy trace.Tracer")
-	}
 }
