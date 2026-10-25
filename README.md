@@ -350,6 +350,16 @@ For Kubernetes: [the Helm chart →](deploy/helm/tggw/README.md) (or the
 rendered [install.yaml](deploy/helm/install.yaml)), kind-verified —
 `deploy/helm/verify-kind.sh` reproduces the whole acceptance locally.
 
+**Verify what you pull** — the image (GHCR and the Docker Hub mirror)
+and the release `checksums.txt` are signed keylessly on every `v*`
+tag; the certificate binds to this repository's CI identity:
+
+```bash
+cosign verify ghcr.io/dovberkaplan/tg-session-gateway:0.1.0 \
+  --certificate-identity-regexp '^https://github.com/DovBerKaplan/tg-session-gateway/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 **Python ≤0.0.5** (rollback images): `ghcr.io/dovberkaplan/tg-session-gateway`
 and `...-mtproto`, source on the [`legacy-python`](../../tree/legacy-python) branch.
 

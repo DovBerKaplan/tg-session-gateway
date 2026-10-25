@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -93,7 +92,7 @@ func (l *Lock) Acquire() bool {
 		fmt.Fprintf(os.Stderr, "[%s] LOCK REFUSED: cannot open lock file: %v\n", l.Alias, err)
 		return false
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flockExclusive(f); err != nil {
 		_ = f.Close()
 		fmt.Fprintf(os.Stderr,
 			"[%s] LOCK REFUSED: another process holds this session (holder: %s). "+
@@ -107,7 +106,7 @@ func (l *Lock) Acquire() bool {
 		// on this volume — its O_EXCL lock is invisible to flock, so
 		// refuse rather than double-connect the auth_key. Remove this
 		// check once 0.1.x has soaked. See ADR-0003.
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = flockUnlock(f)
 		_ = f.Close()
 		fmt.Fprintf(os.Stderr,
 			"[%s] LOCK REFUSED: a live PYTHON sidecar holds this session (fresh lock file). "+
@@ -156,7 +155,7 @@ func (l *Lock) Release() {
 	if l.fd == nil {
 		return
 	}
-	_ = syscall.Flock(int(l.fd.Fd()), syscall.LOCK_UN)
+	_ = flockUnlock(l.fd)
 	_ = l.fd.Close()
 	l.fd = nil
 }

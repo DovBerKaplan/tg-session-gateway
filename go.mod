@@ -3,8 +3,10 @@ module github.com/DovBerKaplan/tg-session-gateway
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/fernet/fernet-go v0.0.0-20240119011108-303da6aec611
 	github.com/gotd/td v0.163.0
+	golang.org/x/sys v0.47.0
 	modernc.org/sqlite v1.34.5
 )
 
@@ -12,7 +14,6 @@ require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.19.0 // indirect
@@ -46,7 +47,6 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

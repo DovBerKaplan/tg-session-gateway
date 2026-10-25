@@ -37,11 +37,8 @@ jobs:
         with: {python-version: "3.12"}
       - run: pip install httpx pytest
       - run: go build ./...
-        working-directory: go
       - run: go vet ./...
-        working-directory: go
       - run: go test -race -count=1 ./...
-        working-directory: go
       - name: Black-box conformance against the real binary
         run: |
           CGO_ENABLED=0 go build -o /tmp/tggw ./cmd/tggw
@@ -107,6 +104,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push (tggw — one build, GHCR + mirror)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -121,6 +119,19 @@ jobs:
           cache-to: type=gha,mode=max
           sbom: true
           provenance: mode=max
+
+      - name: Sync Docker Hub description
+        if: env.DOCKERHUB_MIRROR == 'true'
+        run: |
+          JWT=$(curl -sS -X POST https://hub.docker.com/v2/users/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"${{ secrets.DOCKERHUB_USERNAME }}\",\"password\":\"${{ secrets.DOCKERHUB_TOKEN }}\"}" \
+            | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          jq -Rs '{full_description: .}' README.md | curl -sS -X PATCH \
+            "https://hub.docker.com/v2/repositories/dovberkaplan/tggw/" \
+            -H "Authorization: JWT ${JWT}" \
+            -H 'Content-Type: application/json' \
+            -d @-
 
   release:
     name: GitHub Release (binaries + chart)
@@ -188,10 +199,14 @@ jobs:
       - name: Sign the image (keyless, by digest)
         env:
           IMAGE: ghcr.io/${{ github.repository }}
+          DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           DIGEST=$(docker buildx imagetools inspect "$IMAGE:${{ github.ref_name }}" --format '{{json .Manifest.Digest}}' | tr -d '"')
           cosign sign --yes "$IMAGE@$DIGEST"
+          if [ "$DOCKERHUB_MIRROR" = "true" ]; then
+            cosign sign --yes "docker.io/dovberkaplan/tggw@$DIGEST"
+          fi
       - name: Sign checksums.txt (detached blob signature)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,56 @@
+# GoReleaser config for tggw.
+# Binaries + checksums + SBOMs + the GitHub Release; container images
+# stay on docker/build-push-action in release.yml (provenance mode=max
+# + registry SBOM ride there) — goreleaser handles the rest.
+version: 2
+
+project_name: tggw
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tggw
+    main: ./cmd/tggw
+    binary: tggw
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/DovBerKaplan/tg-session-gateway/internal/version.Version={{ .Version }}
+
+archives:
+  - id: binaries
+    formats: [tar.gz]
+    name_template: "tggw_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - id: tggw-sboms
+    artifacts: archive
+    cmd: syft
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+      - "^style:"
+
+release:
+  draft: false
+  prerelease: auto
+  make_latest: true
+  mode: keep-existing
