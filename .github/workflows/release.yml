@@ -214,11 +214,12 @@ jobs:
           tar xz < /tmp/helm.tgz -C /tmp && sudo mv /tmp/linux-amd64/helm /usr/local/bin/
       - name: Sign the image (keyless, by digest)
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
           DIGEST: ${{ needs.publish.outputs.digest }}
           DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         run: |
           test -n "$DIGEST"
+          # container references must be lowercase; github.repository is not
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           cosign sign --yes "$IMAGE@$DIGEST"
           if [ "$DOCKERHUB_MIRROR" = "true" ]; then
             echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
