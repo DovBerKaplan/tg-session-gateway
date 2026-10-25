@@ -24,7 +24,7 @@ Python plane, which coerced `"007"` to 7 and `"true"` to boolean).
 ## MTProto sidecar plane
 
 Pyrogram-shaped serialization (goldens recorded from real pyrofork
-raw TL objects; `json.loads(str(raw))` contract). 20-method allowlist
+raw TL objects; `json.loads(str(raw))` contract). 19-method allowlist
 with 501 + list for anything else — see
 [sidecar-spec.md](sidecar-spec.md) section 10. Telethon-compatible:
 NOT supported (official statement there).

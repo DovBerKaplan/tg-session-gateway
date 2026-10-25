@@ -172,3 +172,16 @@ deployment (a private bot + a group-moderation bot):
   queue depth/drop counters. Alert on any real-limit counter > 0 (the
   preventive buckets should keep them at zero) and on queue depth
   growth.
+
+## 0.0.5 (Python) -> 0.1.0 (Go): the honest risk table
+
+| You are... | Risk | What to do |
+|---|---|---|
+| Bot API only (aiogram/PTB/grammY) + existing volume | low | migrate and go — same URL contract, same env; test on a volume COPY first |
+| MTProto sidecar + non-standard Pyrogram methods | medium-high | check the 19-method allowlist (sidecar-spec.md §10.1) — everything else answers 501 |
+| Using Redis locks / multi-replica coordination | high | don't migrate unplanned: Redis is gone (ADR-0003); shard instead (scaling.md) |
+| Pulling images by the old names (`-go`, `-mtproto`) | high | one image now: `tggw botapi` / `tggw mtproto` subcommands |
+
+Rules of thumb: COPY the volume first, run the Go binary side-by-side
+against a test account, compare, then cutover. The Python images
+(<= 0.0.5) and the `legacy-python` branch remain the rollback path.

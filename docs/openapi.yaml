@@ -7,7 +7,7 @@ info:
     Telegram Bot API envelope ({"ok":true,"result":...}) — only the
     gateway-specific surface is listed here; every non-gateway-owned
     Bot API method is proxied verbatim. The MTProto plane is the
-    sidecar facade (20-method allowlist).
+    sidecar facade (19-method allowlist).
 servers:
   - url: http://tggw:8080
     description: main listener (both planes)
@@ -147,7 +147,7 @@ paths:
   /v1/sessions/{alias}/{method}:
     post:
       summary: >
-        MTProto facade call (20-method allowlist: send_message,
+        MTProto facade call (19-method allowlist: send_message,
         edit_message_text, edit_message_reply_markup,
         edit_message_caption, send_chat_action, delete_messages,
         forward_messages, get_chat, resolve_username,

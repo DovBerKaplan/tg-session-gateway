@@ -233,7 +233,7 @@ A long-lived sidecar, outside the application Compose project, that is the sole 
 
 ## 10. Implemented surface (0.1.0) — the shipped contract
 
-### 10.1 Method allowlist (exactly these 20)
+### 10.1 Method allowlist (exactly these 19)
 
 `send_message`, `edit_message_text`, `edit_message_reply_markup`,
 `edit_message_caption`, `send_chat_action`, `delete_messages`,
