@@ -8,7 +8,7 @@ The product's first invariant is ONE OWNER PER SESSION: no process
 may call connect() on a session before proving exclusive ownership
 (prevents AUTH_KEY_DUPLICATED, which invalidates auth_keys
 permanently). Production today runs every sidecar on a single Docker
-host; the farm roadmap (docs/farm-architecture.md) adds multi-host.
+host; the pre-Go-rewrite farm roadmap added multi-host (doc since removed).
 
 ## Decision
 

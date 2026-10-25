@@ -250,8 +250,6 @@ POST /v1/sessions/{alias}/getUpdates
 - **Rolling updates**: only the sidecar holds the auth_key; app replicas connect/disconnect freely
 - **Rate limits**: FAQ buckets (1/s private, 20/min group, 30/s global) + real FLOOD_WAIT parsing with per-peer adaptive backoff
 
-[Engineering plan →](docs/mtproto-gateway-plan.md)
-
 ## Invariants
 
 Design rules the code enforces — with the tests that prove them.
@@ -413,9 +411,6 @@ long-lived sidecar for the client you already have.
 | [Scaling](docs/scaling.md) | Sharding multi-account fleets across instances |
 | [Spec](docs/spec.md) | Bot API gateway specification |
 | [Sidecar Spec](docs/sidecar-spec.md) | MTProto sidecar requirements |
-| [Engineering Plan](docs/mtproto-gateway-plan.md) | MTProto sidecar implementation plan |
-| [Roadmap](docs/roadmap-10-of-10.md) | Path to v1.0 |
-| [Gap Analysis](docs/gap-analysis-report.md) | External review findings |
 | [Compatibility](docs/compatibility.md) | Pyrogram / pyrofork / Telethon support matrix |
 | [Helm chart](deploy/helm/tggw/README.md) | Kubernetes install for the Go build (tggw) |
 | [ADR-0002](docs/adr/0002-go-rewrite.md) | Why and how the Go rewrite happened |

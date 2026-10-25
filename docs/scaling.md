@@ -54,6 +54,5 @@ Redis/etcd leases would let instances negotiate bot ownership
 dynamically and share rate-guard budgets across processes. NOT in
 0.1.x: it changes the single-owner invariant and adds a hard
 dependency for a problem most fleets do not have. The sharding model
-above is the supported path today; see the superseded
-[farm-architecture.md](farm-architecture.md) for the original lease
-design.
+above is the supported path today (the pre-Go lease design lives in
+git history on the superseded farm-architecture.md).
