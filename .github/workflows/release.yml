@@ -220,6 +220,7 @@ jobs:
           test -n "$DIGEST"
           # container references must be lowercase; github.repository is not
           IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           cosign sign --yes "$IMAGE@$DIGEST"
           if [ "$DOCKERHUB_MIRROR" = "true" ]; then
             echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
