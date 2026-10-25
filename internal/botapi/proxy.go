@@ -1,6 +1,9 @@
 package botapi
 
 import (
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/rateguard"
+	"github.com/DovBerKaplan/tg-session-gateway/internal/tracing"
 )
 
 // gwResponse is what a proxy call produced: either gateway-generated
@@ -362,6 +366,9 @@ func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method stri
 // internalGetUpdates serves from the internal queue with Bot API
 // long-poll semantics.
 func (p *Proxy) internalGetUpdates(ctx context.Context, s *BotSession, body map[string]any) *gwResponse {
+	ctx, span := tracing.Tracer("botapi").Start(ctx, "tggw.pull",
+		trace.WithAttributes(attribute.String("tggw.alias", s.Alias)))
+	defer span.End()
 	timeout := min(numberOf(body["timeout"]), 50.0)
 	limit := int(numberOf(body["limit"]))
 	if limit == 0 {

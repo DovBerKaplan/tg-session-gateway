@@ -6,6 +6,8 @@ package botapi
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -181,5 +183,51 @@ func TestParseFormBody(t *testing.T) {
 	}
 	if len(parseFormBody(nil)) != 0 {
 		t.Fatal("nil body must yield empty map")
+	}
+}
+
+func TestPprofGatedAndAuthed(t *testing.T) {
+	fake := newFakeTelegram(nil)
+	// default: OFF — no route at all
+	_, ts := newTestApp(t, fake, t.TempDir())
+	resp, err := http.Get(ts.URL + "/debug/pprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("pprof must be OFF by default, got %d", resp.StatusCode)
+	}
+
+	// ON: mounted on the admin mux behind the admin secret
+	cfg := testCfg(t.TempDir())
+	cfg.Pprof = true
+	app2, err := NewApp(cfg, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	app2.adminRoutes(mux)
+	ts2 := httptest.NewServer(mux)
+	defer ts2.Close()
+	app2.Close()
+
+	r, _ := http.NewRequest("GET", ts2.URL+"/debug/pprof/", nil)
+	resp, err = http.DefaultClient.Do(r) // no auth
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("pprof without admin secret = %d, want 401", resp.StatusCode)
+	}
+	r.Header.Set("Authorization", "Bearer adm-secret")
+	resp, err = http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("pprof with admin secret = %d, want 200", resp.StatusCode)
 	}
 }

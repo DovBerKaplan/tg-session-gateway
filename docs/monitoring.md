@@ -80,3 +80,22 @@ Lease acquire/refuse/refuse-stale counters per alias export as
 `tg_gateway_lease_{acquired,refused,reclaimed}_total` — a growing
 `refused` with no deploys = something else is trying to own the
 session; investigate before it becomes AUTH_KEY_DUPLICATED.
+
+
+## Observability extras (0.1.0)
+
+- **Grafana dashboard**: import `deploy/grafana/tggw-dashboard.json`
+  (datasource: your Prometheus). Panels cover session state, queue
+  depth/age, real vs synthetic 429s, persist failures, overflow,
+  reconnects and loop health.
+- **pprof**: set `GW_PPROF=1` to mount `net/http/pprof` on the ADMIN
+  listener (behind `GW_ADMIN_SECRET`), e.g.
+  `curl -H "Authorization: Bearer $GW_ADMIN_SECRET" \
+    http://localhost:8081/debug/pprof/profile?seconds=30 > cpu.pb`.
+  Default off; never exposed on the API port.
+- **Tracing**: set `GW_OTEL_ENDPOINT` (OTLP/HTTP, e.g.
+  `http://otel-collector:4318`) to export spans for
+  `tggw.call`/`tggw.pull` (Bot API) and `tggw.mtproxy` (MTProto).
+  Unset = no-op tracer with zero overhead. Service name:
+  `tggw-botapi` / `tggw-mtproto`, version attached as the service
+  version attribute.

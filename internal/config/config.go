@@ -153,6 +153,13 @@ type BotAPI struct {
 	Host     string
 	Port     int
 	Upstream string
+	// Pprof (GW_PPROF=1) mounts net/http/pprof on the ADMIN listener
+	// only, behind the admin secret. Default off: profiling endpoints
+	// are an operator tool, not a public surface.
+	Pprof bool
+	// OTELEndpoint (GW_OTEL_ENDPOINT) enables OTLP/HTTP tracing; empty
+	// = no-op tracer (zero overhead).
+	OTELEndpoint string
 	// AdminPort > 0 splits the admin surface (/admin/*, /metrics) onto
 	// a second listener; 0 keeps the classic single-port layout.
 	AdminPort int
@@ -177,6 +184,8 @@ func BotAPIFromEnv() BotAPI {
 	return BotAPI{
 		Host:               envStr("GW_HOST", "0.0.0.0"),
 		Port:               envInt("GW_PORT", 8080),
+		Pprof:              envBool("GW_PPROF", false),
+		OTELEndpoint:       envStr("GW_OTEL_ENDPOINT", ""),
 		AdminPort:          envInt("GW_ADMIN_PORT", 0),
 		Upstream:           envStr("GW_UPSTREAM", "https://api.telegram.org"),
 		AdminSecret:        envStr("GW_ADMIN_SECRET", ""),
@@ -198,6 +207,12 @@ type MTProto struct {
 	Host   string
 	Port   int
 	WSAddr string // informational: GW_WS_PORT kept for compatibility
+	// Pprof (GW_PPROF=1) mounts net/http/pprof on the ADMIN listener
+	// only, behind the admin secret. Default off.
+	Pprof bool
+	// OTELEndpoint (GW_OTEL_ENDPOINT) enables OTLP/HTTP tracing; empty
+	// = no-op tracer (zero overhead).
+	OTELEndpoint string
 	// AdminPort > 0 splits the admin surface (/v1/admin/*, /metrics)
 	// onto a second listener; 0 keeps the classic single-port layout.
 	AdminPort int
@@ -232,6 +247,8 @@ func MTProtoFromEnv() MTProto {
 	cfg := MTProto{
 		Host:            envStr("GW_HOST", "0.0.0.0"),
 		Port:            envInt("GW_PORT", 8080),
+		Pprof:           envBool("GW_PPROF", false),
+		OTELEndpoint:    envStr("GW_OTEL_ENDPOINT", ""),
 		AdminPort:       envInt("GW_ADMIN_PORT", 0),
 		AdminSecret:     envStr("GW_ADMIN_SECRET", ""),
 		AppSecret:       envStr("GW_APP_SECRET", ""),

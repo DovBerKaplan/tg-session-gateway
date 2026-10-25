@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -22,6 +25,7 @@ import (
 	"github.com/DovBerKaplan/tg-session-gateway/internal/config"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/health"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
+	"github.com/DovBerKaplan/tg-session-gateway/internal/tracing"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/version"
 )
 
@@ -162,6 +166,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 // RunServe boots and blocks until SIGTERM/SIGINT.
 func (a *App) RunServe() error {
+	shutdownTracing, err := tracing.Setup(context.Background(), a.Cfg.OTELEndpoint, "botapi")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 	errCh := make(chan error, 1)
 	go func() { errCh <- a.ListenAndServe() }()
 	sig := make(chan os.Signal, 1)
@@ -206,6 +215,7 @@ func (a *App) publicRoutes(mux *http.ServeMux) {
 
 // adminRoutes is the operator surface: /admin/* and /metrics.
 func (a *App) adminRoutes(mux *http.ServeMux) {
+	a.mountPprof(mux)
 	mux.HandleFunc("POST /admin/bots", a.adminRegister)
 	mux.HandleFunc("GET /admin/status", a.adminStatus)
 	mux.HandleFunc("POST /admin/bots/{alias}/pause", a.adminPause)
@@ -323,6 +333,29 @@ func (a *App) writeGwResponse(w http.ResponseWriter, r *gwResponse) {
 	writeJSON(w, r.status, r.jsonBody)
 }
 
+// mountPprof attaches net/http/pprof behind the admin secret, only
+// when GW_PPROF=1. Profiling is an operator tool on the admin
+// listener — never on the public API surface.
+func (a *App) mountPprof(mux *http.ServeMux) {
+	if !a.Cfg.Pprof {
+		return
+	}
+	auth := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !a.adminAuthed(r) {
+				writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+				return
+			}
+			h(w, r)
+		}
+	}
+	mux.HandleFunc("GET /debug/pprof/", auth(pprof.Index))
+	mux.HandleFunc("GET /debug/pprof/cmdline", auth(pprof.Cmdline))
+	mux.HandleFunc("GET /debug/pprof/profile", auth(pprof.Profile))
+	mux.HandleFunc("GET /debug/pprof/symbol", auth(pprof.Symbol))
+	mux.HandleFunc("GET /debug/pprof/trace", auth(pprof.Trace))
+}
+
 func (a *App) adminAuthed(r *http.Request) bool {
 	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AdminSecret)
 }
@@ -350,6 +383,13 @@ func tooLarge(w http.ResponseWriter, limit int64) bool {
 // callRoute parses the request body the way the Python gateway does:
 // JSON dict, urlencoded form (ints/bools coerced), or raw multipart.
 func (a *App) callRoute(w http.ResponseWriter, r *http.Request, s *BotSession, method string) {
+	rctx, span := tracing.Tracer("botapi").Start(r.Context(), "tggw.call",
+		trace.WithAttributes(
+			attribute.String("tggw.method", method),
+			attribute.String("tggw.alias", s.Alias),
+		))
+	defer span.End()
+	r = r.WithContext(rctx)
 	ctype := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ctype, "multipart/") {
 		r.Body = http.MaxBytesReader(w, r.Body, maxMultipartBody)

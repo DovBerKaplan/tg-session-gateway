@@ -16,6 +16,10 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/http/pprof"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"os"
 	"os/signal"
 	"sort"
@@ -33,6 +37,7 @@ import (
 	"github.com/DovBerKaplan/tg-session-gateway/internal/lock"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/rateguard"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
+	"github.com/DovBerKaplan/tg-session-gateway/internal/tracing"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/version"
 )
 
@@ -214,6 +219,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 // RunServe blocks until SIGTERM/SIGINT.
 func (a *App) RunServe() error {
+	shutdownTracing, err := tracing.Setup(context.Background(), a.Cfg.OTELEndpoint, "mtproto")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 	errCh := make(chan error, 1)
 	go func() { errCh <- a.ListenAndServe() }()
 	sig := make(chan os.Signal, 1)
@@ -257,8 +267,32 @@ func (a *App) publicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
 }
 
+// mountPprof attaches net/http/pprof behind the admin secret, only
+// when GW_PPROF=1 — operator tooling on the admin listener, never on
+// the session API surface.
+func (a *App) mountPprof(mux *http.ServeMux) {
+	if !a.Cfg.Pprof {
+		return
+	}
+	auth := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !a.adminAuthed(r) {
+				writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+				return
+			}
+			h(w, r)
+		}
+	}
+	mux.HandleFunc("GET /debug/pprof/", auth(pprof.Index))
+	mux.HandleFunc("GET /debug/pprof/cmdline", auth(pprof.Cmdline))
+	mux.HandleFunc("GET /debug/pprof/profile", auth(pprof.Profile))
+	mux.HandleFunc("GET /debug/pprof/symbol", auth(pprof.Symbol))
+	mux.HandleFunc("GET /debug/pprof/trace", auth(pprof.Trace))
+}
+
 // adminRoutes is the operator surface: /v1/admin/* and /metrics.
 func (a *App) adminRoutes(mux *http.ServeMux) {
+	a.mountPprof(mux)
 	mux.HandleFunc("POST /v1/admin/sessions", a.adminRegister)
 	mux.HandleFunc("GET /v1/admin/status", a.adminStatus)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/pause", a.adminPause)
@@ -385,6 +419,13 @@ func isAllDigits(s string) bool {
 // proxy_method: idempotency, E4 pause, rate guard, adapter allowlist,
 // flood-wait reporting.
 func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, method string) {
+	rctx, span := tracing.Tracer("mtproto").Start(r.Context(), "tggw.mtproxy",
+		trace.WithAttributes(
+			attribute.String("tggw.method", method),
+			attribute.String("tggw.alias", s.Alias),
+		))
+	defer span.End()
+	r = r.WithContext(rctx)
 	if s.LiveClient() == nil {
 		writeJSON(w, 503, map[string]any{
 			"ok": false, "error_code": 503,
