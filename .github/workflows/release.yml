@@ -134,50 +134,48 @@ jobs:
             -d @-
 
   release:
-    name: GitHub Release (binaries + chart)
+    name: "GitHub Release (GoReleaser: binaries, checksums, SBOMs)"
     needs: publish
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {goos: linux, goarch: amd64}
-          - {goos: linux, goarch: arm64}
-          - {goos: darwin, goarch: amd64}
-          - {goos: darwin, goarch: arm64}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser reads the tag history for the changelog
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
-      - name: Build tggw (${{ matrix.goos }}/${{ matrix.goarch }}) + package chart
+      - name: Install build tools (official binaries via curl)
         run: |
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-          go build -trimpath \
-            -ldflags="-s -w -X github.com/DovBerKaplan/tg-session-gateway/internal/version.Version=${{ github.ref_name }}" \
-            -o /out/tggw ./cmd/tggw
-          cd ..
-          sha256sum /out/tggw > /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
-          mv /out/tggw /out/tggw-${{ matrix.goos }}-${{ matrix.goarch }}
-      - name: Create GitHub Release (gh CLI — official tooling)
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
           curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
-          helm package deploy/helm/tggw -d /out
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" --generate-notes \
-            /out/tggw-* /out/*.tgz || true
-      - name: Upload ${{ matrix.goos }}/${{ matrix.goarch }} assets
-        if: ! (matrix.goos == 'linux' && matrix.goarch == 'amd64')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          sudo mv linux-amd64/helm /usr/local/bin/
+          curl -sSfL -o /tmp/cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          chmod +x /tmp/cosign
+      # the chart is packaged OUTSIDE dist/ (goreleaser --clean wipes it)
+      # and rides the release via extra_files (.goreleaser.yaml)
+      - name: Package the Helm chart
+        run: helm package deploy/helm/tggw -d .chart-out
+      - name: Sign the chart (keyless, bundle beside the tgz)
         run: |
-          gh release upload "${{ github.ref_name }}" /out/tggw-* --clobber
+          /tmp/cosign sign-blob --yes \
+            --bundle .chart-out/chart.tgz.bundle \
+            .chart-out/tggw-*.tgz
+      # THE one third-party action in this repo (user-directed), SHA-pinned
+      # (v6 = e435ccd777264be153ace6237001ef4d979d3a7a): builds all six
+      # platform binaries + checksums + SBOMs and creates the GitHub
+      # Release in one auditable step. Everything else here stays on
+      # official binaries via curl.
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: v2.12.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   sign:
     name: Sign (cosign keyless) + publish chart OCI
@@ -186,11 +184,12 @@ jobs:
     timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
-      packages: write
+      contents: write # upload signatures to the release
+      packages: write # push the chart to OCI GHCR
       id-token: write # keyless signing ONLY in this job
     steps:
       - uses: actions/checkout@v4
-      - name: Install cosign + helm (official binaries via curl — no third-party actions in this repo)
+      - name: Install cosign + helm (official binaries via curl)
         run: |
           curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
           chmod +x cosign && sudo mv cosign /usr/local/bin/
@@ -211,13 +210,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download "${{ github.ref_name }}" --pattern "*.sha256" --dir /tmp/rel
-          cat /tmp/rel/*.sha256 | sort > /tmp/checksums.txt
-          gh release upload "${{ github.ref_name }}" /tmp/checksums.txt --clobber
-          cosign sign-blob --yes /tmp/checksums.txt --output-signature /tmp/checksums.txt.sig --output-certificate /tmp/checksums.txt.pem
+          # goreleaser already generated + uploaded checksums.txt
+          gh release download "${{ github.ref_name }}" --pattern "checksums.txt" --dir /tmp/rel
+          cosign sign-blob --yes /tmp/rel/checksums.txt \
+            --output-signature /tmp/checksums.txt.sig \
+            --output-certificate /tmp/checksums.txt.pem
           gh release upload "${{ github.ref_name }}" /tmp/checksums.txt.sig /tmp/checksums.txt.pem --clobber
-      - name: Push Helm chart to OCI
+      - name: Push the signed Helm chart to OCI
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package deploy/helm/tggw -d /tmp/chart
           helm push /tmp/chart/*.tgz oci://ghcr.io/dovberkaplan/charts
+          # keyless verification bundle for the OCI-pushed chart
+          cosign sign-blob --yes --bundle /tmp/chart/chart-oci.bundle /tmp/chart/*.tgz
+          gh release upload "${{ github.ref_name }}" /tmp/chart/chart-oci.bundle --clobber

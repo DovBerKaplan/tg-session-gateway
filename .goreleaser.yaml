@@ -54,3 +54,8 @@ release:
   prerelease: auto
   make_latest: true
   mode: keep-existing
+  # the Helm chart tgz + its cosign bundle are packaged (and signed)
+  # BEFORE goreleaser runs, outside dist/ — release.yml does it
+  extra_files:
+    - glob: .chart-out/*.tgz
+    - glob: .chart-out/*.bundle
