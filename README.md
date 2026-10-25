@@ -27,7 +27,7 @@ FloodWait backoff, and a crash-safe update queue.
   │ bot v1  │ → │ bot v2  │ → │ bot v3  │      └──────▲───────┘
   └────┬────┘   └────┬────┘   └────┬────┘             │ one session,
        └─────────────┴─────────────┴────►  ┌──────────┴─────────┐
-                HTTP (Bot API, verbatim)    │  session gateway   │
+                HTTP (Bot API, verbatim)   │  session gateway   │
                                            │  · owns the poller │
                                            │  · rate guard      │
                                            │  · durable queue   │
@@ -104,14 +104,14 @@ auth_key can be invalidated **permanently**.
 │  ├ session      │           │  └ business logic    │
 │  ├ update loop  │           └─────────┬────────────┘
 │  ├ rate limits  │                     │ HTTP / WS
-│  └ your code    │           ┌─────────▼────────────┐
+│  └ your code    │           ┌─────────▼─────────────┐
 └─────────────────┘           │  Telegram Session     │
                               │  Gateway              │
   deploy = all dies           │  ├ session (persisted)│
                               │  ├ update loop        │
                               │  ├ rate guard         │
                               │  └ durable queue      │
-                              └─────────┬────────────┘
+                              └─────────┬─────────────┘
                                         │
                                    Telegram
                           deploy the bot — Telegram never notices
