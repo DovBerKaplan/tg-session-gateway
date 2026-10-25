@@ -9,9 +9,12 @@ adherence to [Semantic Versioning](https://semver.org/).
 (0.2 planning: Redis leases for shared coordination — see
 docs/scaling.md; higher coverage floors for the gotd-facing internals)
 
-## [0.1.0] — 2026-10-25
+## [0.1.0-rc.1] — 2026-10-25
 
-The Go rewrite ships. Highlights by program stage:
+The Go rewrite ships. **RC**: the MTProto plane has not soaked against
+real Telegram yet (runbook soak checklist is the gate to the final
+0.1.0); Python <= 0.0.5 remains the production-recommended path until
+then. `latest` intentionally does not move for this tag. Highlights by program stage:
 
 ### Onboarding
 - Typed Go consumer SDK `pkg/client` (both planes; auto

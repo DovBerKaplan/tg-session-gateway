@@ -52,12 +52,18 @@ docker run -d --name tggw -p 8080:8080 \
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
 
-Pin the version tag (`0.1.0`). `latest` exists but moves only on stable
+Pin the version tag (`0.1.0-rc.1`). `latest` exists but moves only on stable
 releases — never pre-releases. Identical tags live on GHCR
 (`ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}`).
 
-*(images pending public visibility — until then `git clone` +
-`docker compose up -d` works from source, see Quickstart below)*
+**Status, honestly:** 0.1.0-rc.1 — the Bot API plane is production-
+shaped; the MTProto plane has NOT soaked against real Telegram yet
+(Python <= 0.0.5 remains the production-recommended path until then).
+Images are published but PRIVATE until the repo owner flips package
+visibility; until then build from source (`docker compose up -d`).
+Upgrading from 0.0.5? Read [the migration guide](docs/migration.md)
+first — image names changed, MTProto methods are an allowlist, Redis
+is gone.
 
 No Docker? `go install github.com/DovBerKaplan/tg-session-gateway/cmd/tggw@latest`
 (or `make install`) — one static binary, both planes.

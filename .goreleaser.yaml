@@ -52,7 +52,7 @@ changelog:
 release:
   draft: false
   prerelease: auto
-  make_latest: true
+  make_latest: false # rc — flip to true on the final 0.1.0 tag
   mode: keep-existing
   # the Helm chart tgz + its cosign bundle are packaged (and signed)
   # BEFORE goreleaser runs, outside dist/ — release.yml does it
