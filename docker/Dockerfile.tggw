@@ -2,7 +2,7 @@
 # Stage 1 cross-compiles NATIVELY on the build platform (no QEMU:
 # arm64 builds run at amd64 speed); stage 2 is distroless static
 # (no shell, no package manager, ~15MB) with a non-root user.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./

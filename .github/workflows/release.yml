@@ -35,7 +35,7 @@ jobs:
         with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install httpx pytest
+      - run: pip install httpx pytest aiosqlite
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race -count=1 ./...
@@ -147,12 +147,16 @@ jobs:
           fetch-depth: 0 # goreleaser reads the tag history for the changelog
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
-      - name: Install build tools (official binaries via curl)
+      # every binary PINNED and checksum-verified (supply-chain posture:
+      # no unpinned network installs in the release path)
+      - name: Install build tools (pinned + checksum-verified)
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
-          sudo mv linux-amd64/helm /usr/local/bin/
-          curl -sSfL -o /tmp/cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin v1.55.0
+          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  helm.tgz" | sha256sum -c -
+          tar xz < helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/
+          curl -sSfL -o /tmp/cosign https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
+          echo "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  /tmp/cosign" | sha256sum -c -
           chmod +x /tmp/cosign
       # the chart is packaged OUTSIDE dist/ (goreleaser --clean wipes it)
       # and rides the release via extra_files (.goreleaser.yaml)
@@ -189,12 +193,14 @@ jobs:
       id-token: write # keyless signing ONLY in this job
     steps:
       - uses: actions/checkout@v4
-      - name: Install cosign + helm (official binaries via curl)
+      - name: Install cosign + helm (pinned + checksum-verified)
         run: |
-          curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
+          echo "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  cosign" | sha256sum -c -
           chmod +x cosign && sudo mv cosign /usr/local/bin/
-          curl -sSfL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz | tar xz
-          sudo mv linux-amd64/helm /usr/local/bin/
+          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  helm.tgz" | sha256sum -c -
+          tar xz < helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/
       - name: Sign the image (keyless, by digest)
         env:
           IMAGE: ghcr.io/${{ github.repository }}
