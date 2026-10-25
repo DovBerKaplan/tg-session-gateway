@@ -3,7 +3,7 @@
 Two independent products, one repo. They share nothing at runtime —
 pick the one that matches how your bot talks to Telegram.
 
-## Product 1: Bot API Gateway (`gateway/`)
+## Product 1: Bot API Gateway (`the gateway (Go: `internal/botapi`)`)
 
 For bots built on HTTP Bot API libraries (aiogram, python-telegram-bot,
 Telegraf, grammY, ...).
@@ -63,7 +63,7 @@ compatible), `/bots/{alias}/{method}` (Bearer `GW_APP_SECRET`),
 `/admin/*` (Bearer `GW_ADMIN_SECRET`). Tokens at rest are Fernet-
 encrypted; logs carry alias + last-4 suffix only.
 
-## Product 2: MTProto Sidecar (`mtgateway/`)
+## Product 2: MTProto Sidecar (`mtthe gateway (Go: `internal/botapi`)`)
 
 For bots built on MTProto client libraries (Pyrogram, pyrofork).
 
@@ -127,7 +127,7 @@ incidents.
 
 ## Deployment shape
 
-The gateway/sidecar is deliberately **not** in your app's Compose file.
+The the gateway (Go: `internal/botapi`)sidecar is deliberately **not** in your app's Compose file.
 It has its own lifecycle (`docker compose down` on your app cannot kill
 the Telegram sessions), its own volumes (`/data`: `gateway.db`,
 `queue.db`, session files, lock files) and its own secrets

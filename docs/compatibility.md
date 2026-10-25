@@ -1,57 +1,36 @@
-# Library Compatibility
+# Compatibility
 
-## MTProto Sidecar (`mtgateway/`)
+Current for **0.1.0** (Go). The Python gateway (<= 0.0.5) lives on the
+`legacy-python` branch; its images remain on GHCR for rollback.
 
-| Library | Version Tested | Status | Notes |
-|---|---|---|---|
-| Pyrogram | 2.0.106 | Tested | Primary target; used in CI |
-| pyrofork | 2.3.69 | **Required** — the sidecar's dependency | The sidecar MUST run the same fork+version as consumers: plain `pyrogram` 2.0.106 flattens `<blockquote expandable>` (and any 2.3.x entity) to plain text. Pinned in requirements |
-| Pyrogram | 2.0.106 | Legacy | Works for basic sends; drops blockquote-expandable entities — not recommended |
-| pyrofork | latest | Assumed compatible | Fork of Pyrogram; same Client API. Add to CI when stable version pinned |
-| Telethon | — | Not supported | Different session format, different Client construction. Planned for V2 |
+## Bot API plane
 
-### Pyrogram
-
-The sidecar creates `pyrogram.Client` instances internally. Your application
-never imports Pyrogram — it talks HTTP/WS to the sidecar. Any Pyrogram
-version that the sidecar supports is sufficient (tested with 2.0.106).
-
-### pyrofork
-
-pyrofork is a maintained fork of Pyrogram with the same `Client` API. The
-sidecar should work with pyrofork by changing the import in
-`mtgateway/requirements.txt` from `pyrogram` to `pyrofork`. This is
-**assumed but not tested** — add pyrofork to CI to verify.
-
-### Telethon (V2 goal)
-
-Telethon uses a different session format (SQLite-based with its own schema),
-a different event system (not Pyrogram's handler groups), and a different
-connection model. Supporting Telethon requires:
-- A separate client adapter (TelethonClient instead of PyrogramClient)
-- Session file conversion (Telethon .session ↔ Pyrogram .session)
-- Or: a separate Telethon sidecar instance
-
-This is planned for V2 but is not blocking V1.
-
-## Bot API Gateway (`gateway/`)
-
-| Library | Version Tested | Status | Integration |
-|---|---|---|---|
-| aiogram | 3.x | Tested | `AiohttpSession(api=TelegramAPIServer.from_base(...))` |
-| python-telegram-bot | 20+ | Tested | `.base_url(".../tgapi/bot")` |
-| grammY | latest | Theoretical | `apiRoot` config |
-| Telegraf | latest | Theoretical | `telegram.options.apiRoot` |
-| Raw HTTP | — | Tested | `POST /tgapi/bot<token>/<method>` |
-
-The Bot API gateway is protocol-agnostic — it proxies HTTP to
-`api.telegram.org`. Any library or raw HTTP client that lets you override
-the base URL works.
-
-## Known Issues
-
-| Issue | Affects | Status |
+| Consumer library | Compatible? | Note |
 |---|---|---|
-| tgcrypto C extension fails on Alpine/slim | mtgateway Docker build | Optional dependency; pyrogram falls back to pyaes |
-| Telethon session format incompatible | mtgateway | Not supported in V1 |
-| pyrofork with TgCrypto | mtgateway | Not tested in CI |
+| aiogram (2.x / 3.x) | yes | `TelegramAPIServer.from_base("http://tggw:8080/tgapi")` |
+| python-telegram-bot | yes | `base_url="http://tggw:8080/tgapi/bot"` |
+| grammY / Telegraf | yes | point `client` / `apiRoot` at the gateway |
+| Raw HTTP (any language) | yes | the contract is plain Bot API + Bearer secret; see [api-reference.md](api-reference.md) |
+| Local Bot API server-only features (files on disk) | no | the gateway proxies, it does not re-implement the API server |
+
+Parse modes: `sendMessage` without an explicit `parse_mode` runs
+pyrogram's combined markdown+HTML parser (the sidecar's `pyformat`
+port) — same as the Python sidecar; explicit `html` / `markdown` /
+`disabled` behave like Pyrogram's enums.
+
+urlencoded form bodies forward VERBATIM (a deliberate fix over the
+Python plane, which coerced `"007"` to 7 and `"true"` to boolean).
+
+## MTProto sidecar plane
+
+Pyrogram-shaped serialization (goldens recorded from real pyrofork
+raw TL objects; `json.loads(str(raw))` contract). 20-method allowlist
+with 501 + list for anything else — see
+[sidecar-spec.md](sidecar-spec.md) section 10. Telethon-compatible:
+NOT supported (official statement there).
+
+## Session files
+
+pyrofork/Pyrogram `.session` files convert in place with
+`tggw migrate` (no new Telegram login). gotd session blobs are sealed
+at rest with the volume fernet key since 0.1.0.

@@ -24,6 +24,9 @@ latency: go-build
 
 # coverage ratchet: only test-bearing packages (the local toolchain
 # lacks covdata for the rest; CI's setup-go is complete)
+install:
+	CGO_ENABLED=0 go install -trimpath ./cmd/tggw
+
 coverage:
 	go test -count=1 -coverprofile=/tmp/cover.out $$(go list ./... | grep -vE "/cmd/|/config$$|/version$$|/examples/")
 	python3 scripts/coverage-gate.py /tmp/cover.out

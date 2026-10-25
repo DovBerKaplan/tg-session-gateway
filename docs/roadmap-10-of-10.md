@@ -1,3 +1,5 @@
+> **HISTORICAL (pre-Go-rewrite planning).** The Python-era roadmap; kept for design history. The current plan of record is the 0.1.0 CHANGELOG entry and [performance.md](performance.md).
+
 # Roadmap: tg-session-gateway → 10/10
 
 > Goal: the go-to open-source project for Telegram bot session persistence

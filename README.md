@@ -59,6 +59,9 @@ releases — never pre-releases. Identical tags live on GHCR
 *(images pending public visibility — until then `git clone` +
 `docker compose up -d` works from source, see Quickstart below)*
 
+No Docker? `go install github.com/DovBerKaplan/tg-session-gateway/cmd/tggw@latest`
+(or `make install`) — one static binary, both planes.
+
 **Measured, not claimed:** gateway overhead on the hot paths is
 ~2-3ms (send p50 6.4ms end-to-end including a ~4ms Python test
 client; pull-with-ack 5.5ms; SIGKILL recovery instant). Resting
@@ -403,8 +406,11 @@ long-lived sidecar for the client you already have.
 | Document | Description |
 |---|---|
 | [Architecture](docs/architecture.md) | How both products are built — planes, diagrams, failure model |
+| [API Reference](docs/api-reference.md) | OpenAPI spec for both planes |
 | [Migration Guide](docs/migration.md) | Move an existing aiogram/PTB/Pyrogram bot onto the gateway |
 | [Comparison](docs/comparison.md) | vs direct polling, webhooks, in-process Pyrogram — and when NOT to use this |
+| [Performance](docs/performance.md) | Measured latency/load numbers and how to reproduce them |
+| [Scaling](docs/scaling.md) | Sharding multi-account fleets across instances |
 | [Spec](docs/spec.md) | Bot API gateway specification |
 | [Sidecar Spec](docs/sidecar-spec.md) | MTProto sidecar requirements |
 | [Engineering Plan](docs/mtproto-gateway-plan.md) | MTProto sidecar implementation plan |

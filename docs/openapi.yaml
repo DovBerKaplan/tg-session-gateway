@@ -1,0 +1,206 @@
+openapi: 3.1.0
+info:
+  title: tggw — Telegram Session Gateway
+  version: "0.1.0"
+  description: >
+    Both HTTP planes of the gateway. The Bot API plane speaks the
+    Telegram Bot API envelope ({"ok":true,"result":...}) — only the
+    gateway-specific surface is listed here; every non-gateway-owned
+    Bot API method is proxied verbatim. The MTProto plane is the
+    sidecar facade (20-method allowlist).
+servers:
+  - url: http://tggw:8080
+    description: main listener (both planes)
+  - url: http://tggw:8081
+    description: admin listener (when GW_ADMIN_PORT splits it)
+
+components:
+  securitySchemes:
+    appSecret: {type: http, scheme: bearer, description: GW_APP_SECRET}
+    adminSecret: {type: http, scheme: bearer, description: GW_ADMIN_SECRET}
+  schemas:
+    Envelope:
+      type: object
+      required: [ok]
+      properties:
+        ok: {type: boolean}
+        result: {}
+        error_code: {type: integer}
+        description: {type: string}
+        parameters:
+          type: object
+          properties:
+            retry_after: {type: integer}
+    Update:
+      type: object
+      required: [update_id]
+      properties:
+        update_id: {type: integer}
+      additionalProperties: true   # full Telegram Update shape, verbatim
+
+security:
+  - appSecret: []
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness (process up)
+      security: []
+      responses: {200: {description: alive}}
+  /readyz:
+    get:
+      summary: Readiness (storage writable, poller live)
+      security: []
+      responses:
+        200: {description: ready}
+        503: {description: not ready}
+
+  /admin/bots:
+    post:
+      summary: Register a bot (Bot API plane)
+      security: [{adminSecret: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, alias]
+              properties:
+                token: {type: string}
+                alias: {type: string}
+      responses:
+        200: {description: registered, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+        400: {description: invalid}
+  /admin/status:
+    get:
+      summary: All bots, states, queue stats
+      security: [{adminSecret: []}]
+      responses: {200: {description: status}}
+  /admin/bots/{alias}/{action}:
+    post:
+      summary: Pause / resume / drain / push / paid / typing
+      security: [{adminSecret: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string}}
+        - {name: action, in: path, required: true, schema: {type: string, enum: [pause, resume, drain, push, paid, typing]}}
+      responses: {200: {description: applied (ok:false when idempotent no-op)}, 404: {description: unknown alias}}
+    delete:
+      summary: Delete a bot registration (DELETE /admin/bots/{alias})
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: deleted (ok:false when absent)}}
+  /admin/settings/typing:
+    get:
+      summary: Global typing settings
+      security: [{adminSecret: []}]
+      responses: {200: {description: settings}}
+    post:
+      summary: Patch global typing settings
+      security: [{adminSecret: []}]
+      responses: {200: {description: patched}}
+  /admin/safe_mode/ack:
+    post:
+      summary: Ack crash-loop safe mode and restore
+      security: [{adminSecret: []}]
+      responses: {200: {description: restored}}
+  /admin/audit:
+    get:
+      summary: Audit trail
+      security: [{adminSecret: []}]
+      responses: {200: {description: entries}}
+  /metrics:
+    get:
+      summary: Prometheus metrics (tg_gateway_*)
+      security: []
+      responses: {200: {description: exposition format}}
+  /debug/pprof/:
+    get:
+      summary: pprof index (only when GW_PPROF=1, admin secret required)
+      security: [{adminSecret: []}]
+      responses: {200: {description: pprof index}, 401: {description: no secret}, 404: {description: pprof disabled}}
+
+  /tgapi/bot{token}/{method}:
+    post:
+      summary: >
+        Bot API call, proxied verbatim. Gateway-owned methods are
+        served locally: getUpdates (durable queue + offset ack),
+        setWebhook/deleteWebhook/close/logout (403 Conflict).
+        Writes accept an Idempotency-Key header.
+      security: [{appSecret: []}]
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+        - {name: method, in: path, required: true, schema: {type: string}}
+        - {name: Idempotency-Key, in: header, schema: {type: string}}
+      requestBody:
+        content:
+          application/json: {schema: {type: object}}
+          application/x-www-form-urlencoded: {schema: {type: string}}
+          multipart/form-data: {schema: {type: string}}
+      responses:
+        200: {description: Telegram envelope, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+        403: {description: gateway-owned method or paid not opted in}
+        413: {description: body over the size cap}
+        429: {description: rate guard (parameters.retry_after)}
+        502: {description: upstream unreachable}
+
+  /v1/sessions/{alias}/{method}:
+    post:
+      summary: >
+        MTProto facade call (20-method allowlist: send_message,
+        edit_message_text, edit_message_reply_markup,
+        edit_message_caption, send_chat_action, delete_messages,
+        forward_messages, get_chat, resolve_username,
+        answer_callback_query, send_photo, send_video, send_document,
+        send_audio, send_voice, send_animation, send_media_group,
+        copy_message, get_me). Unknown methods answer 501 with the list.
+      security: [{appSecret: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string}}
+        - {name: method, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content: {application/json: {schema: {type: object}}}
+      responses:
+        200: {description: envelope}
+        401: {description: bad secret}
+        429: {description: rate guard}
+        501: {description: method outside the allowlist}
+        502: {description: upstream error}
+  /v1/sessions/{alias}/getUpdates:
+    post:
+      summary: Pull updates from the durable MTProto queue (offset ack)
+      security: [{appSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: updates batch}}
+  /v1/sessions/{alias}/health:
+    get:
+      summary: Per-session health + rate-guard snapshot
+      security: [{appSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: stats}, 404: {description: unknown alias}}
+  /v1/admin/sessions:
+    post:
+      summary: Register an MTProto session
+      security: [{adminSecret: []}]
+      responses: {200: {description: registered}}
+  /v1/admin/status:
+    get:
+      summary: All sessions, states, queue stats
+      security: [{adminSecret: []}]
+      responses: {200: {description: status}}
+  /v1/admin/sessions/{alias}/{action}:
+    post:
+      summary: Pause / resume / drain / pause_sending / resume_sending / restart / paid / deadletters
+      security: [{adminSecret: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string}}
+        - {name: action, in: path, required: true, schema: {type: string}}
+      responses:
+        200: {description: applied}
+        404: {description: unknown alias (restart/deadletters/paid)}
+        409: {description: session quarantined (restart refused)}
+  /v1/admin/safe-mode/ack:
+    post:
+      summary: Ack crash-loop safe mode and restore
+      security: [{adminSecret: []}]
+      responses: {200: {description: restored}}
