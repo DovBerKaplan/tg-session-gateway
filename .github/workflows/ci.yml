@@ -3,6 +3,9 @@ name: CI
 on:
   push: {branches: [main]}
   pull_request:
+  schedule:
+    # weekly real-Telegram E2E (e2e-botapi) against main — the soak canary
+    - cron: "0 3 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
