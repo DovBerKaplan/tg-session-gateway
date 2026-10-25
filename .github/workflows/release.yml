@@ -49,6 +49,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    outputs:
+      digest: ${{ steps.build.outputs.digest }} # consumed by the sign job
     env:
       DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
@@ -206,12 +208,13 @@ jobs:
       - name: Sign the image (keyless, by digest)
         env:
           IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
           DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          DIGEST=$(docker buildx imagetools inspect "$IMAGE:${{ github.ref_name }}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          test -n "$DIGEST"
           cosign sign --yes "$IMAGE@$DIGEST"
           if [ "$DOCKERHUB_MIRROR" = "true" ]; then
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
             cosign sign --yes "docker.io/dovberkaplan/tggw@$DIGEST"
           fi
       - name: Sign checksums.txt (detached blob signature)
