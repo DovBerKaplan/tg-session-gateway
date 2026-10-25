@@ -1,11 +1,25 @@
 # Telegram Session Gateway — `tggw`
 
+[![CI](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/ci.yml)
+[![Release](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/release.yml/badge.svg)](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/DovBerKaplan/tg-session-gateway)](https://github.com/DovBerKaplan/tg-session-gateway/releases)
+[![Docker pulls](https://img.shields.io/docker/pulls/dovberkaplan/tggw)](https://hub.docker.com/r/dovberkaplan/tggw)
+[![Go version](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > **Your bot container should be disposable. Your Telegram session shouldn't be.**
 
 **1 container · 1 URL change · zero deployment downtime.**
 
 Self-hosted Bot API gateway with session persistence, rate limiting,
 FloodWait backoff, and a crash-safe update queue.
+
+**Which plane do you need?**
+
+| Your bot is... | Run | What you change |
+|---|---|---|
+| A Bot API bot (aiogram, python-telegram-bot, grammY, Telegraf...) | `tggw botapi` | one base URL → `/tgapi/` — the poller, rate guard and durable queue move into the gateway |
+| A Pyrogram-shaped client needing user sessions / big files | `tggw mtproto` | point it at the sidecar facade (send + updates + files over gotd) |
 
 ```
    deploy / crash / scale — anytime            ┌──────────────┐
@@ -38,12 +52,19 @@ docker run -d --name tggw -p 8080:8080 \
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
 
-Pin the version tag (`0.0.4`). `latest` exists but moves only on stable
+Pin the version tag (`0.1.0`). `latest` exists but moves only on stable
 releases — never pre-releases. Identical tags live on GHCR
 (`ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}`).
 
 *(images pending public visibility — until then `git clone` +
 `docker compose up -d` works from source, see Quickstart below)*
+
+**Measured, not claimed:** gateway overhead on the hot paths is
+~2-3ms (send p50 6.4ms end-to-end including a ~4ms Python test
+client; pull-with-ack 5.5ms; SIGKILL recovery instant). Resting
+footprint in kind: ~1m CPU / ~7Mi RAM — one process carries many bots.
+Methodology and reproduction: [docs/performance.md](docs/performance.md).
+Working consumer code (Go SDK, Python, Node) in [examples/](examples/).
 
 | | Direct Bot API | Local Bot API server | MTProxy | **Session Gateway** |
 |---|---|---|---|---|

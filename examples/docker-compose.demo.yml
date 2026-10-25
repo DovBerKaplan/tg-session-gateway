@@ -1,0 +1,73 @@
+# Demo stack: tggw + three consumers + a stdlib fake Telegram —
+# everything runs with ZERO Telegram credentials. The consumers echo
+# every update the fake produces; watch them talk:
+#
+#   docker compose -f examples/docker-compose.demo.yml up --build
+#
+# For real traffic, drop the `fake` service and set
+# GW_UPSTREAM=https://api.telegram.org (then register a real token).
+
+name: tggw-demo
+
+services:
+  fake:
+    image: python:3.12-alpine
+    volumes:
+      - ../tests/conformance_go/fake_telegram_upstream.py:/srv/fake.py:ro
+    command: python /srv/fake.py
+
+  tggw:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.tggw
+    command: ["botapi"]
+    environment:
+      GW_HOST: 0.0.0.0
+      GW_ADMIN_SECRET: demo-admin
+      GW_APP_SECRET: demo-app
+      GW_FERNET_KEY: CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw=
+      GW_UPSTREAM: http://fake:18090
+      GW_DATA_DIR: /data
+      GW_ALLOW_EPHEMERAL_DATA: "1"   # demo only; real runs need a volume
+    volumes:
+      - tggw-demo-data:/data
+
+  register:
+    image: curlimages/curl:8.10.1
+    depends_on: [tggw]
+    restart: "no"
+    entrypoint: >
+      sh -c 'sleep 2 &&
+      curl -sS -X POST http://tggw:8080/admin/bots
+      -H "Authorization: Bearer demo-admin"
+      -H "Content-Type: application/json"
+      -d "{\"token\":\"demo-token\",\"alias\":\"demo\"}"'
+
+  go-consumer:
+    build:
+      context: ..
+      dockerfile: examples/go-consumer/Dockerfile
+    environment: &consumer-env
+      TGGW_BASE: http://tggw:8080
+      TGGW_APP_SECRET: demo-app
+      BOT_TOKEN: demo-token
+    depends_on: [register]
+
+  python-consumer:
+    image: python:3.12-alpine
+    command: sh -c "pip install -q httpx && python /src/consumer.py"
+    volumes:
+      - ./python-consumer/consumer.py:/src/consumer.py:ro
+    environment: *consumer-env
+    depends_on: [register]
+
+  node-consumer:
+    image: node:22-alpine
+    command: node /src/consumer.mjs
+    volumes:
+      - ./node-consumer/consumer.mjs:/src/consumer.mjs:ro
+    environment: *consumer-env
+    depends_on: [register]
+
+volumes:
+  tggw-demo-data:

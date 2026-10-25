@@ -10,8 +10,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BATCH = [
-    {"update_id": 1001, "message": {"text": "first"}},
-    {"update_id": 1002, "message": {"text": "second"}},
+    {"update_id": 1001, "message": {"message_id": 1, "chat": {"id": 555, "type": "private"}, "text": "first"}},
+    {"update_id": 1002, "message": {"message_id": 2, "chat": {"id": 555, "type": "private"}, "text": "second"}},
 ]
 STATE = {"calls": 0, "lock": threading.Lock()}
 

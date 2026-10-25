@@ -12,8 +12,16 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags="-s -w -X github.com/DovBerKaplan/tg-session-gateway/internal/version.Version=$VERSION" \
     -o /out/tggw ./cmd/tggw
 
+# /data must EXIST with nonroot ownership in the image: a fresh named
+# volume is initialized from the image's directory ownership — without
+# this the mount root is root-owned and the non-root process cannot
+# create its SQLite files (SQLITE_CANTOPEN on first run).
+FROM alpine:3.20 AS datadir
+RUN mkdir -p /data && chown 65532:65532 /data
+
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/tggw /tggw
+COPY --from=datadir --chown=65532:65532 /data /data
 USER nonroot:nonroot
 VOLUME /data
 EXPOSE 8080
