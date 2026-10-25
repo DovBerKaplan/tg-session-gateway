@@ -153,9 +153,9 @@ jobs:
       - name: Install build tools (pinned + checksum-verified)
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin v1.55.0
-          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
-          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  helm.tgz" | sha256sum -c -
-          tar xz < helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/
+          curl -sSfL -o /tmp/helm.tgz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tgz" | sha256sum -c -
+          tar xz < /tmp/helm.tgz -C /tmp && sudo mv /tmp/linux-amd64/helm /usr/local/bin/
           curl -sSfL -o /tmp/cosign https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
           echo "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  /tmp/cosign" | sha256sum -c -
           chmod +x /tmp/cosign
@@ -199,9 +199,9 @@ jobs:
           curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
           echo "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  cosign" | sha256sum -c -
           chmod +x cosign && sudo mv cosign /usr/local/bin/
-          curl -sSfL -o helm.tgz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
-          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  helm.tgz" | sha256sum -c -
-          tar xz < helm.tgz && sudo mv linux-amd64/helm /usr/local/bin/
+          curl -sSfL -o /tmp/helm.tgz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tgz" | sha256sum -c -
+          tar xz < /tmp/helm.tgz -C /tmp && sudo mv /tmp/linux-amd64/helm /usr/local/bin/
       - name: Sign the image (keyless, by digest)
         env:
           IMAGE: ghcr.io/${{ github.repository }}
