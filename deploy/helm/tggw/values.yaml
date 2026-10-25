@@ -114,6 +114,23 @@ limitRange:
   default: { cpu: 200m, memory: 128Mi }
 
 # extraPodLabels / nodeSelector / tolerations apply to both planes
+# Shard name: labels every pod with tggw/shard=<name> so a multi-
+# instance fleet (docs/scaling.md) can select, route and schedule per
+# shard. Empty = no shard label.
+shardName: ""
+
+# podAntiAffinity rules appended verbatim to both StatefulSets. For a
+# multi-shard fleet prefer:
+#   podAntiAffinity:
+#     requiredDuringSchedulingIgnoredDuringExecution:
+#       - labelSelector:
+#           matchExpressions:
+#             - key: app.kubernetes.io/name
+#               operator: In
+#               values: [tggw]
+#         topologyKey: kubernetes.io/hostname
+podAntiAffinity: {}
+
 extraPodLabels: {}
 nodeSelector: {}
 tolerations: []

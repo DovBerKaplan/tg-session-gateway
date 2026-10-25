@@ -23,6 +23,9 @@ spec:
         {{- with .Values.extraPodLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- if .Values.shardName }}
+        tggw/shard: {{ .Values.shardName | quote }}
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
@@ -32,6 +35,11 @@ spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

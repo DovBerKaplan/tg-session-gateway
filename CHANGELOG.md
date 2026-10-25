@@ -6,6 +6,55 @@ adherence to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+(0.2 planning: Redis leases for shared coordination — see
+docs/scaling.md; higher coverage floors for the gotd-facing internals)
+
+## [0.1.0] — 2026-10-25
+
+The Go rewrite ships. Highlights by program stage:
+
+### Onboarding
+- Typed Go consumer SDK `pkg/client` (both planes; auto
+  Idempotency-Key, offset-tracking pulls, typed 429/403/501 errors).
+- `examples/`: working Go / Python / Node consumers + a zero-credential
+  demo compose (tggw + fake Telegram + all three consumers).
+- README: badges, decision table, measured-performance block;
+  docs/performance.md with the black-box latency/load numbers.
+- `go install .../cmd/tggw@latest` + `make install`.
+
+### Security
+- gotd session blobs (auth_key material) SEALED at rest with the
+  volume fernet key (tggw1: envelope); legacy plaintext re-seals on
+  write; `tggw migrate` re-seals in place. DB files chmod 0600.
+- Fixed: SetPush panicked the healthcheck goroutine on a
+  GW_PUSH_HEALTH_INTERVAL<=0 misconfiguration.
+
+### Reliability
+- Fixed two data races under concurrent load (store.Queue.Ack
+  unsynchronized offset read; mtproto startClient unsynchronized
+  session-lock read).
+- Coverage ratchet: per-package floors (botapi 72%, mtproto 62%) with
+  a CI gate + HTML report; floors move up only.
+- Extended chaos: upstream hang (bounded fail + recovery), 3x
+  SIGKILL/restart churn.
+- Real-Telegram E2E CI job (e2e-botapi) when secrets are present;
+  skips loudly otherwise.
+
+### Observability
+- pprof on the admin listener (GW_PPROF=1, admin-secret gated).
+- Importable Grafana dashboard (deploy/grafana/).
+- OTLP/HTTP tracing (GW_OTEL_ENDPOINT) with spans on the hot paths;
+  unset = no-op.
+
+### API & docs
+- OpenAPI spec for both planes (docs/openapi.yaml) + api-reference.
+- scaling.md: the supported multi-instance model (sharding);
+  farm-architecture.md superseded.
+- Cross-platform builds verified 6/6 (darwin/windows were broken:
+  mount detection, flock, SIGTERM-to-PID-1) — GoReleaser snapshot
+  green; Docker Hub description sync + mirror signing in the release
+  flow; keyless cosign verify documented in the README.
+
 ### Breaking changes (Python → Go, 0.1.0)
 - **MTProto method surface is an explicit allowlist** — unknown
   methods answer 501 with the supported list (the Python sidecar
