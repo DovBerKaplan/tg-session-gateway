@@ -122,6 +122,17 @@ permanently dead consumer, `drain` + fix the app, or lower
 
 ## Soak gate (before flipping 1.0 defaults) — the cutover checklist
 
+**Status (2026-10-25): steps 0 and 1 PASSED IN PRODUCTION** — the
+botapi plane runs v0.1.0-rc.1 against real traffic (offset continuity
+860291301→860291344 across the restart, depth 0, zero errors/429s);
+the MTProto plane stays on Python 0.0.5 until steps 2-5 pass for it.
+Two production notes: volumes created by the PYTHON image belong to
+UID 10001 with 0600 files — run the Go container as `user:
+"10001:10001"` or chown to 65532 BEFORE first boot (the distroless
+default is nonroot 65532 and it crashes on unreadable files); and a
+partial cutover (Go botapi + Python sidecar on SEPARATE data dirs)
+is valid — flock only guards same-volume double-ownership.
+
 The Go build is functionally complete and kind-verified; this list is
 what production must confirm BEFORE the README/image defaults stop
 calling it a soak:

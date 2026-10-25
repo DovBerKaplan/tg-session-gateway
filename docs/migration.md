@@ -185,3 +185,19 @@ deployment (a private bot + a group-moderation bot):
 Rules of thumb: COPY the volume first, run the Go binary side-by-side
 against a test account, compare, then cutover. The Python images
 (<= 0.0.5) and the `legacy-python` branch remain the rollback path.
+
+### Volume ownership: the one mandatory step
+
+Files on a Python-era volume belong to **UID 10001** (the Python
+image's user) with `0600` permissions. The Go distroless image runs
+as **65532** and will crash on first boot with permission errors
+(nothing is written before that — the data itself is safe). Either:
+
+```yaml
+# docker-compose.override.yml
+services:
+  botapi:
+    user: "10001:10001"   # adopt the existing volume ownership
+```
+
+or `chown -R 65532:65532 /path/to/data` once, before first boot.
