@@ -59,7 +59,7 @@ jobs:
       - name: HTML report artifact
         if: always()
         run: go tool cover -html=/tmp/cover.out -o coverage.html
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-html
