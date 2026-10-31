@@ -6,6 +6,17 @@ adherence to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-10-31
+
+Promoted from v0.1.0-rc.1 with **zero code changes** — the promotion
+rides on production evidence: the Bot API plane has served real
+traffic as v0.1.0-rc.1 since 2026-10-25 with queue offset continuity
+across the process swap (860291301 -> 860291344), zero delivery
+errors and zero 429s. The MTProto plane's status is unchanged: kind-,
+CI- and E2E-verified but not yet production-soaked; conservative
+operators keep that plane on 0.0.5 until its own cutover
+(docs/migration.md carries the risk table).
+
 (0.2 planning: Redis leases for shared coordination — see
 docs/scaling.md; higher coverage floors for the gotd-facing internals)
 
