@@ -60,11 +60,11 @@ releases — never pre-releases. Identical tags live on GHCR
 (it has served real traffic since 2026-10-25 with perfect queue-offset
 continuity across restarts). The MTProto plane is kind-, CI- and
 E2E-verified but not yet production-soaked; for that plane the
-conservative choice stays 0.0.5 until its cutover. Images are
-published but PRIVATE until the repo owner flips package visibility;
-until then build from source (`docker compose up -d`). Upgrading from
-0.0.5? Read [the migration guide](docs/migration.md) first — image
-names changed, MTProto methods are an allowlist, Redis is gone.
+conservative choice stays 0.0.5 until its cutover. Images are PUBLIC
+on GHCR (multi-arch, keyless-signed); binaries are on the GitHub
+Release. Upgrading from 0.0.5? Read [the migration
+guide](docs/migration.md) first — image names changed, MTProto methods
+are an allowlist, Redis is gone.
 
 No Docker? `go install github.com/DovBerKaplan/tg-session-gateway/cmd/tggw@latest`
 (or `make install`) — one static binary, both planes.
