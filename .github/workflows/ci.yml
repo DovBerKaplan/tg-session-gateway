@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       # the store's cross-compat tests shell out to python with aiosqlite
       - uses: actions/setup-python@v5
@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
         with:
@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
@@ -76,7 +76,7 @@ jobs:
       TG_TEST_CHAT_ID: ${{ secrets.TG_TEST_CHAT_ID }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - run: tests/conformance_go/e2e_botapi.sh
 
@@ -86,7 +86,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
@@ -103,7 +103,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: ~/go/bin/govulncheck ./...
@@ -124,7 +124,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - name: Install helm + kind + kubectl
         run: |
