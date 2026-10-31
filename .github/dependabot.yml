@@ -1,14 +1,17 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # Go modules — the product itself
+  - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "pip"
-    directory: "/mtgateway"
+  # docker/Dockerfile.tggw builder pin
+  - package-ecosystem: "docker"
+    directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "docker"
+  # action tags (SHA pins stay manual policy; dependabot flags staleness)
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
