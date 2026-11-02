@@ -60,7 +60,7 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Set up buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # ONE build for both registries: metadata-action tags every
       # listed image identically (the old workflow built twice).
