@@ -83,7 +83,7 @@ jobs:
         id: meta-mirror
         uses: docker/metadata-action@v5
         with:
-          images: dovberkaplan/tggw
+          images: dovidov/tggw
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -130,7 +130,7 @@ jobs:
             -d "{\"username\":\"${{ secrets.DOCKERHUB_USERNAME }}\",\"password\":\"${{ secrets.DOCKERHUB_TOKEN }}\"}" \
             | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
           jq -Rs '{full_description: .}' README.md | curl -sS -X PATCH \
-            "https://hub.docker.com/v2/repositories/dovberkaplan/tggw/" \
+            "https://hub.docker.com/v2/repositories/dovidov/tggw/" \
             -H "Authorization: JWT ${JWT}" \
             -H 'Content-Type: application/json' \
             -d @-
@@ -224,7 +224,7 @@ jobs:
           cosign sign --yes "$IMAGE@$DIGEST"
           if [ "$DOCKERHUB_MIRROR" = "true" ]; then
             echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-            cosign sign --yes "docker.io/dovberkaplan/tggw@$DIGEST"
+            cosign sign --yes "docker.io/dovidov/tggw@$DIGEST"
           fi
       - name: Sign checksums.txt (detached blob signature)
         env:

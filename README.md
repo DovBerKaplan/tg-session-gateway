@@ -3,7 +3,7 @@
 [![CI](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/ci.yml)
 [![Release](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/release.yml/badge.svg)](https://github.com/DovBerKaplan/tg-session-gateway/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/DovBerKaplan/tg-session-gateway)](https://github.com/DovBerKaplan/tg-session-gateway/releases)
-[![Docker pulls](https://img.shields.io/docker/pulls/dovberkaplan/tggw)](https://hub.docker.com/r/dovberkaplan/tggw)
+[![Docker pulls](https://img.shields.io/docker/pulls/dovidov/tggw)](https://hub.docker.com/r/dovidov/tggw)
 [![Go version](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -370,7 +370,7 @@ identical tags. Pin the version — `latest` moves only on stable
 releases, never pre-releases:
 
 ```bash
-docker pull ghcr.io/dovberkaplan/tg-session-gateway:0.1.0   # = dovberkaplan/tggw:0.1.0
+docker pull ghcr.io/dovberkaplan/tg-session-gateway:0.1.0   # = dovidov/tggw:0.1.0
 docker run --rm ghcr.io/dovberkaplan/tg-session-gateway:0.1.0 mtproto \
   -e GW_API_ID -e GW_API_HASH ...   # same image, MTProto plane
 ```

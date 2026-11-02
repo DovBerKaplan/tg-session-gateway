@@ -7,7 +7,7 @@ updates:
       interval: "weekly"
   # docker/Dockerfile.tggw builder pin
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/docker"
     schedule:
       interval: "weekly"
   # action tags (SHA pins stay manual policy; dependabot flags staleness)
