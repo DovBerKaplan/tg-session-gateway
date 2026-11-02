@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 # volume is initialized from the image's directory ownership — without
 # this the mount root is root-owned and the non-root process cannot
 # create its SQLite files (SQLITE_CANTOPEN on first run).
-FROM alpine:3.20 AS datadir
+FROM alpine:3.24 AS datadir
 RUN mkdir -p /data && chown 65532:65532 /data
 
 FROM gcr.io/distroless/static-debian12:nonroot
