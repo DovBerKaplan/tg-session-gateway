@@ -66,7 +66,7 @@ jobs:
       # listed image identically (the old workflow built twice).
       - name: Extract metadata (GHCR)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}
           # v1.2.3 → 1.2.3, 1.2, 1 — matching the chart's appVersion
@@ -81,7 +81,7 @@ jobs:
       - name: Extract metadata (Docker Hub mirror)
         if: env.DOCKERHUB_MIRROR == 'true'
         id: meta-mirror
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: dovidov/tggw
           tags: |
