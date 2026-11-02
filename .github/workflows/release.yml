@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
@@ -54,7 +54,7 @@ jobs:
     env:
       DOCKERHUB_MIRROR: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
@@ -145,7 +145,7 @@ jobs:
       contents: write
       id-token: write # cosign keyless signing of the chart blob
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # goreleaser reads the tag history for the changelog
       - uses: actions/setup-go@v5
@@ -203,7 +203,7 @@ jobs:
       packages: write # push the chart to OCI GHCR
       id-token: write # keyless signing ONLY in this job
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install cosign + helm (pinned + checksum-verified)
         run: |
           curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
