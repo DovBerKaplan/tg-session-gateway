@@ -169,10 +169,12 @@ AUTH_KEY_DUPLICATED.
 
 This repo ships **`tggw`** — a single static Go binary covering both
 planes (`tggw botapi` / `tggw mtproto`) — with embedded SQLite on a
-PVC, no Redis, and a native Kubernetes chart. Status: implemented,
-conformance-tested and kind-verified; **soak against real Telegram
-traffic is the remaining gate before the 1.0 defaults flip** (see the
-runbook checklist). The previous Python implementation lives on the
+PVC, no Redis, and a native Kubernetes chart. Status: both planes
+are implemented, conformance-tested and kind-verified; the Bot API
+plane has served production traffic since 2026-10-25 (see "Status,
+honestly" above). Soaking the MTProto plane is the remaining gate
+before the 1.0 defaults flip (see the runbook checklist). The
+previous Python implementation lives on the
 [`legacy-python`](../../tree/legacy-python) branch; its images (≤0.0.5)
 remain on GHCR for rollback.
 
