@@ -52,11 +52,11 @@ docker run -d --name tggw -p 8080:8080 \
 #   TelegramAPIServer.from_base("http://tggw:8080/tgapi")
 ```
 
-Pin the version tag (`0.1.0`). `latest` exists but moves only on stable
+Pin the version tag (`0.1.1`). `latest` exists but moves only on stable
 releases — never pre-releases. Identical tags live on GHCR
 (`ghcr.io/dovberkaplan/tg-session-gateway{,-mtproto}`).
 
-**Status, honestly:** v0.1.0 — the Bot API plane is production-proven
+**Status, honestly:** v0.1.1 — the Bot API plane is production-proven
 (it has served real traffic since 2026-10-25 with perfect queue-offset
 continuity across restarts). The MTProto plane is kind-, CI- and
 E2E-verified but not yet production-soaked; for that plane the
@@ -372,8 +372,8 @@ identical tags. Pin the version — `latest` moves only on stable
 releases, never pre-releases:
 
 ```bash
-docker pull ghcr.io/dovberkaplan/tg-session-gateway:0.1.0   # = dovidov/tggw:0.1.0
-docker run --rm ghcr.io/dovberkaplan/tg-session-gateway:0.1.0 mtproto \
+docker pull ghcr.io/dovberkaplan/tg-session-gateway:0.1.1   # = dovidov/tggw:0.1.1
+docker run --rm ghcr.io/dovberkaplan/tg-session-gateway:0.1.1 mtproto \
   -e GW_API_ID -e GW_API_HASH ...   # same image, MTProto plane
 ```
 
@@ -386,7 +386,7 @@ and the release `checksums.txt` are signed keylessly on every `v*`
 tag; the certificate binds to this repository's CI identity:
 
 ```bash
-cosign verify ghcr.io/dovberkaplan/tg-session-gateway:0.1.0 \
+cosign verify ghcr.io/dovberkaplan/tg-session-gateway:0.1.1 \
   --certificate-identity-regexp '^https://github.com/DovBerKaplan/tg-session-gateway/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

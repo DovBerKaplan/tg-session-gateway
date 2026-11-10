@@ -6,6 +6,26 @@ adherence to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-11-10
+
+Security patch. Zero behavior changes — the gateway code is identical
+to v0.1.0 apart from dependency updates; both fixes below were
+confirmed *reachable* in this gateway by govulncheck (both are DoS
+class, not RCE):
+
+- **Fixed** [GO-2026-6888](https://pkg.go.dev/vuln/GO-2026-6888) /
+  CVE-2026-111497: `andybalholm/brotli` v1.2.1 → v1.2.7 (unbounded
+  decompressor memory allocation).
+- **Fixed** [GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865) /
+  CVE-2026-116591: `klauspost/compress` v1.19.1 → v1.20.2 (fse/huff0
+  panic on malformed two-block frames).
+- Dependencies: `modernc.org/sqlite` 1.34.5 → 1.62.0,
+  `golang.org/x/sys` → 0.50.0.
+- CI: the kind acceptance no longer races `kubectl wait` against
+  pod-object creation; botapi coverage raised off its ratchet floor
+  (72.0% → 77.9%) so the Coverage gate can no longer flake at the
+  boundary.
+
 ## [0.1.0] — 2026-10-31
 
 Promoted from v0.1.0-rc.1 with **zero code changes** — the promotion
