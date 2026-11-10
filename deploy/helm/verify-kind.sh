@@ -87,6 +87,12 @@ helm install tggw "$REPO/deploy/helm/tggw" --namespace "$NS" --create-namespace 
   --set botapi.env.GW_UPSTREAM="http://${FAKE_SVC}:18090" \
   --set botapi.env.GW_POLL_TIMEOUT=0 \
   --set botapi.env.GW_POLL_BACKOFF_MAX=0.1
+# a fresh install hasn't created the pod object yet — plain `kubectl wait`
+# fails instantly with NotFound instead of using its timeout
+for _ in $(seq 1 60); do
+  "${KCTX[@]}" -n "$NS" get pod tggw-botapi-0 >/dev/null 2>&1 && break
+  sleep 1
+done
 "${KCTX[@]}" -n "$NS" wait --for=condition=ready --timeout=300s pod/tggw-botapi-0
 
 PVC_MODE=$("${KCTX[@]}" -n "$NS" get pvc data-tggw-botapi-0 -o jsonpath='{.spec.accessModes[0]}')
