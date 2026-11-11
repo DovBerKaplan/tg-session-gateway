@@ -16,7 +16,8 @@ servers:
 
 components:
   securitySchemes:
-    appSecret: {type: http, scheme: bearer, description: GW_APP_SECRET}
+    appSecret: {type: http, scheme: bearer, description: GW_APP_SECRET (legacy full access; refuse with GW_LEGACY_APP_SECRET=off)}
+    clientToken: {type: http, scheme: bearer, description: per-client tggc_ token (method allowlist + session scope)}
     adminSecret: {type: http, scheme: bearer, description: GW_ADMIN_SECRET}
   schemas:
     Envelope:
@@ -199,6 +200,32 @@ paths:
         200: {description: applied}
         404: {description: unknown alias (restart/deadletters/paid)}
         409: {description: session quarantined (restart refused)}
+  /v1/admin/clients:
+    post:
+      summary: >
+        Issue a client token: {name, allowlist, sessions, lane?}.
+        Allowlist entries are method names or the groups "full" /
+        "readonly"; sessions is the explicit scope of session aliases.
+        The token (tggc_…) is returned ONCE — only its SHA-256 is kept.
+      security: [{adminSecret: []}]
+      responses:
+        200: {description: issued (id + token)}
+        400: {description: missing name/sessions, unknown allowlist entry, bad lane}
+    get:
+      summary: List clients (no hashes, no tokens)
+      security: [{adminSecret: []}]
+      responses: {200: {description: clients}}
+  /v1/admin/clients/{id}:
+    post:
+      summary: Update a client's allowlist / sessions / lane (token never rotates)
+      security: [{adminSecret: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: updated}}
+    delete:
+      summary: Revoke a client — its bearer stops working immediately
+      security: [{adminSecret: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: revoked}}
   /v1/admin/safe-mode/ack:
     post:
       summary: Ack crash-loop safe mode and restore

@@ -219,7 +219,8 @@ func itestConfigWithKey(dir, key string) config.MTProto {
 			UpdateQueueMax: 5000, UpdateTTLS: 3600,
 		},
 		Storage:        config.StorageConfig{Durability: "normal", MaintenanceInterval: 0},
-		MetricsEnabled: true,
+		LegacyAppSecret: true,
+		MetricsEnabled:  true,
 	}
 }
 

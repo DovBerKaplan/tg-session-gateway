@@ -51,6 +51,9 @@ type App struct {
 	Beat   *health.Beat
 	Boot   *health.BootTracker
 
+	// Clients resolves per-consumer bearer tokens (allowlist + scope).
+	Clients *ClientIndex
+
 	SafeMode atomic.Bool
 
 	maintStop chan struct{}
@@ -82,8 +85,12 @@ func newApp(cfg config.MTProto, skipRestore bool) (*App, error) {
 		Mgr:       NewManager(cfg, st, h),
 		Health:    h,
 		Boot:      &health.BootTracker{Path: cfg.DataDir + "/boot_history.json"},
+		Clients:   NewClientIndex(st),
 		maintStop: make(chan struct{}),
 		houseStop: make(chan struct{}),
+	}
+	if err := app.Clients.Reload(); err != nil {
+		slog.Error("client index load failed — client tokens will not authenticate until reloaded", "err", err)
 	}
 	app.Beat = health.NewBeat()
 	app.buildLifecycle(skipRestore)
@@ -306,17 +313,35 @@ func (a *App) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/pause_sending", a.adminPauseSending)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/resume_sending", a.adminResumeSending)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/paid", a.adminSetPaid)
+	mux.HandleFunc("POST /v1/admin/clients", a.adminRegisterClient)
+	mux.HandleFunc("GET /v1/admin/clients", a.adminListClients)
+	mux.HandleFunc("POST /v1/admin/clients/{id}", a.adminUpdateClient)
+	mux.HandleFunc("DELETE /v1/admin/clients/{id}", a.adminRevokeClient)
 	mux.HandleFunc("GET /v1/admin/audit", a.adminAudit)
 
 	mux.HandleFunc("GET /metrics", a.handleMetrics)
 }
 
-func (a *App) appAuthed(r *http.Request) bool {
-	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AppSecret)
-}
-
 func (a *App) adminAuthed(r *http.Request) bool {
 	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AdminSecret)
+}
+
+// resolveCaller maps the request bearer to a Caller: a per-client token
+// (allowlist + session scope), or the legacy GW_APP_SECRET while
+// GW_LEGACY_APP_SECRET is on. Nil means 401.
+func (a *App) resolveCaller(r *http.Request) *Caller {
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return nil
+	}
+	got := strings.TrimPrefix(header, "Bearer ")
+	if got == "" {
+		return nil
+	}
+	if a.Cfg.LegacyAppSecret && bearerOK(header, a.Cfg.AppSecret) {
+		return legacyCaller("")
+	}
+	return a.Clients.Resolve(got)
 }
 
 // ── method proxy ───────────────────────────────────────────────────
@@ -325,8 +350,14 @@ func (a *App) adminAuthed(r *http.Request) bool {
 func (a *App) handleProxyMethod(w http.ResponseWriter, r *http.Request) {
 	alias := r.PathValue("alias")
 	method := r.PathValue("method")
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	if !caller.SessionAllowed(alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope: " + alias})
 		return
 	}
 	s := a.Mgr.Get(alias)
@@ -334,13 +365,14 @@ func (a *App) handleProxyMethod(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404, "description": "unknown session: " + alias})
 		return
 	}
-	a.dispatchProxy(w, r, s, method)
+	a.dispatchProxy(w, r, s, method, caller)
 }
 
 // handleProxyByToken is POST /v1/token/bot<token>/<method> — the same
 // contract for consumers that only hold the bot token.
 func (a *App) handleProxyByToken(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
@@ -354,7 +386,12 @@ func (a *App) handleProxyByToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404, "description": "unknown bot token"})
 		return
 	}
-	a.dispatchProxy(w, r, s, method)
+	if !caller.SessionAllowed(s.Alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope: " + s.Alias})
+		return
+	}
+	a.dispatchProxy(w, r, s, method, caller)
 }
 
 // splitBotTokenPath parses "<prefix>/bot<token>/<rest>" paths.
@@ -416,9 +453,9 @@ func isAllDigits(s string) bool {
 }
 
 // dispatchProxy is the shared alias/token proxy body — the port of
-// proxy_method: idempotency, E4 pause, rate guard, adapter allowlist,
-// flood-wait reporting.
-func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, method string) {
+// proxy_method: caller allowlist, idempotency, E4 pause, rate guard,
+// adapter allowlist, flood-wait reporting.
+func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, method string, caller *Caller) {
 	rctx, span := tracing.Tracer("mtproto").Start(r.Context(), "tggw.mtproxy",
 		trace.WithAttributes(
 			attribute.String("tggw.method", method),
@@ -426,6 +463,13 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 		))
 	defer span.End()
 	r = r.WithContext(rctx)
+	if !caller.MethodAllowed(method) {
+		writeJSON(w, 403, map[string]any{
+			"ok": false, "error_code": 403,
+			"description": "method not in this client's allowlist: " + method,
+		})
+		return
+	}
 	if s.LiveClient() == nil {
 		writeJSON(w, 503, map[string]any{
 			"ok": false, "error_code": 503,
@@ -618,13 +662,19 @@ func (s *Session) noteLastFloodWait(info *rateguard.FloodInfo, chatRef *int64) {
 // is acked (delivery does NOT ack). No-offset mode keeps the legacy
 // delivery=ack behavior.
 func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
 	s := a.Mgr.Get(r.PathValue("alias"))
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	if !caller.SessionAllowed(s.Alias) || !caller.AllowsUpdates() {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "update stream not in this client's allowlist/scope"})
 		return
 	}
 
@@ -763,7 +813,8 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusCode(4404), "unknown session")
 		return
 	}
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil || !caller.SessionAllowed(alias) || !caller.AllowsUpdates() {
 		_ = c.Write(r.Context(), websocket.MessageText,
 			mustJSON(map[string]any{"ok": false, "error": "unauthorized"}))
 		_ = c.Close(websocket.StatusCode(4401), "unauthorized")
@@ -834,13 +885,19 @@ func trySend(ch chan []byte, data []byte) error {
 // ── session health ─────────────────────────────────────────────────
 
 func (a *App) handleSessionHealth(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
 	s := a.Mgr.Get(r.PathValue("alias"))
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	if !caller.SessionAllowed(s.Alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope"})
 		return
 	}
 	out := map[string]any{"ok": true}
@@ -854,13 +911,19 @@ func (a *App) handleSessionHealth(w http.ResponseWriter, r *http.Request) {
 // ── media file proxy ───────────────────────────────────────────────
 
 func (a *App) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
 	s := a.Mgr.Get(r.PathValue("alias"))
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	if !caller.SessionAllowed(s.Alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope"})
 		return
 	}
 	client := s.LiveClient()
@@ -1067,6 +1130,147 @@ func (a *App) adminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "entries": a.Store.GetAudit(100)})
+}
+
+// ── client tokens (per-consumer allowlists) ────────────────────────
+
+// adminRegisterClient issues a client token. The token appears exactly
+// once, in this response; only its SHA-256 is stored.
+func (a *App) adminRegisterClient(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	var body struct {
+		Name      string   `json:"name"`
+		Allowlist []string `json:"allowlist"`
+		Sessions  []string `json:"sessions"`
+		Lane      string   `json:"lane"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "name required"})
+		return
+	}
+	if len(body.Sessions) == 0 {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "sessions required: the explicit list of session aliases this client may use"})
+		return
+	}
+	if _, err := ExpandAllowlist(body.Allowlist); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	if body.Lane != "" && body.Lane != "interactive" && body.Lane != "normal" && body.Lane != "bulk" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "lane must be interactive, normal or bulk"})
+		return
+	}
+	id, err := newClientID()
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	token, err := newClientToken()
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if err := a.Store.RegisterClient(id, body.Name, hashToken(token), body.Allowlist, body.Sessions, body.Lane); err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	_ = a.Clients.Reload()
+	a.Store.Audit("client_register", body.Name,
+		fmt.Sprintf("id=%s allowlist=[%s] sessions=[%s]", id, strings.Join(body.Allowlist, ","), strings.Join(body.Sessions, ",")))
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "id": id, "name": body.Name,
+		"allowlist": body.Allowlist, "sessions": body.Sessions, "lane": body.Lane,
+		"token": token,
+		"description": "store this token now — it is shown once and only its hash is kept",
+	})
+}
+
+func (a *App) adminListClients(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	rows, err := a.Store.ListClients()
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "clients": rows})
+}
+
+// adminUpdateClient rewrites allowlist/sessions/lane; omitted fields
+// keep their stored value. The token itself never rotates here — issue
+// a new client and revoke this one instead.
+func (a *App) adminUpdateClient(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		Allowlist *[]string `json:"allowlist"`
+		Sessions  *[]string `json:"sessions"`
+		Lane      *string   `json:"lane"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "invalid JSON body"})
+		return
+	}
+	var allowlist, sessions []string
+	if body.Allowlist != nil {
+		if _, err := ExpandAllowlist(*body.Allowlist); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+			return
+		}
+		allowlist = *body.Allowlist
+	}
+	if body.Sessions != nil {
+		if len(*body.Sessions) == 0 {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+				"description": "sessions cannot be empty — revoke the client instead"})
+			return
+		}
+		sessions = *body.Sessions
+	}
+	if body.Lane != nil && *body.Lane != "" && *body.Lane != "interactive" && *body.Lane != "normal" && *body.Lane != "bulk" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "lane must be interactive, normal or bulk"})
+		return
+	}
+	ok, err := a.Store.UpdateClient(id, allowlist, sessions, body.Lane)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if ok {
+		_ = a.Clients.Reload()
+		a.Store.Audit("client_update", id, "")
+	}
+	writeJSON(w, 200, map[string]any{"ok": ok})
+}
+
+func (a *App) adminRevokeClient(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	id := r.PathValue("id")
+	ok, err := a.Store.RevokeClient(id)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if ok {
+		_ = a.Clients.Reload()
+		a.Store.Audit("client_revoke", id, "")
+	}
+	writeJSON(w, 200, map[string]any{"ok": ok})
 }
 
 // ── health & metrics ───────────────────────────────────────────────

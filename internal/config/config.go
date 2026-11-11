@@ -234,6 +234,11 @@ type MTProto struct {
 	MaxSessions     int
 	ConsumerTimeout float64
 
+	// LegacyAppSecret keeps the shared GW_APP_SECRET bearer working as a
+	// full-access caller while clients migrate to per-client tokens
+	// (GW_LEGACY_APP_SECRET=off to refuse it).
+	LegacyAppSecret bool
+
 	MetricsEnabled bool
 
 	Rate    RateConfig
@@ -259,6 +264,7 @@ func MTProtoFromEnv() MTProto {
 		LockBackend:     envStr("GW_LOCK_BACKEND", "file"),
 		MaxSessions:     envInt("GW_MAX_SESSIONS", 50),
 		ConsumerTimeout: envFloat("GW_CONSUMER_TIMEOUT", 120.0),
+		LegacyAppSecret: envBool("GW_LEGACY_APP_SECRET", true),
 		MetricsEnabled:  envBool("GW_METRICS", true),
 		Rate:            DefaultRate(),
 		MTRate:          DefaultMTProtoRate(),

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/health"
@@ -56,6 +57,33 @@ CREATE TABLE IF NOT EXISTS dead_letters (
     reason  TEXT NOT NULL,
     at      REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS clients (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    token_hash    BLOB NOT NULL UNIQUE,
+    allowlist     TEXT NOT NULL,
+    session_scope TEXT NOT NULL,
+    lane          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked       INTEGER NOT NULL DEFAULT 0
+);
+`
+
+// mtClientsMigration is schema v2: per-client tokens with a method
+// allowlist and an explicit session scope. IF NOT EXISTS so fresh DBs
+// (which run the full mtSchema) and v1 DBs converge on the same shape.
+const mtClientsMigration = `
+CREATE TABLE IF NOT EXISTS clients (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    token_hash    BLOB NOT NULL UNIQUE,
+    allowlist     TEXT NOT NULL,
+    session_scope TEXT NOT NULL,
+    lane          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked       INTEGER NOT NULL DEFAULT 0
+);
 `
 
 // MT is the MTProto plane store: session metadata, Telegram update
@@ -90,7 +118,7 @@ func OpenMT(dataDir, fernetKey, durability string, backupsDir string, h *health.
 		_ = db.Close()
 		return nil, err
 	}
-	if err := EnsureSchema(db, 1, map[int]string{}, path, backupsDir); err != nil {
+	if err := EnsureSchema(db, 2, map[int]string{2: mtClientsMigration}, path, backupsDir); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -471,6 +499,162 @@ func (m *MT) GetAudit(limit int) []AuditEntry {
 		}
 	}
 	return out
+}
+
+// ── clients (per-consumer tokens with an allowlist) ────────────────
+
+// ClientRow is one registered consumer client. TokenHash stays in the
+// store layer; callers never see it.
+type ClientRow struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Allowlist []string `json:"allowlist"`
+	Sessions  []string `json:"sessions"`
+	Lane      string   `json:"lane,omitempty"`
+	CreatedAt string   `json:"created_at"`
+	Revoked   bool     `json:"revoked"`
+}
+
+func encodeList(list []string) string {
+	b, err := json.Marshal(list)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func decodeList(s string) []string {
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// RegisterClient issues a new client token. The token is returned ONCE;
+// only its SHA-256 is stored (the gateway never presents it upstream).
+func (m *MT) RegisterClient(id, name string, tokenHash []byte, allowlist, sessions []string, lane string) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO clients (id, name, token_hash, allowlist, session_scope, lane) VALUES (?, ?, ?, ?, ?, ?)",
+		id, name, tokenHash, encodeList(allowlist), encodeList(sessions), lane)
+	return err
+}
+
+// ListClients returns every client, revoked last.
+func (m *MT) ListClients() ([]ClientRow, error) {
+	rows, err := m.DB.Query(
+		"SELECT id, name, allowlist, session_scope, lane, created_at, revoked FROM clients " +
+			"ORDER BY revoked, created_at, id")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ClientRow
+	for rows.Next() {
+		var r ClientRow
+		var allowlist, scope string
+		var revoked int
+		if err := rows.Scan(&r.ID, &r.Name, &allowlist, &scope, &r.Lane, &r.CreatedAt, &revoked); err != nil {
+			return nil, err
+		}
+		r.Allowlist = decodeList(allowlist)
+		r.Sessions = decodeList(scope)
+		r.Revoked = revoked != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ClientCreds is the auth-relevant projection of one client.
+type ClientCreds struct {
+	ID        string
+	Name      string
+	TokenHash []byte
+	Allowlist []string
+	Sessions  []string
+	Lane      string
+}
+
+// FindClientByHash resolves a bearer token's SHA-256 to its creds;
+// revoked clients answer false.
+func (m *MT) FindClientByHash(tokenHash []byte) (ClientCreds, bool) {
+	var c ClientCreds
+	var allowlist, scope string
+	var revoked int
+	err := m.DB.QueryRow(
+		"SELECT id, name, token_hash, allowlist, session_scope, lane, revoked FROM clients WHERE token_hash = ?",
+		tokenHash).Scan(&c.ID, &c.Name, &c.TokenHash, &allowlist, &scope, &c.Lane, &revoked)
+	if err != nil || revoked != 0 {
+		return ClientCreds{}, false
+	}
+	c.Allowlist = decodeList(allowlist)
+	c.Sessions = decodeList(scope)
+	return c, true
+}
+
+// ListClientCreds returns the auth-relevant projection of every
+// non-revoked client (hashes included) — the resolver's snapshot.
+func (m *MT) ListClientCreds() ([]ClientCreds, error) {
+	rows, err := m.DB.Query(
+		"SELECT id, name, token_hash, allowlist, session_scope, lane FROM clients WHERE revoked = 0")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ClientCreds
+	for rows.Next() {
+		var c ClientCreds
+		var allowlist, scope string
+		if err := rows.Scan(&c.ID, &c.Name, &c.TokenHash, &allowlist, &scope, &c.Lane); err != nil {
+			return nil, err
+		}
+		c.Allowlist = decodeList(allowlist)
+		c.Sessions = decodeList(scope)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateClient rewrites the allowlist/scope/lane of one client.
+// Nil arguments keep the stored value.
+func (m *MT) UpdateClient(id string, allowlist, sessions []string, lane *string) (bool, error) {
+	sets := []string{}
+	args := []any{}
+	if allowlist != nil {
+		sets = append(sets, "allowlist = ?")
+		args = append(args, encodeList(allowlist))
+	}
+	if sessions != nil {
+		sets = append(sets, "session_scope = ?")
+		args = append(args, encodeList(sessions))
+	}
+	if lane != nil {
+		sets = append(sets, "lane = ?")
+		args = append(args, *lane)
+	}
+	if len(sets) == 0 {
+		var one int
+		err := m.DB.QueryRow("SELECT 1 FROM clients WHERE id = ?", id).Scan(&one)
+		return err == nil, nil
+	}
+	q := "UPDATE clients SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	args = append(args, id)
+	res, err := m.DB.Exec(q, args...)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// RevokeClient soft-deletes a client by id; false when unknown.
+func (m *MT) RevokeClient(id string) (bool, error) {
+	res, err := m.DB.Exec("UPDATE clients SET revoked = 1 WHERE id = ?", id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // Box exposes the fernet handle for at-rest blob sealing (the session

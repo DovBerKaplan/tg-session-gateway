@@ -10,6 +10,7 @@
 | MTProto auth_key | `.session` files on the session volume | Attacker can use the bot's identity; harder to revoke than a token |
 | Admin secret | `.env` / Docker environment | Full control of all sessions |
 | App secret | `.env` / Docker environment | Can send messages as any registered bot |
+| Client tokens (`tggc_…`) | `mtgateway.db` (SHA-256 only), issued via admin API | Can call exactly its allowlisted methods on exactly its scoped sessions (MTProto plane) |
 
 ### Attack surfaces
 
@@ -38,6 +39,15 @@ secret. Consequences:
   (`/bots/{alias}/{method}`, Bearer `GW_APP_SECRET`) so consumer
   processes never hold bot tokens at all — and rotate `GW_APP_SECRET`
   independently of bot tokens.
+
+### Per-client tokens (MTProto plane)
+
+The MTProto plane supports per-consumer `tggc_` tokens: each carries a
+method allowlist and an explicit session scope, and only its SHA-256 is
+stored (`clients` table in `mtgateway.db`). Least-privilege setup:
+issue `readonly` tokens scoped to one session for read-only consumers,
+and turn the shared secret off entirely with `GW_LEGACY_APP_SECRET=off`
+once every consumer holds a client token.
 
 Admin actions (register, delete, pause, resume, push/paid settings)
 are recorded in an append-only audit table in the store

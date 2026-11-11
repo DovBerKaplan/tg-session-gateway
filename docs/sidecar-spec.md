@@ -148,6 +148,20 @@ The sidecar is **not** declared in the application Compose file. Application `do
 | F29 | Tokens and session material encrypted at rest. |
 | F30 | Admin API bound to localhost / internal network and authenticated with a secret. |
 | F31 | Session volume has tight file permissions and is not baked into the image. |
+| F32 | Consumer auth is per-client: each client gets a `tggc_` token with an explicit method allowlist and an explicit session scope. Only the token's SHA-256 is stored. A method outside the allowlist answers 403; a session outside the scope answers 403; a revoked token answers 401 immediately. The shared `GW_APP_SECRET` keeps working as a full-access legacy caller until `GW_LEGACY_APP_SECRET=off`. |
+
+#### Client tokens (0.2)
+
+Many clients sit behind one gateway session instead of many keys. Issue via admin:
+
+```
+POST /v1/admin/clients {"name":"scanner","allowlist":["get_history","get_messages"],"sessions":["acc1"],"lane":"bulk"}
+→ {"id":"cl-…","token":"tggc_…"}   # token shown ONCE
+```
+
+- **Allowlist** — method names, or the groups `full` (everything) and `readonly` (every `get_*`/`resolve_*` + `get_updates`; never a write, never `send_read_acknowledge`). Unknown entries are rejected at issue time (typo protection). `get_updates` governs both the pull route and the WS stream.
+- **Session scope** — always an explicit alias list; there is no wildcard. A read-only token scoped to the same session as the live worker is the shadow-run primitive: same Telegram connection, zero extra logins, zero key risk.
+- **Rotation** — the token never rotates in place; issue a new client and revoke the old one (`DELETE /v1/admin/clients/{id}`).
 
 ---
 
