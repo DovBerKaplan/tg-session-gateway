@@ -13,8 +13,8 @@ Telegraf, grammY, ...).
                         │              gateway process                │
    your app replica(s)  │                                             │
   ┌───────────────┐     │  ┌─────────┐   ┌──────────┐   ┌─────────┐  │
-  │ aiogram / PTB │────▶│  │  proxy  │──▶│ BotRate  │──▶│ httpx   │──┼──▶ api.telegram.org
-  │  (send calls) │     │  │ routes  │   │ Guard    │   │ client  │  │    (writes only)
+  │ aiogram / PTB │────▶│  │  proxy  │──▶│ BotRate  │──▶│ upstream│──┼──▶ api.telegram.org (default)
+  │  (send calls) │     │  │ routes  │   │ Guard    │   │ client  │  │    └─▶ local Bot API companion (opt-in)
   └───────────────┘     │  └─────────┘   └──────────┘   └─────────┘  │
         │               │        │                                      │
         │  getUpdates   │        ▼                                      │
@@ -33,6 +33,17 @@ Telegraf, grammY, ...).
                         │  └────────────┘   Prometheus /metrics       │
                         └─────────────────────────────────────────────┘
 ```
+
+**Optional local upstream:** by default every proxied Bot API call goes to
+`https://api.telegram.org`. With `GW_UPSTREAM_FALLBACK` and the
+`local-botapi` Compose profile (or Helm `localBotApi.mode`), an internal
+tdlib `telegram-bot-api` instance acts as a **companion** — same Rate
+Guard and queue, clients still hit `/tgapi` only. On TLS or transport
+degradation, `GW_UPSTREAM_FAILOVER=auto` can shift writes/reads to the
+companion without disabling certificate checks on the cloud path.
+`getFile` absolute disk paths from `--local` are rewritten to
+`/file/bot<token>/…` on the gateway so bot containers need no shared
+volume with the companion.
 
 **The one rule that makes deploys safe** (spec §4.6): the poller is the
 only thing in the world calling `getUpdates` upstream for a token.

@@ -33,7 +33,7 @@ const (
 // gateway IS the poller; setWebhook/logout/close would break ownership.
 var gatewayOwned = map[string]bool{
 	"getupdates": true, "setwebhook": true, "deletewebhook": true,
-	"logout": true, "close": true,
+	"getwebhookinfo": true, "logout": true, "close": true,
 }
 
 // BotSession is one bot token owned exclusively by this gateway.

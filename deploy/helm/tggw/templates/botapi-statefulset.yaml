@@ -74,6 +74,23 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- if ne (.Values.localBotApi.mode | default "disabled") "disabled" }}
+            {{- if not (index .Values.botapi.env "GW_UPSTREAM_FALLBACK") }}
+            - name: GW_UPSTREAM_FALLBACK
+              value: "http://{{ .Release.Name }}-telegram-bot-api:{{ .Values.localBotApi.port }}"
+            {{- end }}
+            {{- if eq .Values.localBotApi.mode "always" }}
+            - name: GW_UPSTREAM
+              value: "http://{{ .Release.Name }}-telegram-bot-api:{{ .Values.localBotApi.port }}"
+            - name: GW_UPSTREAM_KIND
+              value: "local"
+            {{- else if eq .Values.localBotApi.mode "standby" }}
+            - name: GW_UPSTREAM_FAILOVER
+              value: {{ index .Values.botapi.env "GW_UPSTREAM_FAILOVER" | default "auto" | quote }}
+            - name: GW_ENV_DETECT
+              value: {{ index .Values.botapi.env "GW_ENV_DETECT" | default "auto" | quote }}
+            {{- end }}
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "tggw.secretName" . }}

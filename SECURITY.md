@@ -89,6 +89,17 @@ process attempting to use the same session:
 The lock includes a PID and heartbeat timestamp. A stale lock (holder
 process dead + no heartbeat for 60 seconds) is automatically reclaimed.
 
+## Upstream TLS and the local Bot API companion
+
+- Outbound calls to `api.telegram.org` (and any HTTPS upstream) always use
+  normal certificate verification. There is **no** TLS skip-verify switch.
+- Corporate or inspection CAs: mount a PEM file and set
+  `GW_UPSTREAM_CA_FILE` — verification stays enabled.
+- The optional **local Bot API companion** (`telegram-bot-api` container /
+  Helm `localBotApi`) is **internal-only**: no public ports, reachable only
+  on the gateway Docker network or cluster Service. Consumers never call it
+  directly; only `tggw` uses `GW_UPSTREAM` / `GW_UPSTREAM_FALLBACK`.
+
 ## Reporting a Vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**

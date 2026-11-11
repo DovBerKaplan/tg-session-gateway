@@ -153,6 +153,26 @@ type BotAPI struct {
 	Host     string
 	Port     int
 	Upstream string
+	// UpstreamFallback is the preconfigured internal local Bot API URL
+	// (e.g. http://telegram-bot-api:8081). Empty = no failover target.
+	UpstreamFallback string
+	// UpstreamKind: cloud | local | auto. local raises multipart/timeout presets.
+	UpstreamKind string
+	// UpstreamFailover: off | auto | prefer_local.
+	UpstreamFailover string
+	// UpstreamCAFile adds extra PEM CAs to the upstream TLS trust store.
+	// Never disables certificate verification.
+	UpstreamCAFile string
+	// EnvDetect: off | auto. When auto, probes may recommend failover/presets;
+	// explicit GW_* always wins over detection.
+	EnvDetect string
+	// PathPrefix is the consumer Bot API path prefix (default "/tgapi").
+	// Empty or "none" mounts bare /bot<TOKEN>/… and /file/bot… routes.
+	PathPrefix string
+	// MaxMultipartMB caps multipart uploads (cloud default 64; local 2048).
+	MaxMultipartMB int
+	// UpstreamTimeoutS is the HTTP client timeout for upstream calls.
+	UpstreamTimeoutS int
 	// Pprof (GW_PPROF=1) mounts net/http/pprof on the ADMIN listener
 	// only, behind the admin secret. Default off: profiling endpoints
 	// are an operator tool, not a public surface.
@@ -180,14 +200,71 @@ type BotAPI struct {
 	Storage StorageConfig
 }
 
+// NormalizePathPrefix returns "" for bare routes (GW_PATH_PREFIX=none), or a
+// leading-slash prefix without a trailing slash (e.g. "/tgapi").
+// Empty string (unset / zero-value config) means the classic default "/tgapi".
+func NormalizePathPrefix(p string) string {
+	p = strings.TrimSpace(p)
+	if strings.EqualFold(p, "none") {
+		return ""
+	}
+	if p == "" {
+		return "/tgapi"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return strings.TrimRight(p, "/")
+}
+
+// ApplyLocalPreset raises size/time envelopes for a local Bot API upstream.
+// Explicit MaxMultipartMB / UpstreamTimeoutS already above defaults are kept.
+func (c *BotAPI) ApplyLocalPreset() {
+	c.UpstreamKind = "local"
+	if c.MaxMultipartMB < 2048 {
+		c.MaxMultipartMB = 2048
+	}
+	if c.UpstreamTimeoutS < 3600 {
+		c.UpstreamTimeoutS = 3600
+	}
+}
+
+// EffectiveKind returns cloud or local after resolving "auto".
+func (c *BotAPI) EffectiveKind() string {
+	k := strings.ToLower(strings.TrimSpace(c.UpstreamKind))
+	if k == "local" {
+		return "local"
+	}
+	if k == "auto" {
+		u := strings.ToLower(c.Upstream)
+		// Recognise the companion service name; do not treat every http://
+		// upstream (fakes, corporate proxies) as local.
+		if strings.Contains(u, "telegram-bot-api") {
+			return "local"
+		}
+	}
+	return "cloud"
+}
+
 func BotAPIFromEnv() BotAPI {
-	return BotAPI{
+	kind := envStr("GW_UPSTREAM_KIND", "auto")
+	maxMB := envInt("GW_MAX_MULTIPART_MB", 64)
+	timeoutS := envInt("GW_UPSTREAM_TIMEOUT_S", 60)
+	cfg := BotAPI{
 		Host:               envStr("GW_HOST", "0.0.0.0"),
 		Port:               envInt("GW_PORT", 8080),
 		Pprof:              envBool("GW_PPROF", false),
 		OTELEndpoint:       envStr("GW_OTEL_ENDPOINT", ""),
 		AdminPort:          envInt("GW_ADMIN_PORT", 0),
 		Upstream:           envStr("GW_UPSTREAM", "https://api.telegram.org"),
+		UpstreamFallback:   envStr("GW_UPSTREAM_FALLBACK", ""),
+		UpstreamKind:       kind,
+		UpstreamFailover:   envStr("GW_UPSTREAM_FAILOVER", "off"),
+		UpstreamCAFile:     envStr("GW_UPSTREAM_CA_FILE", ""),
+		EnvDetect:          envStr("GW_ENV_DETECT", "off"),
+		PathPrefix:         NormalizePathPrefix(envStr("GW_PATH_PREFIX", "")),
+		MaxMultipartMB:     maxMB,
+		UpstreamTimeoutS:   timeoutS,
 		AdminSecret:        envStr("GW_ADMIN_SECRET", ""),
 		AppSecret:          envStr("GW_APP_SECRET", ""),
 		DataDir:            envStr("GW_DATA_DIR", "/data"),
@@ -200,6 +277,17 @@ func BotAPIFromEnv() BotAPI {
 		Typing:             DefaultTyping(),
 		Storage:            DefaultStorage(),
 	}
+	if cfg.EffectiveKind() == "local" {
+		cfg.ApplyLocalPreset()
+		// Restore explicit overrides if the operator set them.
+		if _, ok := os.LookupEnv("GW_MAX_MULTIPART_MB"); ok {
+			cfg.MaxMultipartMB = maxMB
+		}
+		if _, ok := os.LookupEnv("GW_UPSTREAM_TIMEOUT_S"); ok {
+			cfg.UpstreamTimeoutS = timeoutS
+		}
+	}
+	return cfg
 }
 
 // MTProto is the MTProto sidecar configuration.
