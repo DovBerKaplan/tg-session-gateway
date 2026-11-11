@@ -68,6 +68,7 @@ type Client interface {
 	JoinChannel(ctx context.Context, chatID int64) (EditResult, error)
 	LeaveChannel(ctx context.Context, chatID int64) (EditResult, error)
 	ReadHistory(ctx context.Context, chatID, maxID int64) (EditResult, error)
+	SeedPeers(ctx context.Context, peers []PeerSeed) (int, error)
 }
 
 // BotInfo identifies the connected account.
@@ -170,6 +171,7 @@ var adapters = map[string]adapter{
 	"join_channel":          adaptJoinChannel,
 	"leave_channel":         adaptLeaveChannel,
 	"send_read_acknowledge": adaptSendReadAcknowledge,
+	"seed_peers":            adaptSeedPeers,
 }
 
 // ErrUnsupported marks methods outside the allowlist (HTTP 501).

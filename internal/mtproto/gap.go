@@ -90,11 +90,53 @@ func (s *gapStateStorage) ForEachChannels(_ context.Context, _ int64, f func(ctx
 	})
 }
 
+// peerStorage serves gotd's update manager the shared access-hash
+// cache (the same peers table the facade reads) — channel gap recovery
+// needs channel access hashes, and they resolve once per session now,
+// not per client.
+type peerStorage struct {
+	st    *store.MT
+	alias string
+}
+
+var (
+	_ updates.ChannelAccessHasher = (*peerStorage)(nil)
+	_ updates.UserAccessHasher    = (*peerStorage)(nil)
+)
+
+func (p *peerStorage) SetChannelAccessHash(_ context.Context, _, channelID, accessHash int64) error {
+	return p.st.UpsertPeer(p.alias, store.PeerEntry{ID: channelID, Kind: "channel", AccessHash: accessHash})
+}
+
+func (p *peerStorage) GetChannelAccessHash(_ context.Context, _, channelID int64) (int64, bool, error) {
+	e, found := p.st.LookupPeer(p.alias, channelID)
+	if !found || e.AccessHash == 0 {
+		return 0, false, nil
+	}
+	return e.AccessHash, true, nil
+}
+
+func (p *peerStorage) SetUserAccessHash(_ context.Context, _, targetUserID, accessHash int64) error {
+	return p.st.UpsertPeer(p.alias, store.PeerEntry{ID: targetUserID, Kind: "user", AccessHash: accessHash})
+}
+
+func (p *peerStorage) GetUserAccessHash(_ context.Context, _, targetUserID int64) (int64, bool, error) {
+	e, found := p.st.LookupPeer(p.alias, targetUserID)
+	if !found || e.AccessHash == 0 {
+		return 0, false, nil
+	}
+	return e.AccessHash, true, nil
+}
+
 // newUpdatesManager builds the gap-recovering handler that wraps the
-// session's update fan-out.
+// session's update fan-out; state AND access hashes persist in the
+// shared tables.
 func newUpdatesManager(st *store.MT, alias string, handler telegram.UpdateHandler) *updates.Manager {
+	peers := &peerStorage{st: st, alias: alias}
 	return updates.New(updates.Config{
-		Handler: handler,
-		Storage: &gapStateStorage{st: st, alias: alias},
+		Handler:        handler,
+		Storage:        &gapStateStorage{st: st, alias: alias},
+		AccessHasher:   peers,
+		UserAccessHasher: peers,
 	})
 }

@@ -15,10 +15,14 @@ import (
 
 // DocRef references an existing Telegram document (server-side copy:
 // sendMedia with InputMediaDocument — no re-upload, no download).
+// ChatID+MessageID (optional) name the source message so an expired
+// file_reference can be refreshed centrally.
 type DocRef struct {
 	ID            int64
 	AccessHash    int64
 	FileReference []byte
+	ChatID        int64
+	MessageID     int64
 }
 
 // EditChannelParams folds the channel settings toggles into one method;
@@ -224,6 +228,14 @@ func adaptSendMedia(ctx context.Context, c Client, args map[string]any) (any, er
 		}
 		ref.FileReference = raw
 	}
+	// optional source message: lets the gateway refresh an expired
+	// file_reference in one place instead of failing the send
+	if src, ok := argInt(args, "source_chat_id"); ok {
+		ref.ChatID = src
+	}
+	if src, ok := argInt(args, "source_message_id"); ok {
+		ref.MessageID = src
+	}
 	return c.SendDocument(ctx, chatID, ref, argStr(args, "caption"), argStr(args, "parse_mode"))
 }
 
@@ -316,4 +328,48 @@ func adaptSendReadAcknowledge(ctx context.Context, c Client, args map[string]any
 	}
 	maxID, _ := argInt(args, "max_id")
 	return c.ReadHistory(ctx, chatID, maxID)
+}
+
+// adaptSeedPeers bulk-loads the caller's known peers (the scanner
+// seeds from scan.channels on boot) into the shared cache.
+func adaptSeedPeers(ctx context.Context, c Client, args map[string]any) (any, error) {
+	rawList, ok := args["peers"].([]any)
+	if !ok || len(rawList) == 0 {
+		return nil, fmt.Errorf("peers array required: [{id, kind, access_hash, title?, username?}]")
+	}
+	entries := make([]PeerSeed, 0, len(rawList))
+	for i, raw := range rawList {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("peers[%d] must be an object", i)
+		}
+		id, ok := argInt(entry, "id")
+		if !ok {
+			return nil, fmt.Errorf("peers[%d].id required", i)
+		}
+		kind := strings.ToLower(argStr(entry, "kind"))
+		if kind == "" {
+			kind = "channel"
+		}
+		if kind != "channel" && kind != "user" {
+			return nil, fmt.Errorf("peers[%d].kind must be channel or user", i)
+		}
+		hash, _ := argInt(entry, "access_hash")
+		entries = append(entries, PeerSeed{ID: id, Kind: kind, AccessHash: hash,
+			Username: argStr(entry, "username"), Title: argStr(entry, "title")})
+	}
+	n, err := c.SeedPeers(ctx, entries)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"seeded": n}, nil
+}
+
+// PeerSeed is one bulk cache entry.
+type PeerSeed struct {
+	ID         int64
+	Kind       string
+	AccessHash int64
+	Username   string
+	Title      string
 }

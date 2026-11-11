@@ -99,3 +99,10 @@ func (f *fakeMTClient) ReadHistory(ctx context.Context, chatID, maxID int64) (Ed
 	f.readAcks = append(f.readAcks, [2]int64{chatID, maxID})
 	return EditResult{Ok: true}, nil
 }
+
+func (f *fakeMTClient) SeedPeers(_ context.Context, peers []PeerSeed) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seededPeers = append(f.seededPeers, peers...)
+	return len(peers), nil
+}

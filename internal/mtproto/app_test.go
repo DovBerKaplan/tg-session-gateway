@@ -46,8 +46,9 @@ type fakeMTClient struct {
 	uploads      []string
 	floodOnceCh  int64 // >0: first send to this chat raises FloodWait(42)
 	flooded      bool
-	sentDocs     []DocRef  // scanner-surface: send_media document refs
+	sentDocs     []DocRef   // scanner-surface: send_media document refs
 	readAcks     [][2]int64 // scanner-surface: send_read_acknowledge
+	seededPeers  []PeerSeed // scanner-surface: seed_peers
 }
 
 type sentRec struct {

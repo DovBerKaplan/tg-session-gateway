@@ -88,6 +88,17 @@ CREATE TABLE IF NOT EXISTS channel_pts (
     pts        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (alias, channel_id)
 );
+
+CREATE TABLE IF NOT EXISTS peers (
+    alias       TEXT NOT NULL,
+    id          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    access_hash INTEGER NOT NULL,
+    username    TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    updated_at  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, id)
+);
 `
 
 // mtClientsMigration is schema v2: per-client tokens with a method
@@ -136,6 +147,22 @@ CREATE TABLE IF NOT EXISTS channel_pts (
 );
 `
 
+// mtPeerCacheMigration is schema v5: the shared peer cache — access
+// hashes (and names) resolved once per session, served to every client
+// (gotd's update manager + the facade's entity resolution).
+const mtPeerCacheMigration = `
+CREATE TABLE IF NOT EXISTS peers (
+    alias       TEXT NOT NULL,
+    id          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    access_hash INTEGER NOT NULL,
+    username    TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    updated_at  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, id)
+);
+`
+
 // MT is the MTProto plane store: session metadata, Telegram update
 // state (pts/qts/date/seq), the persisted update queue, send
 // idempotency, dead letters and the audit trail.
@@ -168,10 +195,11 @@ func OpenMT(dataDir, fernetKey, durability string, backupsDir string, h *health.
 		_ = db.Close()
 		return nil, err
 	}
-	if err := EnsureSchema(db, 4, map[int]string{
+	if err := EnsureSchema(db, 5, map[int]string{
 		2: mtClientsMigration,
 		3: mtUserSessionsMigration,
 		4: mtReaderGroupsMigration,
+		5: mtPeerCacheMigration,
 	}, path, backupsDir); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -732,6 +760,46 @@ func (m *MT) ForEachChannelPts(alias string, fn func(channelID int64, pts int) e
 		}
 	}
 	return rows.Err()
+}
+
+// ── peers (the shared access-hash cache) ───────────────────────────
+
+// PeerEntry is one cached peer (access hash + display names).
+type PeerEntry struct {
+	ID         int64  `json:"id"`
+	Kind       string `json:"kind"` // user | channel
+	AccessHash int64  `json:"access_hash"`
+	Username   string `json:"username,omitempty"`
+	Title      string `json:"title,omitempty"`
+}
+
+// UpsertPeer caches one peer (never lowers a hash to zero — a stale
+// nonzero hash beats none).
+func (m *MT) UpsertPeer(alias string, e PeerEntry) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO peers (alias, id, kind, access_hash, username, title, updated_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(alias, id) DO UPDATE SET kind = excluded.kind, "+
+			"access_hash = CASE WHEN excluded.access_hash != 0 THEN excluded.access_hash ELSE peers.access_hash END, "+
+			"username = excluded.username, title = excluded.title, updated_at = excluded.updated_at",
+		alias, e.ID, e.Kind, e.AccessHash, e.Username, e.Title, wallNow())
+	return err
+}
+
+// LookupPeer serves the cached entry.
+func (m *MT) LookupPeer(alias string, id int64) (PeerEntry, bool) {
+	var e PeerEntry
+	err := m.DB.QueryRow(
+		"SELECT id, kind, access_hash, username, title FROM peers WHERE alias = ? AND id = ?",
+		alias, id).Scan(&e.ID, &e.Kind, &e.AccessHash, &e.Username, &e.Title)
+	return e, err == nil
+}
+
+// PeerCount is the cache size (stats).
+func (m *MT) PeerCount(alias string) int {
+	var n int
+	_ = m.DB.QueryRow("SELECT COUNT(*) FROM peers WHERE alias = ?", alias).Scan(&n)
+	return n
 }
 
 // ── clients (per-consumer tokens with an allowlist) ────────────────

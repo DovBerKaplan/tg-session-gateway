@@ -1,6 +1,7 @@
 package mtproto
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -231,7 +232,10 @@ func SerializeMedia(m tg.MessageMediaClass) map[string]any {
 		}
 		return mapOf("_", "MessageMediaDocument", "document", mapOf(
 			"_", "Document", "id", int64(doc.ID), "mime_type", doc.MimeType,
-			"size", int64(doc.Size), "file_id", formatFileRef("document", doc.ID)))
+			"size", int64(doc.Size), "file_id", formatFileRef("document", doc.ID),
+			// what send_media needs to re-send this document server-side
+			"access_hash", doc.AccessHash,
+			"file_reference", base64.StdEncoding.EncodeToString(doc.FileReference)))
 	case *tg.MessageMediaWebPage:
 		return mapOf("_", "MessageMediaWebPage")
 	}

@@ -8,10 +8,14 @@ package mtproto
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/query/dialogs"
+	"github.com/gotd/td/tgerr"
 	"github.com/gotd/td/tg"
+
+	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
 )
 
 const scanChunk = 200 // channels.getMessages / getChannels / getParticipants page
@@ -67,12 +71,20 @@ func bareChannelID(chatID int64) (int64, error) {
 	}
 }
 
-// resolveChannel fetches the full channel entity (access hash included)
-// for a Bot API or bare channel id.
+// resolveChannel fetches the channel entity (access hash included) for
+// a Bot API or bare channel id. The shared peer cache is checked first
+// (one resolve per session, not per client); misses resolve once and
+// land in the cache.
 func (g *gotdClient) resolveChannel(ctx context.Context, chatID int64) (*tg.Channel, error) {
 	bare, err := bareChannelID(chatID)
 	if err != nil {
 		return nil, err
+	}
+	if g.storeDB != nil {
+		if e, found := g.storeDB.LookupPeer(g.alias, bare); found && e.Kind == "channel" && e.AccessHash != 0 {
+			return &tg.Channel{ID: bare, AccessHash: e.AccessHash,
+				Title: e.Title, Username: e.Username}, nil
+		}
 	}
 	resp, err := g.scan().ChannelsGetChannels(ctx, []tg.InputChannelClass{
 		&tg.InputChannel{ChannelID: bare},
@@ -82,10 +94,48 @@ func (g *gotdClient) resolveChannel(ctx context.Context, chatID int64) (*tg.Chan
 	}
 	for _, chat := range chatsOfMessagesChats(resp) {
 		if ch, ok := chat.(*tg.Channel); ok && ch.ID == bare {
+			g.cacheChannel(ch)
 			return ch, nil
 		}
 	}
 	return nil, fmt.Errorf("channel %d not found", bare)
+}
+
+// cacheChannel / cacheUser land entities in the shared peer cache
+// (best-effort — a failed cache write never fails the RPC).
+func (g *gotdClient) cacheChannel(ch *tg.Channel) {
+	if g.storeDB == nil {
+		return
+	}
+	_ = g.storeDB.UpsertPeer(g.alias, store.PeerEntry{
+		ID: ch.ID, Kind: "channel", AccessHash: ch.AccessHash,
+		Username: ch.Username, Title: ch.Title,
+	})
+}
+
+func (g *gotdClient) cacheUser(u *tg.User) {
+	if g.storeDB == nil || u.AccessHash == 0 {
+		return
+	}
+	_ = g.storeDB.UpsertPeer(g.alias, store.PeerEntry{
+		ID: u.ID, Kind: "user", AccessHash: u.AccessHash, Username: u.Username,
+		Title: strings.TrimSpace(u.FirstName + " " + u.LastName),
+	})
+}
+
+// cacheResponse fills the peer cache from the chats/users riding any
+// messages response (the scanner's cacheChats/cacheUsers port).
+func (g *gotdClient) cacheResponse(chats []tg.ChatClass, users []tg.UserClass) {
+	for _, chat := range chats {
+		if ch, ok := chat.(*tg.Channel); ok {
+			g.cacheChannel(ch)
+		}
+	}
+	for _, user := range users {
+		if u, ok := user.(*tg.User); ok {
+			g.cacheUser(u)
+		}
+	}
 }
 
 func chatsOfMessagesChats(resp tg.MessagesChatsClass) []tg.ChatClass {
@@ -138,7 +188,8 @@ func (g *gotdClient) GetHistory(ctx context.Context, chatID int64, offsetID, add
 	if err != nil {
 		return nil, err
 	}
-	msgs, _, _ := unpackMessagesClass(res)
+	msgs, chats, users := unpackMessagesClass(res)
+	g.cacheResponse(chats, users)
 	return serializeMessages(msgs), nil
 }
 
@@ -165,7 +216,8 @@ func (g *gotdClient) GetMessages(ctx context.Context, chatID int64, ids []int64)
 		if err != nil {
 			return nil, err
 		}
-		msgs, _, _ := unpackMessagesClass(res)
+		msgs, chats, users := unpackMessagesClass(res)
+		g.cacheResponse(chats, users)
 		for _, d := range serializeMessages(msgs) {
 			if id, ok := anyToInt64(d["id"]); ok {
 				byID[id] = d
@@ -252,6 +304,7 @@ func (g *gotdClient) GetDialogs(ctx context.Context, limit int) ([]map[string]an
 	for _, ch := range chans {
 		d := dialogDict("channel", ch.id, ch.hash, meta[ch.id])
 		out = append(out, d)
+		g.cacheChannel(&tg.Channel{ID: ch.id, AccessHash: ch.hash, Title: d["title"].(string)})
 	}
 	out = append(out,
 		map[string]any{"kind": "stats", "channels": len(chans), "users": users, "legacy_chats": chats},
@@ -475,8 +528,31 @@ func (g *gotdClient) GetParticipants(ctx context.Context, p ParticipantsParams) 
 }
 
 // SendDocument sends an existing document by reference (server-side
-// copy — messages.sendMedia with InputMediaDocument; no upload/download).
+// copy — messages.sendMedia with InputMediaDocument; no upload/down-
+// load). When the reference expired and the caller named the source
+// message (ChatID+MessageID), it is refetched ONCE for a fresh
+// reference and the send retried — the central refresh point (ported
+// from the scanner's CopyMedia).
 func (g *gotdClient) SendDocument(ctx context.Context, chatID int64, doc DocRef, caption, parseMode string) (SentMessage, error) {
+	updates, err := g.sendDocRef(ctx, chatID, doc, caption, parseMode)
+	if err == nil {
+		return extractSentMessage(updates, chatID), nil
+	}
+	if !tgerr.Is(err, "FILE_REFERENCE_EXPIRED") || doc.ChatID == 0 || doc.MessageID == 0 {
+		return SentMessage{}, err
+	}
+	fresh, rerr := g.refreshDocRef(ctx, doc)
+	if rerr != nil {
+		return SentMessage{}, err // surface the original expiry error
+	}
+	updates, err = g.sendDocRef(ctx, chatID, fresh, caption, parseMode)
+	if err != nil {
+		return SentMessage{}, err
+	}
+	return extractSentMessage(updates, chatID), nil
+}
+
+func (g *gotdClient) sendDocRef(ctx context.Context, chatID int64, doc DocRef, caption, parseMode string) (tg.UpdatesClass, error) {
 	media := &tg.InputMediaDocument{
 		ID: &tg.InputDocument{
 			ID:            doc.ID,
@@ -484,7 +560,6 @@ func (g *gotdClient) SendDocument(ctx context.Context, chatID int64, doc DocRef,
 			FileReference: doc.FileReference,
 		},
 	}
-	// ride the same builder path as uploaded media, swapping in the ref
 	sender := message.NewSender(g.raw)
 	rb := sender.To(inputPeerOf(chatID))
 	builder := &rb.Builder
@@ -492,11 +567,39 @@ func (g *gotdClient) SendDocument(ctx context.Context, chatID int64, doc DocRef,
 	if caption != "" {
 		opts = captionOption(g, SendParams{Text: caption, ParseMode: parseMode})
 	}
-	updates, err := builder.Media(ctx, message.Media(media, opts...))
+	return builder.Media(ctx, message.Media(media, opts...))
+}
+
+// refreshDocRef re-reads the source message and extracts a live
+// document reference.
+func (g *gotdClient) refreshDocRef(ctx context.Context, doc DocRef) (DocRef, error) {
+	ch, err := g.resolveChannel(ctx, doc.ChatID)
 	if err != nil {
-		return SentMessage{}, err
+		return DocRef{}, err
 	}
-	return extractSentMessage(updates, chatID), nil
+	res, err := g.scan().ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+		Channel: &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
+		ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: int(doc.MessageID)}},
+	})
+	if err != nil {
+		return DocRef{}, err
+	}
+	msgs, _, _ := unpackMessagesClass(res)
+	for _, mc := range msgs {
+		m, ok := mc.(*tg.Message)
+		if !ok {
+			continue
+		}
+		md, ok := m.Media.(*tg.MessageMediaDocument)
+		if !ok {
+			continue
+		}
+		if d, ok := md.Document.(*tg.Document); ok && d.ID == doc.ID {
+			return DocRef{ID: d.ID, AccessHash: d.AccessHash, FileReference: d.FileReference,
+				ChatID: doc.ChatID, MessageID: doc.MessageID}, nil
+		}
+	}
+	return DocRef{}, fmt.Errorf("source message %d no longer carries document %d", doc.MessageID, doc.ID)
 }
 
 // CreateChannel is channels.createChannel (broadcast by default,
@@ -672,4 +775,26 @@ func (g *gotdClient) ReadHistory(ctx context.Context, chatID, maxID int64) (Edit
 		})
 	}
 	return EditResult{Ok: err == nil}, err
+}
+
+// SeedPeers bulk-loads known peers into the shared cache (the scanner
+// seeds from its scan.channels table on boot).
+func (g *gotdClient) SeedPeers(_ context.Context, peers []PeerSeed) (int, error) {
+	if g.storeDB == nil {
+		return 0, fmt.Errorf("no store attached")
+	}
+	n := 0
+	for _, p := range peers {
+		if p.AccessHash == 0 {
+			continue // a zero hash would poison lookups
+		}
+		if err := g.storeDB.UpsertPeer(g.alias, store.PeerEntry{
+			ID: p.ID, Kind: p.Kind, AccessHash: p.AccessHash,
+			Username: p.Username, Title: p.Title,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

@@ -13,6 +13,7 @@ import (
 
 // fakeScanAPI records requests and answers with canned objects.
 type fakeScanAPI struct {
+	refreshDoc *tg.Document // when set, get_messages answers with this doc
 	channels     map[int64]*tg.Channel // resolveChannel answers
 	users        map[int64]*tg.User
 	historyReqs  []*tg.MessagesGetHistoryRequest
@@ -71,6 +72,13 @@ func (f *fakeScanAPI) ChannelsGetChannels(_ context.Context, ids []tg.InputChann
 
 func (f *fakeScanAPI) ChannelsGetMessages(_ context.Context, req *tg.ChannelsGetMessagesRequest) (tg.MessagesMessagesClass, error) {
 	f.getMsgReqs = append(f.getMsgReqs, req)
+	// refresh mode: one message carrying the canned document
+	if f.refreshDoc != nil {
+		return &tg.MessagesMessages{Messages: []tg.MessageClass{
+			&tg.Message{ID: 5, PeerID: &tg.PeerChannel{ChannelID: 42},
+				Media: &tg.MessageMediaDocument{Document: f.refreshDoc}},
+		}}, nil
+	}
 	// echo one message per requested id (the chunking test relies on it)
 	msgs := make([]tg.MessageClass, 0, len(req.ID))
 	for _, id := range req.ID {
