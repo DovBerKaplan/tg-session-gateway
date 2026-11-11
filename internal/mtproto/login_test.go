@@ -393,3 +393,59 @@ func TestUserSessionRegisterValidation(t *testing.T) {
 		t.Fatalf("bad conn_opts=%d", code)
 	}
 }
+
+func TestReloginRevivesQuarantinedSession(t *testing.T) {
+	fake := &fakeMTClient{}
+	app, ts := newTestApp(t, fake, t.TempDir())
+	base := ts.URL
+	app.Mgr.LoginDriverFactory = func(string) loginDriver { return &fakeLoginDriver{} }
+
+	mtDo(t, "POST", base, "/v1/admin/sessions", `{"alias":"dead","kind":"user"}`, itestADM)
+	s := app.Mgr.Get("dead")
+
+	// simulate the quarantine path: terminal error + exited supervisor
+	s.mu.Lock()
+	s.terminalError = true
+	s.LastError = "terminal (quarantined): USER_DEACTIVATED_BAN"
+	s.supervisorRunning = false // the goroutine returned on quarantine
+	s.mu.Unlock()
+
+	if !s.IsTerminal() {
+		t.Fatal("setup: session must look quarantined")
+	}
+	// a full re-login clears the quarantine and restarts supervision
+	mtDo(t, "POST", base, "/v1/admin/sessions/dead/login/start", `{"phone":"+972500000031"}`, itestADM)
+	code, body := mtDo(t, "POST", base, "/v1/admin/sessions/dead/login/code", `{"code":"12345"}`, itestADM)
+	if code != 200 || body["stage"] != loginStageAuthed {
+		t.Fatalf("relogin code=%d %v", code, body)
+	}
+	if s.IsTerminal() {
+		t.Fatal("quarantine must clear after re-login")
+	}
+	if s.CurrentState() != StateConnecting && s.CurrentState() != StateLive {
+		t.Fatalf("state after relogin=%s", s.CurrentState())
+	}
+	s.mu.Lock()
+	running := s.supervisorRunning
+	s.mu.Unlock()
+	if !running {
+		t.Fatal("supervisor must run again after re-login")
+	}
+}
+
+func TestClassifyDeadAccountMarkers(t *testing.T) {
+	for _, marker := range []string{"USER_DEACTIVATED_BAN", "USER_DEACTIVATED"} {
+		if got := ClassifyStartError(newErr(marker)); got != "terminal" {
+			t.Fatalf("%s classified %s (want terminal)", marker, got)
+		}
+	}
+	if got := ClassifyStartError(newErr("TIMEOUT")); got != "retry" {
+		t.Fatalf("plain error classified %s", got)
+	}
+}
+
+type errTest struct{ msg string }
+
+func (e errTest) Error() string { return e.msg }
+
+func newErr(msg string) error { return errTest{msg} }

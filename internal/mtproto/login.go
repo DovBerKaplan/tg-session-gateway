@@ -222,12 +222,7 @@ func (m *Manager) loginAuthorized(alias string) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	s.nextRetryAt = 0
-	s.mu.Unlock()
-	if s.CurrentState() == StateAwaitingLogin {
-		s.setState(StateConnecting)
-	}
+	m.wakeAfterRelogin(s)
 	slog.Info("user session authorized — supervisor will connect", "alias", alias)
 }
 

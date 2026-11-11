@@ -71,6 +71,24 @@ address bound for tcp6-only dials — no fallback) and `device`
 (model/system_version/app_version) must match what the account used
 before, or the fingerprint changes mid-life.
 
+## Dead user session → re-login
+
+A deactivated/revoked account (`USER_DEACTIVATED`, `USER_DEACTIVATED_BAN`,
+`SESSION_REVOKED`, …) quarantines the session — retrying burns nothing,
+by design. When the account is available again (un-banned, re-activated),
+the SAME alias recovers with a fresh login: quarantine clears and the
+supervisor reconnects automatically once `login/code` (or `password`)
+succeeds. No unregister, no data loss:
+
+```bash
+curl -X POST .../v1/admin/sessions/acc1/login/start  -d '{"phone":"+972…"}'
+curl -X POST .../v1/admin/sessions/acc1/login/code    -d '{"code":"…"}'
+# 409 ⇒ 2FA: POST …/login/password {"password":"…"}
+```
+
+Alerts: `TGSessionQuarantined` (dead), `TGUserSessionAwaitingLogin`
+(login pending >30m), `TGBulkLaneBacklog` (scan backlog, info).
+
 ## Corrupt DB
 
 Symptom: boot log `DB corrupt (...) — quarantined to <path>.corrupt-*`,

@@ -24,6 +24,10 @@ var terminalMarkers = []string{
 	"AuthKeyInvalid", "SessionDuplicated", "SESSION_REVOKED",
 	"SessionRevoked", "ACCESS_TOKEN_EXPIRED", "ACCESS_TOKEN_INVALID",
 	"UNAUTHORIZED",
+	// dead user accounts (the scanner's dead-session markers): the
+	// account itself is gone — only a NEW login on the same alias
+	// recovers the session
+	"USER_DEACTIVATED", "USER_DEACTIVATED_BAN",
 }
 
 // ClassifyStartError buckets a start failure: flood (wait it out),
@@ -87,6 +91,7 @@ type Session struct {
 	LastFloodWait  map[string]any
 
 	// supervisor state
+	supervisorRunning bool
 	terminalError     bool
 	nextRetryAt       float64
 	stopSupervisor    chan struct{}
@@ -247,9 +252,36 @@ func (m *Manager) register(ctx context.Context, alias, token, kind string) (*Ses
 	return s, nil
 }
 
+// wakeAfterRelogin revives a session after a successful login/import:
+// a fresh authorization clears quarantine (the OLD key was dead; the
+// NEW one has not been tried) and restarts the supervisor if its
+// goroutine had exited on the terminal error.
+func (m *Manager) wakeAfterRelogin(s *Session) {
+	s.mu.Lock()
+	s.nextRetryAt = 0
+	s.terminalError = false
+	alreadyRunning := s.supervisorRunning
+	s.mu.Unlock()
+	if s.CurrentState() == StateAwaitingLogin || s.CurrentState() == StateError {
+		s.setState(StateConnecting)
+	}
+	if alreadyRunning {
+		return
+	}
+	go m.supervise(s)
+}
+
 // ── the supervisor — owns one session for life ────────────────────
 
 func (m *Manager) supervise(s *Session) {
+	s.mu.Lock()
+	s.supervisorRunning = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.supervisorRunning = false
+		s.mu.Unlock()
+	}()
 	backoff := 1.0
 	pingInterval := 60.0
 	for {
