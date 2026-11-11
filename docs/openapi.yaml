@@ -200,6 +200,45 @@ paths:
         200: {description: applied}
         404: {description: unknown alias (restart/deadletters/paid)}
         409: {description: session quarantined (restart refused)}
+  /v1/admin/sessions/{alias}/login/start:
+    post:
+      summary: User session, step 1 — send the login code {phone}. Code/password never logged or audited.
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: stage=code_sent}
+        400: {description: missing phone / wrong stage / not a user session}
+        404: {description: unknown alias}
+  /v1/admin/sessions/{alias}/login/code:
+    post:
+      summary: User session, step 2 — submit the login code
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: stage=authorized}
+        409: {description: password_required=true — 2FA is on, call login/password}
+  /v1/admin/sessions/{alias}/login/password:
+    post:
+      summary: User session, step 3 — submit the 2FA password (SRP)
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: stage=authorized}
+        400: {description: wrong stage / bad password}
+  /v1/admin/sessions/{alias}/import:
+    post:
+      summary: >
+        Install an existing authorization without a new login: a Telethon
+        StringSession (telethon_string) or a raw gotd session JSON blob
+        (gotd_session_b64). Sealed at rest; never logged. force=true
+        replaces a stored session — the old holder MUST be stopped first
+        (AUTH_KEY_DUPLICATED).
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: imported, session connecting}
+        400: {description: bad source material}
+        409: {description: a session is already stored (pass force=true)}
   /v1/admin/clients:
     post:
       summary: >

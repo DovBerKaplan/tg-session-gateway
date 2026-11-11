@@ -241,6 +241,9 @@ func BackupDB(path, backupsDir string, keep int) string {
 func rotate(pattern string, keep int) {
 	files, _ := filepath.Glob(pattern)
 	sort.Sort(sort.Reverse(sort.StringSlice(files)))
+	if len(files) <= keep {
+		return
+	}
 	for _, stale := range files[keep:] {
 		_ = os.Remove(stale)
 	}

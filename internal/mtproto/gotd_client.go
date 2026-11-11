@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
@@ -39,6 +43,7 @@ type gotdClient struct {
 	cfg     config.MTProto
 	alias   string
 	storeDB *store.MT
+	kind    string // bot | user
 
 	client        *telegram.Client
 	raw           *tg.Client
@@ -108,13 +113,101 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 		photoLocs: map[int64]*tg.Photo{},
 		docLocs:   map[int64]*tg.Document{},
 	}
-	storage := sqliteSessionStorage{db: st.DB, alias: alias, box: st.Box()}
-	g.client = telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
-		SessionStorage: &storage,
-		UpdateHandler:  telegram.UpdateHandlerFunc(g.onUpdatesClass),
-	})
+	if meta, ok := st.GetSessionMeta(alias); ok {
+		g.kind = meta.Kind
+	}
+	g.client = newTelegramClient(cfg, alias, st, telegram.UpdateHandlerFunc(g.onUpdatesClass))
 	g.raw = g.client.API()
 	return g
+}
+
+// connOpts is the per-session dial configuration (anti-ban profile for
+// scanner accounts): the IPv6 source address to bind and the device
+// fingerprint to present. Ported from cine-scanner's dial/device code.
+type connOpts struct {
+	IPv6   string `json:"ipv6"`
+	Device struct {
+		Model         string `json:"model"`
+		SystemVersion string `json:"system_version"`
+		AppVersion    string `json:"app_version"`
+		LangCode      string `json:"lang_code"`
+	} `json:"device"`
+}
+
+func parseConnOpts(raw string) *connOpts {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var opts connOpts
+	if err := json.Unmarshal([]byte(raw), &opts); err != nil {
+		slog.Warn("bad conn_opts JSON — dialing with defaults", "err", err)
+		return nil
+	}
+	return &opts
+}
+
+// resolver builds the DC resolver: plain by default; with an IPv6
+// source address, tcp6-only bound to it (never falls back to another
+// source), like the scanner's dial package.
+func (o *connOpts) resolver() (dcs.Resolver, error) {
+	if o == nil || o.IPv6 == "" {
+		return dcs.Plain(dcs.PlainOptions{}), nil
+	}
+	ip := net.ParseIP(o.IPv6)
+	if ip == nil || ip.To4() != nil {
+		return nil, fmt.Errorf("conn_opts.ipv6 %q is not an IPv6 address", o.IPv6)
+	}
+	d := &net.Dialer{LocalAddr: &net.TCPAddr{IP: ip}}
+	return dcs.Plain(dcs.PlainOptions{
+		Dial:       d.DialContext,
+		Network:    "tcp6",
+		PreferIPv6: true,
+	}), nil
+}
+
+func (o *connOpts) device() telegram.DeviceConfig {
+	if o == nil {
+		return telegram.DeviceConfig{}
+	}
+	d := o.Device
+	if d.Model == "" && d.SystemVersion == "" && d.AppVersion == "" {
+		return telegram.DeviceConfig{}
+	}
+	lang := d.LangCode
+	if lang == "" {
+		lang = "en"
+	}
+	return telegram.DeviceConfig{
+		DeviceModel:    d.Model,
+		SystemVersion:  d.SystemVersion,
+		AppVersion:     d.AppVersion,
+		SystemLangCode: lang,
+		LangPack:       "",
+		LangCode:       lang,
+	}
+}
+
+// newTelegramClient builds a gotd client over the shared sealed session
+// storage, honoring the per-session conn_opts (IPv6 source bind, device
+// fingerprint). A nil handler is fine for short-lived runs (login steps).
+func newTelegramClient(cfg config.MTProto, alias string, st *store.MT, handler telegram.UpdateHandler) *telegram.Client {
+	opts := telegram.Options{
+		SessionStorage: &sqliteSessionStorage{db: st.DB, alias: alias, box: st.Box()},
+		UpdateHandler:  handler,
+	}
+	var co *connOpts
+	if meta, ok := st.GetSessionMeta(alias); ok {
+		co = parseConnOpts(meta.ConnOpts)
+	}
+	if resolver, err := co.resolver(); err != nil {
+		slog.Error("conn_opts resolver invalid — dialing unbound", "alias", alias, "err", err)
+	} else if resolver != nil {
+		opts.Resolver = resolver
+	}
+	if dev := co.device(); dev != (telegram.DeviceConfig{}) {
+		opts.Device = dev
+	}
+	return telegram.NewClient(cfg.APIID, cfg.APIHash, opts)
 }
 
 // onUpdatesClass fans a Telegram updates batch out into serialized
@@ -196,8 +289,10 @@ func (g *gotdClient) Connect(ctx context.Context) error {
 	ready := make(chan error, 1)
 	go func() {
 		_ = g.client.Run(runCtx, func(ctx context.Context) error {
-			// an already-valid (migrated) session skips auth; a fresh
-			// one logs in with the bot token — once per token lifetime
+			// an already-valid (migrated/imported) session skips auth; a
+			// fresh bot session logs in with the bot token; a fresh USER
+			// session has nothing to log in with yet — the admin login
+			// flow drives that, so signal awaiting-login instead of erroring
 			authCtx, authCancel := context.WithTimeout(ctx, 60*time.Second)
 			defer authCancel()
 			status, err := g.client.Auth().Status(authCtx)
@@ -206,6 +301,10 @@ func (g *gotdClient) Connect(ctx context.Context) error {
 				return err
 			}
 			if !status.Authorized {
+				if g.kind == "user" {
+					ready <- ErrAwaitingLogin
+					return nil // hang up; login steps dial their own runs
+				}
 				if _, err := g.client.Auth().Bot(authCtx, g.botToken()); err != nil {
 					err = fmt.Errorf("bot auth: %w", err)
 					ready <- err

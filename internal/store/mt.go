@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     date        INTEGER NOT NULL DEFAULT 0,
     seq         INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    paused      INTEGER NOT NULL DEFAULT 0
+    paused      INTEGER NOT NULL DEFAULT 0,
+    kind        TEXT NOT NULL DEFAULT 'bot',
+    phone       TEXT NOT NULL DEFAULT '',
+    conn_opts   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS update_queue (
@@ -86,6 +89,15 @@ CREATE TABLE IF NOT EXISTS clients (
 );
 `
 
+// mtUserSessionsMigration is schema v3: user accounts alongside bots.
+// kind distinguishes them; phone is the login identity; conn_opts is a
+// JSON blob (ipv6 source address, device fingerprint) the dialer reads.
+const mtUserSessionsMigration = `
+ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'bot';
+ALTER TABLE sessions ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN conn_opts TEXT NOT NULL DEFAULT '';
+`
+
 // MT is the MTProto plane store: session metadata, Telegram update
 // state (pts/qts/date/seq), the persisted update queue, send
 // idempotency, dead letters and the audit trail.
@@ -118,7 +130,10 @@ func OpenMT(dataDir, fernetKey, durability string, backupsDir string, h *health.
 		_ = db.Close()
 		return nil, err
 	}
-	if err := EnsureSchema(db, 2, map[int]string{2: mtClientsMigration}, path, backupsDir); err != nil {
+	if err := EnsureSchema(db, 3, map[int]string{
+		2: mtClientsMigration,
+		3: mtUserSessionsMigration,
+	}, path, backupsDir); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -183,9 +198,75 @@ func (m *MT) Register(alias, token string) error {
 		phone = phone[:20] + "…"
 	}
 	_, err = m.DB.Exec(
-		"INSERT INTO sessions (alias, token_enc, phone_or_token) VALUES (?, ?, ?) "+
+		"INSERT INTO sessions (alias, token_enc, phone_or_token, kind) VALUES (?, ?, ?, 'bot') "+
 			"ON CONFLICT(alias) DO UPDATE SET token_enc = excluded.token_enc",
 		alias, enc, phone)
+	return err
+}
+
+// RegisterUser upserts a user-account session (no bot token; the
+// identity is the phone number and the auth_key blob in gotd_sessions).
+func (m *MT) RegisterUser(alias, phone, connOpts string) error {
+	enc, err := m.box.Encrypt(nil)
+	if err != nil {
+		return err
+	}
+	_, err = m.DB.Exec(
+		"INSERT INTO sessions (alias, token_enc, phone_or_token, kind, phone, conn_opts) "+
+			"VALUES (?, ?, ?, 'user', ?, ?) "+
+			"ON CONFLICT(alias) DO UPDATE SET kind = 'user', phone = excluded.phone, "+
+			"conn_opts = excluded.conn_opts",
+		alias, enc, phone, phone, connOpts)
+	return err
+}
+
+// SessionMeta is the non-secret per-session configuration.
+type SessionMeta struct {
+	Kind     string // bot | user
+	Phone    string
+	ConnOpts string // JSON: ipv6 source, device fingerprint
+}
+
+// GetSessionMeta loads the session kind/phone/conn_opts.
+func (m *MT) GetSessionMeta(alias string) (SessionMeta, bool) {
+	var meta SessionMeta
+	err := m.DB.QueryRow(
+		"SELECT kind, phone, conn_opts FROM sessions WHERE alias = ?", alias).
+		Scan(&meta.Kind, &meta.Phone, &meta.ConnOpts)
+	if err != nil {
+		return SessionMeta{}, false
+	}
+	return meta, true
+}
+
+// SetConnOpts rewrites the per-session dialer options.
+func (m *MT) SetConnOpts(alias, opts string) error {
+	_, err := m.DB.Exec("UPDATE sessions SET conn_opts = ? WHERE alias = ?", opts, alias)
+	return err
+}
+
+// HasGotdSession reports whether an auth_key blob is stored for alias.
+func (m *MT) HasGotdSession(alias string) bool {
+	var one int
+	err := m.DB.QueryRow("SELECT 1 FROM gotd_sessions WHERE alias = ?", alias).Scan(&one)
+	return err == nil
+}
+
+// SaveGotdSession seals and stores a raw gotd session JSON blob
+// (the format LoadSession returns).
+func (m *MT) SaveGotdSession(alias string, blob []byte) error {
+	if _, err := m.DB.Exec(
+		"CREATE TABLE IF NOT EXISTS gotd_sessions (alias TEXT PRIMARY KEY, session_blob BLOB NOT NULL)"); err != nil {
+		return err
+	}
+	sealed, err := m.box.SealBlob(blob)
+	if err != nil {
+		return err
+	}
+	_, err = m.DB.Exec(
+		"INSERT INTO gotd_sessions (alias, session_blob) VALUES (?, ?) "+
+			"ON CONFLICT(alias) DO UPDATE SET session_blob = excluded.session_blob",
+		alias, sealed)
 	return err
 }
 
@@ -203,6 +284,8 @@ func (m *MT) Delete(alias string) (bool, error) {
 type SessionRow struct {
 	Alias        string `json:"alias"`
 	PhoneOrToken string `json:"phone_or_token"`
+	Kind         string `json:"kind"`
+	Phone        string `json:"phone"`
 	PTS          int64  `json:"pts"`
 	QTS          int64  `json:"qts"`
 	Date         int64  `json:"date"`
@@ -214,7 +297,7 @@ type SessionRow struct {
 // ListSessions returns every registered session.
 func (m *MT) ListSessions() ([]SessionRow, error) {
 	rows, err := m.DB.Query(
-		"SELECT alias, phone_or_token, pts, qts, date, seq, paused, created_at FROM sessions")
+		"SELECT alias, phone_or_token, kind, phone, pts, qts, date, seq, paused, created_at FROM sessions")
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +306,7 @@ func (m *MT) ListSessions() ([]SessionRow, error) {
 	for rows.Next() {
 		var r SessionRow
 		var paused int
-		if err := rows.Scan(&r.Alias, &r.PhoneOrToken, &r.PTS, &r.QTS, &r.Date, &r.Seq, &paused, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.Alias, &r.PhoneOrToken, &r.Kind, &r.Phone, &r.PTS, &r.QTS, &r.Date, &r.Seq, &paused, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		r.Paused = paused != 0

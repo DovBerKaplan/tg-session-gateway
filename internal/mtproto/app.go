@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -313,6 +314,10 @@ func (a *App) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/pause_sending", a.adminPauseSending)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/resume_sending", a.adminResumeSending)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/paid", a.adminSetPaid)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/login/start", a.adminLoginStart)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/login/code", a.adminLoginCode)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/login/password", a.adminLoginPassword)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/import", a.adminImportSession)
 	mux.HandleFunc("POST /v1/admin/clients", a.adminRegisterClient)
 	mux.HandleFunc("GET /v1/admin/clients", a.adminListClients)
 	mux.HandleFunc("POST /v1/admin/clients/{id}", a.adminUpdateClient)
@@ -957,11 +962,40 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Alias string `json:"alias"`
-		Token string `json:"token"`
+		Alias    string `json:"alias"`
+		Token    string `json:"token"`
+		Kind     string `json:"kind"`
+		Phone    string `json:"phone"`
+		ConnOpts string `json:"conn_opts"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Alias == "" || body.Token == "" {
-		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "alias and token required"})
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Alias == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "alias required"})
+		return
+	}
+	kind := body.Kind
+	if kind == "" {
+		kind = "bot"
+	}
+	if kind != "bot" && kind != "user" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "kind must be bot or user"})
+		return
+	}
+	if kind == "user" {
+		if body.ConnOpts != "" && !json.Valid([]byte(body.ConnOpts)) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "conn_opts must be a JSON object"})
+			return
+		}
+		s, err := a.Mgr.RegisterUser(r.Context(), body.Alias, body.Phone, body.ConnOpts)
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+			return
+		}
+		a.Store.Audit("register", body.Alias, "kind=user phone=***"+last4(body.Phone))
+		writeJSON(w, 200, map[string]any{"ok": true, "alias": s.Alias, "kind": "user", "state": string(s.CurrentState())})
+		return
+	}
+	if body.Token == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "token required for kind=bot"})
 		return
 	}
 	s, err := a.Mgr.Register(r.Context(), body.Alias, body.Token)
@@ -970,7 +1004,197 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Store.Audit("register", body.Alias, "token=…"+last4(body.Token))
-	writeJSON(w, 200, map[string]any{"ok": true, "alias": s.Alias, "state": string(s.CurrentState())})
+	writeJSON(w, 200, map[string]any{"ok": true, "alias": s.Alias, "kind": "bot", "state": string(s.CurrentState())})
+}
+
+// ── user login (stepwise) + session import ─────────────────────────
+
+// adminLoginStart is step 1: Telegram sends the code to phone.
+func (a *App) adminLoginStart(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	if a.Mgr.Get(alias) == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	var body struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Phone) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "phone required"})
+		return
+	}
+	stage, err := a.Mgr.LoginStart(r.Context(), alias, strings.TrimSpace(body.Phone))
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	a.Store.Audit("login_start", alias, "phone=***"+last4(body.Phone))
+	writeJSON(w, 200, map[string]any{"ok": true, "stage": stage})
+}
+
+// adminLoginCode is step 2. 409 + password_required when 2FA is on —
+// the password step follows. The code never reaches logs or audit.
+func (a *App) adminLoginCode(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	if a.Mgr.Get(alias) == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Code) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "code required"})
+		return
+	}
+	passwordRequired, stage, err := a.Mgr.LoginCode(r.Context(), alias, strings.TrimSpace(body.Code))
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	if passwordRequired {
+		a.Store.Audit("login_code", alias, "password_required=true")
+		writeJSON(w, 409, map[string]any{
+			"ok": false, "error_code": 409, "stage": stage,
+			"password_required": true,
+			"description":       "2FA is enabled — submit the password via login/password",
+		})
+		return
+	}
+	a.Store.Audit("login_code", alias, "authorized=true")
+	writeJSON(w, 200, map[string]any{"ok": true, "stage": stage})
+}
+
+// adminLoginPassword is step 3 (only when 2FA asked for it).
+func (a *App) adminLoginPassword(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	if a.Mgr.Get(alias) == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Password == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "password required"})
+		return
+	}
+	stage, err := a.Mgr.LoginPassword(r.Context(), alias, body.Password)
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	a.Store.Audit("login_password", alias, "authorized=true")
+	writeJSON(w, 200, map[string]any{"ok": true, "stage": stage})
+}
+
+// adminImportSession installs an existing authorization without a new
+// login: a Telethon StringSession (decoded with gotd) or a raw gotd
+// session JSON blob (base64). The material is sealed at rest and never
+// logged. force replaces an existing stored session — only after the
+// old holder stopped (Telegram answers AUTH_KEY_DUPLICATED to both).
+func (a *App) adminImportSession(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	var body struct {
+		Kind          string `json:"kind"`
+		Phone         string `json:"phone"`
+		ConnOpts      string `json:"conn_opts"`
+		Telethon      string `json:"telethon_string"`
+		GotdSessionB64 string `json:"gotd_session_b64"`
+		Force         bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || alias == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "invalid body"})
+		return
+	}
+	if (body.Telethon == "") == (body.GotdSessionB64 == "") {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "exactly one source required: telethon_string or gotd_session_b64"})
+		return
+	}
+	kind := body.Kind
+	if kind == "" {
+		kind = "user"
+	}
+	if kind != "user" && kind != "bot" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "kind must be bot or user"})
+		return
+	}
+	if body.ConnOpts != "" && !json.Valid([]byte(body.ConnOpts)) {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "conn_opts must be a JSON object"})
+		return
+	}
+
+	var blob []byte
+	source := "telethon"
+	if body.Telethon != "" {
+		data, err := sessionTelethonDecode(body.Telethon)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+			return
+		}
+		blob = data
+	} else {
+		source = "gotd"
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(body.GotdSessionB64))
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "gotd_session_b64 must be base64"})
+			return
+		}
+		if !json.Valid(raw) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "gotd session blob must be JSON"})
+			return
+		}
+		blob = raw
+	}
+
+	if a.Store.HasGotdSession(alias) && !body.Force {
+		writeJSON(w, 409, map[string]any{"ok": false, "error_code": 409,
+			"description": "a session is already stored for this alias; pass force=true to replace it (the old holder must be stopped first — see AUTH_KEY_DUPLICATED)"})
+		return
+	}
+	// tear down any live session before overwriting its authorization
+	if a.Mgr.Get(alias) != nil {
+		a.Mgr.Unregister(r.Context(), alias)
+	}
+	if err := a.Store.RegisterUser(alias, body.Phone, body.ConnOpts); err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if err := a.Store.SaveGotdSession(alias, blob); err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	s, err := a.Mgr.RegisterUser(r.Context(), alias, body.Phone, body.ConnOpts)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	a.Store.Audit("import", alias, "source="+source+" kind="+kind+" force="+boolStr(body.Force))
+	writeJSON(w, 200, map[string]any{"ok": true, "alias": alias, "kind": kind, "state": string(s.CurrentState())})
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
@@ -986,7 +1210,18 @@ func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(aliases)
 	out := make([]map[string]any, 0, len(aliases))
 	for _, alias := range aliases {
-		out = append(out, sessions[alias].Stats())
+		row := sessions[alias].Stats()
+		if row["kind"] == "user" {
+			stage, phone, lastErr := a.Mgr.LoginStage(alias)
+			row["login_stage"] = stage
+			if phone != "" {
+				row["login_phone"] = "***" + last4(phone)
+			}
+			if lastErr != "" {
+				row["login_error"] = lastErr
+			}
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "sessions": out})
 }
@@ -1360,8 +1595,13 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if connectedSince > 0 {
 			age = int(wallNow() - connectedSince)
 		}
+		awaitingLogin := 0
+		if s.CurrentState() == StateAwaitingLogin {
+			awaitingLogin = 1
+		}
 		lines = append(lines,
 			fmt.Sprintf("tg_gateway_session_state{%s} %d", labels, stateVal),
+			fmt.Sprintf("tg_gateway_session_awaiting_login{%s} %d", labels, awaitingLogin),
 			fmt.Sprintf("tg_gateway_session_connection_age_seconds{%s} %d", labels, age),
 			fmt.Sprintf("tg_gateway_update_queue_depth{%s} %d", labels, queueDepth),
 			fmt.Sprintf("tg_gateway_real_flood_wait_total{%s} %d", labels, realFlood),

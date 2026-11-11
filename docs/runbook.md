@@ -37,6 +37,40 @@ curl -s -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8081/v1/admin/stat
 
 See above — `restart` returns 409 on purpose: retrying burns sessions.
 
+## User sessions: login, import, and the AUTH_KEY_DUPLICATED rule
+
+User accounts (phone/code/2FA) live in the same MTProto plane as bots.
+A user session that holds no authorization sits in `awaiting_login`
+(metric `tg_gateway_session_awaiting_login`), holding its lock, dialing
+nothing — the admin login flow drives it stepwise (the code and password
+are never logged or audited):
+
+```bash
+curl -X POST .../v1/admin/sessions -d '{"alias":"acc1","kind":"user","conn_opts":"{\"ipv6\":\"2001:db8::2\"}"}'
+curl -X POST .../v1/admin/sessions/acc1/login/start  -d '{"phone":"+972…"}'   # Telegram sends the code
+curl -X POST .../v1/admin/sessions/acc1/login/code    -d '{"code":"…"}'        # 409 ⇒ 2FA:
+curl -X POST .../v1/admin/sessions/acc1/login/password -d '{"password":"…"}'
+```
+
+No new login is needed when the account already has a session:
+
+- **Telethon** — `scripts/telethon-session-export.py` turns the legacy
+  `.session` SQLite into a StringSession; import it with
+  `POST /v1/admin/sessions/{alias}/import {"telethon_string":"1…"}`.
+- **gotd** (cine-scanner migration) — the scanner's sealed session is
+  gotd-format JSON; import with `{"gotd_session_b64":"…"}`.
+
+**The rule:** one auth key may be live in exactly one process. The old
+holder (legacy Telethon process, scanner pod) MUST be stopped before
+import — otherwise Telegram answers `AUTH_KEY_DUPLICATED` to both and
+may burn the key. Import refuses to overwrite a stored session unless
+`force:true`; `force` without stopping the old holder is how keys die.
+
+`conn_opts` carries the account's anti-ban profile: `ipv6` (source
+address bound for tcp6-only dials — no fallback) and `device`
+(model/system_version/app_version) must match what the account used
+before, or the fingerprint changes mid-life.
+
 ## Corrupt DB
 
 Symptom: boot log `DB corrupt (...) — quarantined to <path>.corrupt-*`,

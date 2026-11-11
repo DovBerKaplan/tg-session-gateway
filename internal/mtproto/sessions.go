@@ -3,6 +3,7 @@ package mtproto
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -44,11 +45,12 @@ func ClassifyStartError(err error) string {
 type SessionState string
 
 const (
-	StateConnecting SessionState = "connecting"
-	StateLive       SessionState = "live"
-	StatePaused     SessionState = "paused"
-	StateDraining   SessionState = "draining"
-	StateError      SessionState = "error"
+	StateConnecting    SessionState = "connecting"
+	StateLive          SessionState = "live"
+	StatePaused        SessionState = "paused"
+	StateDraining      SessionState = "draining"
+	StateError         SessionState = "error"
+	StateAwaitingLogin SessionState = "awaiting_login" // user session, admin login flow pending
 )
 
 // Consumer is a connected WS consumer (app replica).
@@ -59,10 +61,12 @@ type Consumer struct {
 	LastSeen    time.Time
 }
 
-// Session is one bot token owned exclusively by this sidecar.
+// Session is one Telegram account (bot token or user login) owned
+// exclusively by this sidecar.
 type Session struct {
 	Alias string
 	Token string
+	Kind  string // bot | user
 
 	mu    sync.Mutex
 	state SessionState
@@ -114,16 +118,23 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	logins   map[string]*loginCtl
 
 	// ClientFactory builds the Telegram client; tests inject fakes.
 	ClientFactory func(alias string) Client
+	// LoginDriverFactory builds the auth driver for the admin login
+	// flow; tests inject fakes.
+	LoginDriverFactory func(alias string) loginDriver
 }
 
 // NewManager wires the session plane.
 func NewManager(cfg config.MTProto, st *store.MT, h *health.Storage) *Manager {
-	m := &Manager{cfg: cfg, st: st, h: h, sessions: map[string]*Session{}}
+	m := &Manager{cfg: cfg, st: st, h: h, sessions: map[string]*Session{}, logins: map[string]*loginCtl{}}
 	m.ClientFactory = func(alias string) Client {
 		return newGotdClient(cfg, alias, st)
+	}
+	m.LoginDriverFactory = func(alias string) loginDriver {
+		return newGotdLoginDriver(cfg, alias, st)
 	}
 	return m
 }
@@ -161,11 +172,42 @@ func (m *Manager) Sessions() map[string]*Session {
 // Register adds a session; its supervisor starts the client. A rotated
 // token tears the old session down first.
 func (m *Manager) Register(ctx context.Context, alias, token string) (*Session, error) {
+	return m.register(ctx, alias, token, "bot")
+}
+
+// RegisterUser adds a user-account session (login/import comes after).
+func (m *Manager) RegisterUser(ctx context.Context, alias, phone, connOpts string) (*Session, error) {
+	if m.Get(alias) != nil {
+		_ = m.Unregister(ctx, alias)
+	}
+	if err := m.st.RegisterUser(alias, phone, connOpts); err != nil {
+		return nil, err
+	}
+	s := &Session{
+		Alias:          alias,
+		Kind:           "user",
+		state:          StateConnecting,
+		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
+		clientFactory:  func() Client { return m.ClientFactory(alias) },
+		updateCh:       make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
+		st:             m.st,
+		h:              m.h,
+		seenIdemKeys:   map[string]float64{},
+		stopSupervisor: make(chan struct{}),
+	}
+	m.mu.Lock()
+	m.sessions[alias] = s
+	m.mu.Unlock()
+	go m.supervise(s)
+	return s, nil
+}
+
+func (m *Manager) register(ctx context.Context, alias, token, kind string) (*Session, error) {
 	m.mu.Lock()
 	existing, ok := m.sessions[alias]
 	m.mu.Unlock()
 	if ok {
-		if existing.Token == token {
+		if existing.Token == token && existing.Kind == kind {
 			return existing, nil
 		}
 		_ = m.Unregister(ctx, alias)
@@ -176,6 +218,7 @@ func (m *Manager) Register(ctx context.Context, alias, token string) (*Session, 
 	s := &Session{
 		Alias:          alias,
 		Token:          token,
+		Kind:           kind,
 		state:          StateConnecting,
 		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
 		clientFactory:  func() Client { return m.ClientFactory(alias) },
@@ -184,6 +227,11 @@ func (m *Manager) Register(ctx context.Context, alias, token string) (*Session, 
 		h:              m.h,
 		seenIdemKeys:   map[string]float64{},
 		stopSupervisor: make(chan struct{}),
+	}
+	// a re-registered alias may already be kind=user on disk (bot Register
+	// only touches token_enc); the live session must reflect the row
+	if meta, ok := m.st.GetSessionMeta(alias); ok {
+		s.Kind = meta.Kind
 	}
 	m.mu.Lock()
 	m.sessions[alias] = s
@@ -209,6 +257,16 @@ func (m *Manager) supervise(s *Session) {
 		if st := s.CurrentState(); st == StatePaused || st == StateDraining {
 			sleepCtx(s.stopSupervisor, 2*time.Second)
 			continue
+		}
+		// a user session mid-login: the admin flow dials its own runs —
+		// the supervisor must not open a second connection on the same
+		// auth_key (AUTH_KEY_DUPLICATED). Re-attempt only once the login
+		// is authorized (or there is no login at all: import path).
+		if s.CurrentState() == StateAwaitingLogin {
+			if stage, _, _ := m.LoginStage(s.Alias); stage == loginStageCodeSent || stage == loginStagePassword {
+				sleepCtx(s.stopSupervisor, 5*time.Second)
+				continue
+			}
 		}
 		s.mu.Lock()
 		connected := s.client != nil && s.client.IsConnected() && s.state == StateLive
@@ -254,6 +312,16 @@ func (m *Manager) supervise(s *Session) {
 		s.startAttempts++
 		s.mu.Unlock()
 		if err := m.startClient(s); err != nil {
+			if errors.Is(err, ErrAwaitingLogin) {
+				// keep the lock (the process owns the session); the admin
+				// login flow completes the authorization, then the
+				// supervisor reconnects. Recheck every 30s covers imports.
+				s.setState(StateAwaitingLogin)
+				s.setError("awaiting login: start it via POST /v1/admin/sessions/" +
+					s.Alias + "/login/start")
+				s.setRetryAt(monoNow() + 30.0)
+				continue
+			}
 			kind := ClassifyStartError(err)
 			switch kind {
 			case "terminal":
@@ -313,7 +381,11 @@ func (m *Manager) startClient(s *Session) error {
 	err := client.Connect(ctx)
 	cancel()
 	if err != nil {
-		m.releaseLock(s)
+		// awaiting-login KEEPS the lock: the login flow runs under this
+		// process's ownership; every other failure releases it
+		if !errors.Is(err, ErrAwaitingLogin) {
+			m.releaseLock(s)
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -588,12 +660,19 @@ func (m *Manager) RestoreAll(ctx context.Context) int {
 		return 0
 	}
 	for _, row := range rows {
-		token, ok := m.st.GetToken(row.Alias)
-		if !ok {
-			continue
-		}
-		if _, err := m.Register(ctx, row.Alias, token); err != nil {
-			continue
+		if row.Kind == "user" {
+			meta, _ := m.st.GetSessionMeta(row.Alias)
+			if _, err := m.RegisterUser(ctx, row.Alias, row.Phone, meta.ConnOpts); err != nil {
+				continue
+			}
+		} else {
+			token, ok := m.st.GetToken(row.Alias)
+			if !ok {
+				continue
+			}
+			if _, err := m.Register(ctx, row.Alias, token); err != nil {
+				continue
+			}
 		}
 		if row.Paused {
 			if s := m.Get(row.Alias); s != nil {
@@ -811,8 +890,13 @@ func (s *Session) Stats() map[string]any {
 	if len(lastErr) > 200 {
 		lastErr = lastErr[:200]
 	}
+	kind := s.Kind
+	if kind == "" {
+		kind = "bot"
+	}
 	return map[string]any{
 		"alias":                     s.Alias,
+		"kind":                      kind,
 		"state":                     string(s.state),
 		"connection_age_s":          connectionAge,
 		"queue_depth":               len(s.updateCh),
