@@ -632,7 +632,10 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 // isReadMethod lists calls exempt from the E4 send pause.
 func isReadMethod(method string) bool {
 	switch strings.ToLower(method) {
-	case "answer_callback_query", "answer_inline_query", "get_updates", "getupdates", "get_me", "get_chat", "resolve_username":
+	case "answer_callback_query", "answer_inline_query", "get_updates", "getupdates",
+		"get_me", "get_chat", "resolve_username",
+		"get_history", "get_messages", "get_dialogs", "get_entity",
+		"get_full_channel", "get_participant", "get_participants":
 		return true
 	}
 	return false

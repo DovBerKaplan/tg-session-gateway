@@ -24,13 +24,16 @@ Python plane, which coerced `"007"` to 7 and `"true"` to boolean).
 ## MTProto sidecar plane
 
 Pyrogram-shaped serialization (goldens recorded from real pyrofork
-raw TL objects; `json.loads(str(raw))` contract). 19-method allowlist
-with 501 + list for anything else — see
-[sidecar-spec.md](sidecar-spec.md) section 10. Telethon-compatible:
-NOT supported (official statement there).
+raw TL objects; `json.loads(str(raw))` contract). 19 core methods +
+15 scanner methods (history/dialogs/participants, channel admin,
+document-by-reference sends) with 501 + list for anything else — see
+[sidecar-spec.md](sidecar-spec.md) section 10. Telethon StringSessions
+import (0.2) via the admin API; running the Telethon library itself
+stays out of scope.
 
 ## Session files
 
 pyrofork/Pyrogram `.session` files convert in place with
-`tggw migrate` (no new Telegram login). gotd session blobs are sealed
-at rest with the volume fernet key since 0.1.0.
+`tggw migrate` (no new Telegram login). Telethon StringSessions import
+via `POST /v1/admin/sessions/{alias}/import` (0.2). gotd session blobs
+are sealed at rest with the volume fernet key since 0.1.0.

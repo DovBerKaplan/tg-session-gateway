@@ -45,6 +45,10 @@ type gotdClient struct {
 	storeDB *store.MT
 	kind    string // bot | user
 
+	// scanFake overrides the scan-surface RPC layer in tests (nil in
+	// production: g.scan() returns the real raw client).
+	scanFake scanAPI
+
 	client        *telegram.Client
 	raw           *tg.Client
 	runCancel     context.CancelFunc

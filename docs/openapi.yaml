@@ -7,7 +7,7 @@ info:
     Telegram Bot API envelope ({"ok":true,"result":...}) — only the
     gateway-specific surface is listed here; every non-gateway-owned
     Bot API method is proxied verbatim. The MTProto plane is the
-    sidecar facade (19-method allowlist).
+    sidecar facade (19 core methods + 15 scanner methods; unknown → 501 with the list).
 servers:
   - url: http://tggw:8080
     description: main listener (both planes)
@@ -148,13 +148,17 @@ paths:
   /v1/sessions/{alias}/{method}:
     post:
       summary: >
-        MTProto facade call (19-method allowlist: send_message,
-        edit_message_text, edit_message_reply_markup,
+        MTProto facade call (19 core + 15 scanner methods:
+        send_message, edit_message_text, edit_message_reply_markup,
         edit_message_caption, send_chat_action, delete_messages,
         forward_messages, get_chat, resolve_username,
         answer_callback_query, send_photo, send_video, send_document,
         send_audio, send_voice, send_animation, send_media_group,
-        copy_message, get_me). Unknown methods answer 501 with the list.
+        copy_message, get_me; get_history, get_messages, get_dialogs,
+        get_entity, get_full_channel, get_participant, get_participants,
+        send_media, create_channel, edit_channel, delete_channel,
+        edit_admin, join_channel, leave_channel, send_read_acknowledge).
+        Unknown methods answer 501 with the list.
       security: [{appSecret: []}]
       parameters:
         - {name: alias, in: path, required: true, schema: {type: string}}

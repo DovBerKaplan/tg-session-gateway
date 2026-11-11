@@ -245,31 +245,45 @@ A long-lived sidecar, outside the application Compose project, that is the sole 
 
 ---
 
-## 10. Implemented surface (0.1.0) — the shipped contract
+## 10. Implemented surface — the shipped contract
 
-### 10.1 Method allowlist (exactly these 19)
+### 10.1 Method allowlist (19 core + 15 scanner methods)
 
-`send_message`, `edit_message_text`, `edit_message_reply_markup`,
-`edit_message_caption`, `send_chat_action`, `delete_messages`,
-`forward_messages`, `get_chat`, `resolve_username`,
+**Core (0.1.0):** `send_message`, `edit_message_text`,
+`edit_message_reply_markup`, `edit_message_caption`, `send_chat_action`,
+`delete_messages`, `forward_messages`, `get_chat`, `resolve_username`,
 `answer_callback_query`, `send_photo`, `send_video`, `send_document`,
 `send_audio`, `send_voice`, `send_animation`, `send_media_group`,
 `copy_message`, `get_me`.
+
+**Scanner surface (0.2):** `get_history` (one messages.getHistory
+window — offset_id/add_offset/min_id/limit, Telegram semantics; the
+walk stays with the caller; NEVER marks as read), `get_messages`
+(channels.getMessages, chunked, requested order), `get_dialogs` (walk +
+metadata fill, access hashes included), `get_entity`,
+`get_full_channel`, `get_participant`, `get_participants`
+(filter: recent|admins|kicked|banned|search), `send_media` (existing
+document by reference — server-side copy via InputMediaDocument, no
+upload/download), `create_channel`, `edit_channel` (title/about/
+signatures/pre_history_hidden/no_forwards), `delete_channel`,
+`edit_admin` (named rights incl. `anonymous`), `join_channel`,
+`leave_channel`, `send_read_acknowledge` (the ONLY read-receipt path —
+explicit by design).
 
 Anything else answers **501** with the list (requirement F-surface:
 discoverability over getattr surprises). The inventory of consumer
 methods from production logs remains a cutover-gate item in the
 runbook's soak checklist.
 
-### 10.2 What is explicitly NOT in 0.1.0
+### 10.2 Telethon sessions (0.2 — supersedes the 0.1 statement)
 
-- **Telethon compatibility**: not shipped, not planned for 0.1.x. The
-  sidecar is a gotd-based HTTP facade shaped like Pyrogram's
-  serialization (the golden files pin it). Official statement: if you
-  need Telethon, keep Telethon — this sidecar does not replace it.
-- Every MTProto method beyond the list above: use
-  [TelegramApiServer](https://github.com/xtrime-ru/TelegramApiServer)
-  (the README's comparison table says the same).
+0.1.0 said "Telethon compatibility: not shipped, not planned for
+0.1.x." 0.2 ships the piece that matters for migration: a Telethon
+**StringSession imports** into the gateway's sealed storage
+(`POST /v1/admin/sessions/{alias}/import`) and opens without a new
+login — the gateway becomes the single holder of that auth key. The
+HTTP facade stays gotd/Pyrogram-shaped; running the Telethon client
+library itself remains out of scope.
 
 ### 10.3 Connection supervision = the circuit breaker
 
