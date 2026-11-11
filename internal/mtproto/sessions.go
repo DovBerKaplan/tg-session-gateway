@@ -71,6 +71,7 @@ type Session struct {
 	mu    sync.Mutex
 	state SessionState
 	Guard *rateguard.MTGuard
+	lanes *laneScheduler
 
 	clientFactory func() Client
 	client        Client
@@ -188,6 +189,7 @@ func (m *Manager) RegisterUser(ctx context.Context, alias, phone, connOpts strin
 		Kind:           "user",
 		state:          StateConnecting,
 		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
+		lanes:          newLaneScheduler(),
 		clientFactory:  func() Client { return m.ClientFactory(alias) },
 		updateCh:       make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
 		st:             m.st,
@@ -221,6 +223,7 @@ func (m *Manager) register(ctx context.Context, alias, token, kind string) (*Ses
 		Kind:           kind,
 		state:          StateConnecting,
 		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
+		lanes:          newLaneScheduler(),
 		clientFactory:  func() Client { return m.ClientFactory(alias) },
 		updateCh:       make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
 		st:             m.st,
@@ -908,6 +911,7 @@ func (s *Session) Stats() map[string]any {
 		"last_error":                lastErr,
 		"send_paused":               s.SendPaused,
 		"terminal_error":            s.terminalError,
+		"lane_queue":                s.lanes.Depth(),
 		"reconnects":                s.reconnects,
 		"start_attempts":            s.startAttempts,
 		"persist_failures":          s.PersistFailures,

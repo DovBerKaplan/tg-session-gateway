@@ -543,33 +543,32 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 		return
 	}
 
-	waited := 0.0
-	for !s.Guard.TryAcquire(method, chatRef) {
-		if a.Cfg.Policy.OnLimit == "reject" || waited > a.Cfg.Policy.QueueWaitTimeout {
-			s.noteSynthetic429()
-			retry := s.Guard.WaitTime(method, chatRef)
-			if retry < 1.0 {
-				retry = 1.0
-			} else if retry > 60.0 {
-				retry = 60.0
-			}
-			writeJSON(w, 429, map[string]any{
-				"ok": false, "error_code": 429,
-				"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-				"parameters":  map[string]any{"retry_after": int(retry)},
-			})
-			return
+	// rate guard admission through the lane scheduler: interactive
+	// first, bulk last, round-robin between clients within a lane
+	lane := MethodLane(strings.ToLower(method), caller.Lane)
+	admitted := false
+	if a.Cfg.Policy.OnLimit == "reject" {
+		admitted = s.Guard.TryAcquire(method, chatRef)
+	} else {
+		deadline := time.Now().Add(time.Duration(a.Cfg.Policy.QueueWaitTimeout * float64(time.Second)))
+		admitted = s.lanes.Admit(r.Context(), lane, caller.ID, deadline, func() bool {
+			return s.Guard.TryAcquire(method, chatRef)
+		})
+	}
+	if !admitted {
+		s.noteSynthetic429()
+		retry := s.Guard.WaitTime(method, chatRef)
+		if retry < 1.0 {
+			retry = 1.0
+		} else if retry > 60.0 {
+			retry = 60.0
 		}
-		wait := s.Guard.WaitTime(method, chatRef)
-		if wait > 2.0 {
-			wait = 2.0
-		}
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(time.Duration(wait * float64(time.Second))):
-		}
-		waited += wait
+		writeJSON(w, 429, map[string]any{
+			"ok": false, "error_code": 429,
+			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
+			"parameters":  map[string]any{"retry_after": int(retry)},
+		})
+		return
 	}
 
 	client := s.LiveClient()
@@ -591,6 +590,11 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 		}
 		if info := rateguard.ParseFloodWait(err.Error()); info != nil {
 			s.noteRealFloodWait()
+			// account-level flood (no chat scope): degrade the lanes —
+			// bulk pauses for the full wait, normal for half
+			if chatRef == nil {
+				s.lanes.PauseForFlood(float64(info.Wait))
+			}
 			adaptive := s.Guard.ReportFloodWait(err.Error(), chatRef)
 			retry := info.Wait
 			if adaptive != nil {
@@ -1625,6 +1629,12 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		if lastPingOKAt > 0 {
 			lines = append(lines, fmt.Sprintf("tg_gateway_seconds_since_ping_ok{%s} %.1f", labels, monoNow()-lastPingOKAt))
+		}
+		for lane, depth := range s.lanes.Depth() {
+			lines = append(lines, fmt.Sprintf("tg_gateway_lane_queue_depth{alias=%q,lane=%q} %d", alias, lane, depth))
+		}
+		for lane, n := range s.lanes.Admissions() {
+			lines = append(lines, fmt.Sprintf("tg_gateway_lane_admissions_total{alias=%q,lane=%q} %d", alias, lane, n))
 		}
 	}
 	degraded := 0
