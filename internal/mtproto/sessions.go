@@ -53,9 +53,13 @@ const (
 	StateAwaitingLogin SessionState = "awaiting_login" // user session, admin login flow pending
 )
 
-// Consumer is a connected WS consumer (app replica).
+// Consumer is a connected WS consumer (app replica). A nil Filter
+// receives everything (the legacy broadcast); group consumers carry
+// their reader-group filter (channels subset / document-only).
 type Consumer struct {
 	ID          string
+	Group       string
+	Filter      func(update map[string]any) bool
 	Send        func(string) error
 	ConnectedAt time.Time
 	LastSeen    time.Time
@@ -513,6 +517,9 @@ func (s *Session) pushUpdate(update map[string]any) {
 	raw, _ := json.Marshal(update)
 	for _, c := range consumers {
 		if c.Send != nil {
+			if c.Filter != nil && !c.Filter(update) {
+				continue
+			}
 			if err := c.Send(string(raw)); err != nil {
 				slog.Warn("WS push failed", "alias", s.Alias, "consumer", c.ID, "err", err)
 			}
@@ -688,27 +695,6 @@ func (m *Manager) RestoreAll(ctx context.Context) int {
 		}
 	}
 	return n
-}
-
-// PersistStates snapshots pts/qts/date/seq for every live session.
-func (m *Manager) PersistStates() {
-	for _, s := range m.Sessions() {
-		if s.CurrentState() != StateLive {
-			continue
-		}
-		s.mu.Lock()
-		client := s.client
-		s.mu.Unlock()
-		if client == nil {
-			continue
-		}
-		if gc, ok := client.(*gotdClient); ok {
-			st := gc.UpdateState()
-			if st.PTS != 0 || st.QTS != 0 {
-				_ = m.st.SaveState(s.Alias, st)
-			}
-		}
-	}
 }
 
 // Shutdown stops everything, locks released.

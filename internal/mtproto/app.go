@@ -158,7 +158,6 @@ func (a *App) housekeepingLoop() {
 		case <-a.houseStop:
 			return
 		case <-t.C:
-			a.Mgr.PersistStates()
 			a.Store.IdempotencyCleanup()
 			ttl := a.Cfg.Policy.UpdateTTLS
 			cutoff := wallNow() - ttl
@@ -203,8 +202,7 @@ func (a *App) Close() {
 		close(a.maintStop)
 		close(a.houseStop)
 		a.Beat.Stop()
-		a.Mgr.PersistStates() // final snapshot before exit
-		a.Mgr.Shutdown()
+			a.Mgr.Shutdown()
 		a.Store.Close()
 	})
 }
@@ -708,6 +706,13 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 		limit = int(v)
 	}
 
+	// reader-group mode: this group acks its own cursor; rows live until
+	// every group (and the legacy offset) has passed them
+	if group := argStr(body, "group"); group != "" {
+		a.handleGroupGetUpdates(w, r, s, group, body, timeout, limit)
+		return
+	}
+
 	if off, ok := anyToInt64(body["offset"]); ok {
 		// Bot API offset semantics: ack everything strictly below
 		_ = a.Store.QueueAck(s.Alias, off-1)
@@ -763,6 +768,112 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-time.After(time.Duration(remaining * float64(time.Second))):
 		}
+	}
+}
+
+// handleGroupGetUpdates is the reader-group pull: cursor + filters are
+// per group; the physical rows are shared (deleted once every group
+// passed them, or by TTL).
+func (a *App) handleGroupGetUpdates(w http.ResponseWriter, r *http.Request, s *Session, group string, body map[string]any, timeout float64, limit int) {
+	// every group pull registers the group (cursor 0 until first ack) —
+	// an unacked group must hold its rows; filters update whenever the
+	// request carries them: {"group":"scan","channels":[…],"document_only":true}
+	channels := ""
+	if raw, ok := body["channels"].([]any); ok {
+		if b, err := json.Marshal(raw); err == nil {
+			channels = string(b)
+		}
+	}
+	_ = a.Store.EnsureGroup(s.Alias, group, channels, argBool(body, "document_only"))
+	cursor := a.Store.GroupCursorOf(s.Alias, group)
+	filter := groupFilter(a.Store, cursor)
+
+	off := cursor.AckedSeq + 1
+	if req, ok := anyToInt64(body["offset"]); ok {
+		off = req
+		_ = a.Store.GroupAck(s.Alias, group, off-1)
+	}
+
+	deadline := monoNow() + timeout
+	for {
+		if raws := a.Store.QueuePullRaw(s.Alias, off-1, limit*3); len(raws) > 0 {
+			if filter == nil {
+				writeRawSplice(w, raws[:min(len(raws), limit)])
+				return
+			}
+			// filtered path: decode → filter → re-encode (only groups
+			// with filters pay this; the rest keep the raw splice)
+			out := make([]store.RawUpdate, 0, limit)
+			for _, ru := range raws {
+				var u map[string]any
+				if json.Unmarshal(ru.JSON, &u) != nil {
+					continue
+				}
+				if filter(u) {
+					out = append(out, ru)
+					if len(out) >= limit {
+						break
+					}
+				}
+			}
+			if len(out) > 0 {
+				writeRawSplice(w, out)
+				return
+			}
+		}
+		remaining := deadline - monoNow()
+		if remaining <= 0 {
+			writeJSON(w, 200, map[string]any{"ok": true, "result": []any{}, "group": group})
+			return
+		}
+		if remaining > 0.2 {
+			remaining = 0.2
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(time.Duration(remaining * float64(time.Second))):
+		}
+	}
+}
+
+// groupFilter builds the group's update filter from its stored config
+// (nil = accept everything).
+func groupFilter(st *store.MT, cursor store.GroupCursor) func(map[string]any) bool {
+	var channels map[int64]bool
+	if cursor.Channels != "" {
+		var list []any
+		if json.Unmarshal([]byte(cursor.Channels), &list) == nil {
+			channels = map[int64]bool{}
+			for _, v := range list {
+				if id, ok := anyToInt64(v); ok {
+					channels[id] = true
+				}
+			}
+		}
+	}
+	if channels == nil && !cursor.DocumentOnly {
+		return nil
+	}
+	return func(u map[string]any) bool {
+		msg, _ := u["message"].(map[string]any)
+		if msg == nil {
+			return false // only message updates carry a chat filter
+		}
+		if channels != nil {
+			chat, _ := msg["chat"].(map[string]any)
+			id, _ := anyToInt64(chat["id"])
+			if !channels[id] {
+				return false
+			}
+		}
+		if cursor.DocumentOnly {
+			media, _ := msg["media"].(map[string]any)
+			if media == nil || media["_"] != "MessageMediaDocument" {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -850,8 +961,17 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	group := r.URL.Query().Get("group")
+	var groupCursor store.GroupCursor
+	var groupFilterFn func(map[string]any) bool
+	if group != "" {
+		groupCursor = a.Store.GroupCursorOf(alias, group)
+		groupFilterFn = groupFilter(a.Store, groupCursor)
+	}
 	s.AddConsumer(&Consumer{
 		ID:          consumerID,
+		Group:       group,
+		Filter:      groupFilterFn,
 		Send:        func(data string) error { return trySend(writeCh, []byte(data)) },
 		ConnectedAt: time.Now(),
 		LastSeen:    time.Now(),
@@ -861,9 +981,24 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		close(writeCh)
 	}()
 
+	// group replay: everything this group has not acked yet rides first
+	if group != "" {
+		for _, ru := range a.Store.QueuePullRaw(alias, groupCursor.AckedSeq, 500) {
+			if groupFilterFn != nil {
+				var u map[string]any
+				if json.Unmarshal(ru.JSON, &u) != nil || !groupFilterFn(u) {
+					continue
+				}
+			}
+			if trySend(writeCh, ru.JSON) != nil {
+				break // slow consumer — it will re-pull by cursor
+			}
+		}
+	}
+
 	_ = c.Write(ctx, websocket.MessageText, mustJSON(map[string]any{
 		"ok": true, "consumer_id": consumerID, "session": alias,
-		"state": string(s.CurrentState()),
+		"state": string(s.CurrentState()), "group": group,
 	}))
 
 	for {
@@ -873,10 +1008,18 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		}
 		var msg map[string]any
 		if err := json.Unmarshal(data, &msg); err == nil {
-			if t, _ := msg["type"].(string); t == "ping" {
+			switch t, _ := msg["type"].(string); t {
+			case "ping":
 				select {
 				case writeCh <- mustJSON(map[string]any{"type": "pong"}):
 				default:
+				}
+			case "ack":
+				// group cursor advance: {"type":"ack","seq":N}
+				if group != "" {
+					if seq, ok := anyToInt64(msg["seq"]); ok {
+						_ = a.Store.GroupAck(alias, group, seq)
+					}
 				}
 			}
 		}

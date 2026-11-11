@@ -113,8 +113,8 @@ func TestMTMigratesV1DB(t *testing.T) {
 	t.Cleanup(m.Close)
 
 	var version int
-	if err := m.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
-		t.Fatalf("user_version=%d err=%v (want 3)", version, err)
+	if err := m.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 4 {
+		t.Fatalf("user_version=%d err=%v (want 4)", version, err)
 	}
 	rows, err := m.ListSessions()
 	if err != nil || len(rows) != 1 || rows[0].Alias != "legacy" || rows[0].Kind != "bot" {

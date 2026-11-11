@@ -71,6 +71,23 @@ CREATE TABLE IF NOT EXISTS clients (
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     revoked       INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS consumer_groups (
+    alias         TEXT NOT NULL,
+    group_name    TEXT NOT NULL,
+    acked_seq     INTEGER NOT NULL DEFAULT 0,
+    channels      TEXT NOT NULL DEFAULT '',
+    document_only INTEGER NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, group_name)
+);
+
+CREATE TABLE IF NOT EXISTS channel_pts (
+    alias      TEXT NOT NULL,
+    channel_id INTEGER NOT NULL,
+    pts        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, channel_id)
+);
 `
 
 // mtClientsMigration is schema v2: per-client tokens with a method
@@ -96,6 +113,27 @@ const mtUserSessionsMigration = `
 ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'bot';
 ALTER TABLE sessions ADD COLUMN phone TEXT NOT NULL DEFAULT '';
 ALTER TABLE sessions ADD COLUMN conn_opts TEXT NOT NULL DEFAULT '';
+`
+
+// mtReaderGroupsMigration is schema v4: update-stream reader groups
+// (each group acks its own cursor; rows delete when every group passed
+// them) and per-channel pts for gotd's gap recovery.
+const mtReaderGroupsMigration = `
+CREATE TABLE IF NOT EXISTS consumer_groups (
+    alias         TEXT NOT NULL,
+    group_name    TEXT NOT NULL,
+    acked_seq     INTEGER NOT NULL DEFAULT 0,
+    channels      TEXT NOT NULL DEFAULT '',
+    document_only INTEGER NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, group_name)
+);
+CREATE TABLE IF NOT EXISTS channel_pts (
+    alias      TEXT NOT NULL,
+    channel_id INTEGER NOT NULL,
+    pts        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, channel_id)
+);
 `
 
 // MT is the MTProto plane store: session metadata, Telegram update
@@ -130,9 +168,10 @@ func OpenMT(dataDir, fernetKey, durability string, backupsDir string, h *health.
 		_ = db.Close()
 		return nil, err
 	}
-	if err := EnsureSchema(db, 3, map[int]string{
+	if err := EnsureSchema(db, 4, map[int]string{
 		2: mtClientsMigration,
 		3: mtUserSessionsMigration,
+		4: mtReaderGroupsMigration,
 	}, path, backupsDir); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -582,6 +621,117 @@ func (m *MT) GetAudit(limit int) []AuditEntry {
 		}
 	}
 	return out
+}
+
+// ── reader groups (per-group update cursors) ───────────────────────
+
+// GroupCursor is one reader group's acked position and filters.
+type GroupCursor struct {
+	Alias        string `json:"-"`
+	Group        string `json:"group"`
+	AckedSeq     int64  `json:"acked_seq"`
+	Channels     string `json:"channels,omitempty"`     // JSON array filter ("" = all)
+	DocumentOnly bool   `json:"document_only,omitempty"`
+}
+
+// EnsureGroup registers a reader group (idempotent; filters update).
+func (m *MT) EnsureGroup(alias, group, channels string, documentOnly bool) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO consumer_groups (alias, group_name, acked_seq, channels, document_only, updated_at) "+
+			"VALUES (?, ?, 0, ?, ?, ?) "+
+			"ON CONFLICT(alias, group_name) DO UPDATE SET channels = excluded.channels, "+
+			"document_only = excluded.document_only, updated_at = excluded.updated_at",
+		alias, group, channels, boolInt(documentOnly), wallNow())
+	return err
+}
+
+// GroupAck advances one group's cursor (never backwards) and deletes
+// rows every group has passed.
+func (m *MT) GroupAck(alias, group string, seq int64) error {
+	if _, err := m.DB.Exec(
+		"INSERT INTO consumer_groups (alias, group_name, acked_seq, updated_at) VALUES (?, ?, ?, ?) "+
+			"ON CONFLICT(alias, group_name) DO UPDATE SET acked_seq = MAX(acked_seq, excluded.acked_seq), "+
+			"updated_at = excluded.updated_at",
+		alias, group, seq, wallNow()); err != nil {
+		return err
+	}
+	// physical delete below the slowest group's cursor
+	_, _ = m.DB.Exec(
+		"DELETE FROM update_queue WHERE alias = ? AND update_id <= "+
+			"(SELECT MIN(acked_seq) FROM consumer_groups WHERE alias = ?)", alias, alias)
+	return nil
+}
+
+// ListGroups returns the reader groups of one session.
+func (m *MT) ListGroups(alias string) []GroupCursor {
+	rows, err := m.DB.Query(
+		"SELECT alias, group_name, acked_seq, channels, document_only FROM consumer_groups WHERE alias = ?",
+		alias)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []GroupCursor
+	for rows.Next() {
+		var g GroupCursor
+		var docOnly int
+		if err := rows.Scan(&g.Alias, &g.Group, &g.AckedSeq, &g.Channels, &docOnly); err == nil {
+			g.DocumentOnly = docOnly != 0
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// GroupCursorOf loads one group's cursor (0 when unknown).
+func (m *MT) GroupCursorOf(alias, group string) GroupCursor {
+	var g GroupCursor
+	var docOnly int
+	_ = m.DB.QueryRow(
+		"SELECT alias, group_name, acked_seq, channels, document_only FROM consumer_groups "+
+			"WHERE alias = ? AND group_name = ?", alias, group).
+		Scan(&g.Alias, &g.Group, &g.AckedSeq, &g.Channels, &docOnly)
+	g.DocumentOnly = docOnly != 0
+	return g
+}
+
+// ── channel pts (gotd updates.Manager gap recovery) ────────────────
+
+// GetChannelPts loads the persisted channel pts (0 when unknown).
+func (m *MT) GetChannelPts(alias string, channelID int64) (int, bool) {
+	var pts int
+	err := m.DB.QueryRow(
+		"SELECT pts FROM channel_pts WHERE alias = ? AND channel_id = ?", alias, channelID).Scan(&pts)
+	return pts, err == nil
+}
+
+// SetChannelPts persists one channel's pts.
+func (m *MT) SetChannelPts(alias string, channelID int64, pts int) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO channel_pts (alias, channel_id, pts) VALUES (?, ?, ?) "+
+			"ON CONFLICT(alias, channel_id) DO UPDATE SET pts = excluded.pts",
+		alias, channelID, pts)
+	return err
+}
+
+// ForEachChannelPts iterates every persisted channel pts.
+func (m *MT) ForEachChannelPts(alias string, fn func(channelID int64, pts int) error) error {
+	rows, err := m.DB.Query("SELECT channel_id, pts FROM channel_pts WHERE alias = ?", alias)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var channelID int64
+		var pts int
+		if err := rows.Scan(&channelID, &pts); err != nil {
+			return err
+		}
+		if err := fn(channelID, pts); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // ── clients (per-consumer tokens with an allowlist) ────────────────

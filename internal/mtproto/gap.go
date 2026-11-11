@@ -1,0 +1,100 @@
+package mtproto
+
+// gotd updates.Manager wiring: gap recovery (getDifference /
+// getChannelDifference) runs inside the gateway — the connection lives
+// here, so the "no lost updates" guarantee must too. The manager's
+// StateStorage persists into mtgateway.db (the same pts/qts/date/seq
+// columns RestoreAll already reads, plus per-channel pts), surviving
+// restarts.
+
+import (
+	"context"
+
+	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/updates"
+
+	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
+)
+
+// gapStateStorage adapts store.MT to updates.StateStorage. userID is
+// ignored — one account per alias (the session IS the user).
+type gapStateStorage struct {
+	st    *store.MT
+	alias string
+}
+
+// compile-time check.
+var _ updates.StateStorage = (*gapStateStorage)(nil)
+
+func (s *gapStateStorage) GetState(_ context.Context, _ int64) (updates.State, bool, error) {
+	st := s.st.GetState(s.alias)
+	if st.PTS == 0 {
+		return updates.State{}, false, nil
+	}
+	return updates.State{
+		Pts:  int(st.PTS),
+		Qts:  int(st.QTS),
+		Date: int(st.Date),
+		Seq:  int(st.Seq),
+	}, true, nil
+}
+
+func (s *gapStateStorage) SetState(_ context.Context, _ int64, state updates.State) error {
+	return s.st.SaveState(s.alias, store.MTState{
+		PTS: int64(state.Pts), QTS: int64(state.Qts),
+		Date: int64(state.Date), Seq: int64(state.Seq),
+	})
+}
+
+// mutate runs read-modify-write on the state columns; the manager
+// calls these from its single loop goroutine, so no locking is needed.
+func (s *gapStateStorage) mutate(fn func(st store.MTState) store.MTState) error {
+	return s.st.SaveState(s.alias, fn(s.st.GetState(s.alias)))
+}
+
+func (s *gapStateStorage) SetPts(ctx context.Context, userID int64, pts int) error {
+	return s.mutate(func(st store.MTState) store.MTState { st.PTS = int64(pts); return st })
+}
+
+func (s *gapStateStorage) SetQts(ctx context.Context, userID int64, qts int) error {
+	return s.mutate(func(st store.MTState) store.MTState { st.QTS = int64(qts); return st })
+}
+
+func (s *gapStateStorage) SetDate(ctx context.Context, userID int64, date int) error {
+	return s.mutate(func(st store.MTState) store.MTState { st.Date = int64(date); return st })
+}
+
+func (s *gapStateStorage) SetSeq(ctx context.Context, userID int64, seq int) error {
+	return s.mutate(func(st store.MTState) store.MTState { st.Seq = int64(seq); return st })
+}
+
+func (s *gapStateStorage) SetDateSeq(ctx context.Context, userID int64, date, seq int) error {
+	return s.mutate(func(st store.MTState) store.MTState {
+		st.Date, st.Seq = int64(date), int64(seq)
+		return st
+	})
+}
+
+func (s *gapStateStorage) GetChannelPts(_ context.Context, _ int64, channelID int64) (int, bool, error) {
+	pts, found := s.st.GetChannelPts(s.alias, channelID)
+	return pts, found, nil
+}
+
+func (s *gapStateStorage) SetChannelPts(_ context.Context, _ int64, channelID int64, pts int) error {
+	return s.st.SetChannelPts(s.alias, channelID, pts)
+}
+
+func (s *gapStateStorage) ForEachChannels(_ context.Context, _ int64, f func(ctx context.Context, channelID int64, pts int) error) error {
+	return s.st.ForEachChannelPts(s.alias, func(channelID int64, pts int) error {
+		return f(context.Background(), channelID, pts)
+	})
+}
+
+// newUpdatesManager builds the gap-recovering handler that wraps the
+// session's update fan-out.
+func newUpdatesManager(st *store.MT, alias string, handler telegram.UpdateHandler) *updates.Manager {
+	return updates.New(updates.Config{
+		Handler: handler,
+		Storage: &gapStateStorage{st: st, alias: alias},
+	})
+}

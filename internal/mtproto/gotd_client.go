@@ -17,6 +17,7 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/dcs"
+	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
@@ -48,6 +49,11 @@ type gotdClient struct {
 	// scanFake overrides the scan-surface RPC layer in tests (nil in
 	// production: g.scan() returns the real raw client).
 	scanFake scanAPI
+
+	// updMgr is the gap-recovering update handler (getDifference /
+	// getChannelDifference): the connection lives in this process, so
+	// recovery does too. Its state persists via gapStateStorage.
+	updMgr *updates.Manager
 
 	client        *telegram.Client
 	raw           *tg.Client
@@ -120,7 +126,8 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 	if meta, ok := st.GetSessionMeta(alias); ok {
 		g.kind = meta.Kind
 	}
-	g.client = newTelegramClient(cfg, alias, st, telegram.UpdateHandlerFunc(g.onUpdatesClass))
+	g.updMgr = newUpdatesManager(st, alias, telegram.UpdateHandlerFunc(g.onUpdatesClass))
+	g.client = newTelegramClient(cfg, alias, st, g.updMgr)
 	g.raw = g.client.API()
 	return g
 }
@@ -314,6 +321,19 @@ func (g *gotdClient) Connect(ctx context.Context) error {
 					ready <- err
 					return err
 				}
+			}
+			// gap recovery alongside the live stream: the manager owns
+			// pts/qts (+ per-channel pts) and replays what was missed
+			var selfID int64
+			if status.User != nil {
+				selfID = status.User.ID
+			}
+			if g.updMgr != nil {
+				go func() {
+					if err := g.updMgr.Run(ctx, g.raw, selfID, updates.AuthOptions{}); err != nil && ctx.Err() == nil {
+						slog.Warn("updates manager stopped", "alias", g.alias, "err", err)
+					}
+				}()
 			}
 			ready <- nil
 			<-ctx.Done()
@@ -885,22 +905,6 @@ func (g *gotdClient) SendMediaGroup(ctx context.Context, chatID int64, items []M
 // messages.editMessage call with the caption text and its entities.
 func (g *gotdClient) EditMessageCaption(ctx context.Context, p EditTextParams) (EditResult, error) {
 	return g.EditMessageText(ctx, p)
-}
-
-// UpdateState reports the tracked pts/qts (polled by PersistStates).
-// The pts/qts ride gotd's own session state; the durable snapshot stays
-// in mtgateway.db via the persist loop.
-func (g *gotdClient) UpdateState() store.MTState {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	state, err := g.raw.UpdatesGetState(ctx)
-	if err != nil {
-		return store.MTState{}
-	}
-	return store.MTState{
-		PTS: int64(state.Pts), QTS: int64(state.Qts),
-		Date: int64(state.Date), Seq: int64(state.Seq),
-	}
 }
 
 // randomID produces a client-side message nonce (counter + nanos mix).
