@@ -457,6 +457,7 @@ func adminRightsDict(r *tg.ChatAdminRights) []string {
 	add(r.AddAdmins, "add_admins")
 	add(r.Anonymous, "anonymous")
 	add(r.ManageCall, "manage_call")
+	add(r.ManageTopics, "manage_topics")
 	add(r.Other, "other")
 	return out
 }
