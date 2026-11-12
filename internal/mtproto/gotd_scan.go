@@ -179,7 +179,7 @@ func (g *gotdClient) GetHistory(ctx context.Context, chatID int64, offsetID, add
 		limit = 100
 	}
 	res, err := g.scan().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-		Peer:      inputPeerOf(chatID),
+		Peer:      g.peerFor(chatID),
 		OffsetID:  offsetID,
 		AddOffset: addOffset,
 		MinID:     minID,
@@ -371,6 +371,16 @@ func (g *gotdClient) GetFullChannel(ctx context.Context, chatID int64) (map[stri
 	out := map[string]any{
 		"_": "ChannelFull", "id": ch.ID, "title": ch.Title,
 	}
+	if len(res.Chats) > 0 {
+		if c, ok := res.Chats[0].(*tg.Channel); ok {
+			out["title"] = c.Title
+			out["username"] = c.Username
+			out["megagroup"] = c.Megagroup
+			out["signatures"] = c.Signatures
+			out["noforwards"] = c.Noforwards
+			out["access_hash"] = c.AccessHash
+		}
+	}
 	if full, ok := res.FullChat.(*tg.ChannelFull); ok {
 		out["about"] = full.About
 		if n, ok := full.GetParticipantsCount(); ok {
@@ -516,13 +526,32 @@ func (g *gotdClient) GetParticipants(ctx context.Context, p ParticipantsParams) 
 	if err != nil {
 		return nil, err
 	}
+	list, _ := res.(*tg.ChannelsChannelParticipants)
 	parts := []tg.ChannelParticipantClass{}
-	if list, ok := res.(*tg.ChannelsChannelParticipants); ok {
+	if list != nil {
 		parts = list.Participants
 	}
 	out := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
 		out = append(out, channelParticipantDict(part))
+	}
+	// the users riding the response (access hashes for SetAdmin) — a
+	// separate array, additive for existing consumers
+	if list != nil && len(list.Users) > 0 {
+		users := make([]map[string]any, 0, len(list.Users))
+		for _, u := range list.Users {
+			if user, ok := u.(*tg.User); ok {
+				g.cacheUser(user)
+				users = append(users, map[string]any{
+					"_": "User", "id": user.ID, "access_hash": user.AccessHash,
+					"username": user.Username, "is_bot": user.Bot,
+					"first_name": user.FirstName,
+				})
+			}
+		}
+		if len(users) > 0 {
+			out = append(out, map[string]any{"_": "Users", "users": users})
+		}
 	}
 	return out, nil
 }
@@ -561,7 +590,7 @@ func (g *gotdClient) sendDocRef(ctx context.Context, chatID int64, doc DocRef, c
 		},
 	}
 	sender := message.NewSender(g.raw)
-	rb := sender.To(inputPeerOf(chatID))
+	rb := sender.To(g.peerFor(chatID))
 	builder := &rb.Builder
 	var opts []message.StyledTextOption
 	if caption != "" {
@@ -771,7 +800,7 @@ func (g *gotdClient) ReadHistory(ctx context.Context, chatID, maxID int64) (Edit
 		})
 	} else {
 		_, err = g.scan().MessagesReadHistory(ctx, &tg.MessagesReadHistoryRequest{
-			Peer: inputPeerOf(chatID), MaxID: int(maxID),
+			Peer: g.peerFor(chatID), MaxID: int(maxID),
 		})
 	}
 	return EditResult{Ok: err == nil}, err

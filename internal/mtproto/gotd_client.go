@@ -405,7 +405,7 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 	if p.ReplyMarkup != nil {
 		markup = CoerceReplyMarkup(p.ReplyMarkup)
 	}
-	rb := sender.To(inputPeerOf(p.ChatID))
+	rb := sender.To(g.peerFor(p.ChatID))
 	builder := &rb.Builder
 	if markup != nil {
 		builder = rb.Markup(markup)
@@ -435,7 +435,7 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 			return SentMessage{}, pErr
 		}
 		req := &tg.MessagesSendMessageRequest{
-			Peer:     inputPeerOf(p.ChatID),
+			Peer:     g.peerFor(p.ChatID),
 			Message:  msg,
 			Entities: entities,
 			RandomID: randomID(),
@@ -647,6 +647,20 @@ func inputPeerOf(chatID int64) tg.InputPeerClass {
 		return &tg.InputPeerChannel{ChannelID: -(chatID + 1000000000000)}
 	}
 	return &tg.InputPeerChat{ChatID: -chatID}
+}
+
+// peerFor builds the input peer for a facade chat_id, filling the
+// user's access hash from the shared peer cache when known — user DMs
+// need it (PEER_ID_INVALID otherwise); channels keep the existing
+// hash-less path (resolveChannel handles them with the cache).
+func (g *gotdClient) peerFor(chatID int64) tg.InputPeerClass {
+	p := inputPeerOf(chatID)
+	if u, ok := p.(*tg.InputPeerUser); ok && u.AccessHash == 0 && g.storeDB != nil {
+		if e, found := g.storeDB.LookupPeer(g.alias, chatID); found && e.Kind == "user" && e.AccessHash != 0 {
+			return &tg.InputPeerUser{UserID: chatID, AccessHash: e.AccessHash}
+		}
+	}
+	return p
 }
 
 func extractSentMessage(updates tg.UpdatesClass, chatID int64) SentMessage {

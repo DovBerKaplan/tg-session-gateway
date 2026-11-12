@@ -192,3 +192,58 @@ func TestFlattenUpdatesShapes(t *testing.T) {
 		t.Fatalf("batch fan-out = %d", len(got))
 	}
 }
+
+func TestSerializeMessageScannerFields(t *testing.T) {
+	m := &tg.Message{
+		ID: 7, Date: 1000, Message: "x", Out: true, GroupedID: 42,
+		PeerID:  &tg.PeerChannel{ChannelID: 55},
+		FromID:  &tg.PeerChannel{ChannelID: 55}, // anonymous post
+	}
+	d := SerializeMessage(m)
+	if d["out"] != true || d["grouped_id"] != int64(42) {
+		t.Fatalf("out/grouped_id missing: %v", d)
+	}
+	if _, hasUser := d["from_user_id"]; hasUser {
+		t.Fatal("anonymous post must not carry from_user_id")
+	}
+	if d["from_chat_id"] != int64(55) {
+		t.Fatalf("anonymous author missing: %v", d)
+	}
+
+	// non-anonymous
+	m.FromID = &tg.PeerUser{UserID: 9}
+	d = SerializeMessage(m)
+	if d["from_user_id"] != int64(9) {
+		t.Fatalf("from_user_id=%v", d["from_user_id"])
+	}
+}
+
+func TestSerializeDocumentAttributes(t *testing.T) {
+	media := &tg.MessageMediaDocument{Document: &tg.Document{
+		ID: 5, MimeType: "video/mp4", Size: 12345, DCID: 4,
+		AccessHash: 77, FileReference: []byte("ref"),
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeFilename{FileName: "clip.mp4"},
+			&tg.DocumentAttributeVideo{Duration: 12.5, SupportsStreaming: true},
+		},
+	}}
+	d := SerializeMedia(media)
+	doc := d["document"].(map[string]any)
+	if doc["dc_id"] != int64(4) || doc["file_name"] != "clip.mp4" ||
+		doc["duration"] != 12.5 || doc["supports_streaming"] != true ||
+		doc["access_hash"] != int64(77) {
+		t.Fatalf("doc=%v", doc)
+	}
+
+	// audio attrs
+	media = &tg.MessageMediaDocument{Document: &tg.Document{
+		ID: 6, Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeAudio{Duration: 90, Voice: true, Title: "t", Performer: "p"},
+		},
+	}}
+	doc = SerializeMedia(media)["document"].(map[string]any)
+	if doc["voice"] != true || doc["duration"] != int64(90) ||
+		doc["title"] != "t" || doc["performer"] != "p" {
+		t.Fatalf("audio doc=%v", doc)
+	}
+}
