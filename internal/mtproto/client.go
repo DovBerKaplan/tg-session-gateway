@@ -297,7 +297,7 @@ func adaptChatAction(ctx context.Context, c Client, args map[string]any) (any, e
 }
 
 func adaptDeleteMessages(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, _ := argInt(args, "chat_id")
+	chatID, _ := argPeerRef(args)
 	ids, ok := argIntSlice(args["message_ids"])
 	if !ok {
 		if ids, ok = argIntSlice(args["ids"]); !ok {

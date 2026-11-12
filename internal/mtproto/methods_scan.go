@@ -57,6 +57,32 @@ type ParticipantsParams struct {
 	Limit  int
 }
 
+// markedChannelID renders a bare channel id in the marked -100 form the
+// gotd layer dispatches on (positive stays USER — the Bot API chat_id
+// convention; bare-positive-as-channel was ambiguous, which is exactly
+// why channel callers now send the explicit channel_id key).
+func markedChannelID(bare int64) int64 {
+	if bare <= -1000000000000 {
+		return bare // already marked
+	}
+	return -(1000000000000 + bare)
+}
+
+// argPeerRef coerces a peer reference: the channel_id KEY marks channel
+// semantics explicitly (bare id from get_dialogs / the scanner);
+// chat_id keeps the legacy convention. Returns the marked form so the
+// sign dispatch (user vs channel) is unambiguous downstream.
+func argPeerRef(args map[string]any) (int64, bool) {
+	if v, ok := args["channel_id"]; ok && v != nil {
+		bare, ok := argInt(map[string]any{"x": v}, "x")
+		if !ok {
+			return 0, false
+		}
+		return markedChannelID(bare), true
+	}
+	return argInt(args, "chat_id")
+}
+
 func argIntPtr(args map[string]any, key string) *int64 {
 	if v, ok := argInt(args, key); ok {
 		return &v
@@ -83,9 +109,9 @@ func argStrPtr(args map[string]any, key string) *string {
 }
 
 func adaptGetHistory(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, ok := argInt(args, "chat_id", "channel_id")
+	chatID, ok := argPeerRef(args)
 	if !ok {
-		return nil, fmt.Errorf("chat_id required")
+		return nil, fmt.Errorf("chat_id or channel_id required")
 	}
 	offsetID, _ := argInt(args, "offset_id")
 	addOffset, _ := argInt(args, "add_offset")
@@ -209,9 +235,9 @@ func clampOpt(v *int64, min, max int64) int64 {
 // copy: no download, no re-upload) — the scanner forwarder's path.
 // file_reference is base64; get it from the message's media dict.
 func adaptSendMedia(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, ok := argInt(args, "chat_id")
+	chatID, ok := argPeerRef(args)
 	if !ok {
-		return nil, fmt.Errorf("chat_id required")
+		return nil, fmt.Errorf("chat_id or channel_id required")
 	}
 	docID, hasDoc := argInt(args, "doc_id")
 	if !hasDoc {
@@ -322,9 +348,9 @@ func adaptLeaveChannel(ctx context.Context, c Client, args map[string]any) (any,
 // adaptSendReadAcknowledge is the ONLY read-receipt path — explicit by
 // design, nothing else marks messages as read.
 func adaptSendReadAcknowledge(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, ok := argInt(args, "chat_id")
+	chatID, ok := argPeerRef(args)
 	if !ok {
-		return nil, fmt.Errorf("chat_id required")
+		return nil, fmt.Errorf("chat_id or channel_id required")
 	}
 	maxID, _ := argInt(args, "max_id")
 	return c.ReadHistory(ctx, chatID, maxID)

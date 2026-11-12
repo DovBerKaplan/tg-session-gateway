@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
+
+	"github.com/DovBerKaplan/tg-session-gateway/internal/config"
+	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
 )
 
 // fakeScanAPI records requests and answers with canned objects.
@@ -428,5 +431,80 @@ func TestScanGetEntity(t *testing.T) {
 	c, err := g.GetEntity(context.Background(), -1000000000042)
 	if err != nil || c["_"] != "Channel" || c["username"] != "cname" || c["access_hash"] != int64(4242) {
 		t.Fatalf("channel=%v err=%v", c, err)
+	}
+}
+
+func TestManagerGatedToUserSessions(t *testing.T) {
+	dir := t.TempDir()
+	mt, err := store.OpenMT(dir, "CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw=", "normal", dir+"/backups", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mt.Close)
+
+	cfg := config.MTProto{APIID: 1, APIHash: "x"}
+	_ = mt.Register("bot1", "tok")
+	gotd := newGotdClient(cfg, "bot1", mt) //nolint:staticcheck // no connect, wiring only
+	if gotd.updMgr != nil {
+		t.Fatal("bot sessions must NOT run the gap-recovery manager")
+	}
+	_ = mt.RegisterUser("user1", "+972", "")
+	gotd = newGotdClient(cfg, "user1", mt)
+	if gotd.updMgr == nil {
+		t.Fatal("user sessions must run the gap-recovery manager")
+	}
+}
+
+func TestArgPeerRefChannelKeyMarksChannel(t *testing.T) {
+	// channel_id key → marked form, regardless of bare/marked input
+	got, ok := argPeerRef(map[string]any{"channel_id": float64(42)})
+	if !ok || got != -(1000000000000 + 42) {
+		t.Fatalf("channel_id=42 → %d ok=%v", got, ok)
+	}
+	got, _ = argPeerRef(map[string]any{"channel_id": float64(-1000000000042)})
+	if got != -1000000000042 {
+		t.Fatalf("already-marked channel must pass through: %d", got)
+	}
+	// chat_id keeps the legacy convention untouched
+	got, _ = argPeerRef(map[string]any{"chat_id": float64(42)})
+	if got != 42 {
+		t.Fatalf("chat_id=42 (user) → %d", got)
+	}
+	if _, ok := argPeerRef(map[string]any{}); ok {
+		t.Fatal("no ref → not ok")
+	}
+}
+
+func TestGetHistoryChannelDispatchesWithHash(t *testing.T) {
+	fake := newFakeScanAPI()
+	fake.channels[42] = &tg.Channel{ID: 42, AccessHash: 4242}
+	g := newScanClient(fake)
+	// the adapter already normalized channel_id → marked form; the gotd
+	// layer must resolve the hash and send InputPeerChannel
+	msgs, err := g.GetHistory(context.Background(), markedChannelID(42), 0, 0, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = msgs
+	req := fake.historyReqs[0]
+	peer, ok := req.Peer.(*tg.InputPeerChannel)
+	if !ok || peer.ChannelID != 42 || peer.AccessHash != 4242 {
+		t.Fatalf("peer=%T %+v — channels need the resolved hash", req.Peer, req.Peer)
+	}
+}
+
+func TestPeerForUserHashFromCache(t *testing.T) {
+	fake := newFakeScanAPI()
+	g, mt := newPeerTestClient(t, fake)
+	_ = mt.UpsertPeer("p1", store.PeerEntry{ID: 7, Kind: "user", AccessHash: 77})
+	p := g.peerFor(context.Background(), 7)
+	u, ok := p.(*tg.InputPeerUser)
+	if !ok || u.AccessHash != 77 {
+		t.Fatalf("user peer=%T %+v", p, p)
+	}
+	// unknown user stays hash-less (Telegram will say PEER_ID_INVALID)
+	p = g.peerFor(context.Background(), 999)
+	if u, ok := p.(*tg.InputPeerUser); !ok || u.AccessHash != 0 {
+		t.Fatalf("unknown user=%T", p)
 	}
 }

@@ -123,11 +123,21 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 		photoLocs: map[int64]*tg.Photo{},
 		docLocs:   map[int64]*tg.Document{},
 	}
+	var handler telegram.UpdateHandler = telegram.UpdateHandlerFunc(g.onUpdatesClass)
 	if meta, ok := st.GetSessionMeta(alias); ok {
 		g.kind = meta.Kind
 	}
-	g.updMgr = newUpdatesManager(st, alias, telegram.UpdateHandlerFunc(g.onUpdatesClass))
-	g.client = newTelegramClient(cfg, alias, st, g.updMgr)
+	// Gap recovery (updates.Manager) is a USER-account mechanism: it
+	// tracks pts/qts and runs getDifference — for bots it only burns
+	// RPCs and, worse, writes state to SQLite on every update batch,
+	// contending the store's single connection against facade calls
+	// (the production bot sessions choked history reads this way). Bots
+	// keep the direct handler — exactly the pre-0.2 proven path.
+	if g.kind == "user" {
+		g.updMgr = newUpdatesManager(st, alias, handler)
+		handler = g.updMgr
+	}
+	g.client = newTelegramClient(cfg, alias, st, handler)
 	g.raw = g.client.API()
 	return g
 }
@@ -405,7 +415,7 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 	if p.ReplyMarkup != nil {
 		markup = CoerceReplyMarkup(p.ReplyMarkup)
 	}
-	rb := sender.To(g.peerFor(p.ChatID))
+	rb := sender.To(g.peerFor(context.Background(), p.ChatID))
 	builder := &rb.Builder
 	if markup != nil {
 		builder = rb.Markup(markup)
@@ -435,7 +445,7 @@ func (g *gotdClient) SendMessage(ctx context.Context, p SendParams) (SentMessage
 			return SentMessage{}, pErr
 		}
 		req := &tg.MessagesSendMessageRequest{
-			Peer:     g.peerFor(p.ChatID),
+			Peer:     g.peerFor(context.Background(), p.ChatID),
 			Message:  msg,
 			Entities: entities,
 			RandomID: randomID(),
@@ -649,18 +659,25 @@ func inputPeerOf(chatID int64) tg.InputPeerClass {
 	return &tg.InputPeerChat{ChatID: -chatID}
 }
 
-// peerFor builds the input peer for a facade chat_id, filling the
-// user's access hash from the shared peer cache when known — user DMs
-// need it (PEER_ID_INVALID otherwise); channels keep the existing
-// hash-less path (resolveChannel handles them with the cache).
-func (g *gotdClient) peerFor(chatID int64) tg.InputPeerClass {
-	p := inputPeerOf(chatID)
-	if u, ok := p.(*tg.InputPeerUser); ok && u.AccessHash == 0 && g.storeDB != nil {
+// peerFor builds the input peer for a facade chat reference:
+//   - marked channels (-100…) resolve through the shared peer cache
+//     (hash-filled InputPeerChannel — Telegram rejects hash-less ones)
+//   - positive ids are USERS (DMs): hash filled from the peer cache
+//     (PEER_ID_INVALID otherwise)
+//   - legacy -xxx chats pass through as-is
+func (g *gotdClient) peerFor(ctx context.Context, chatID int64) tg.InputPeerClass {
+	if chatID <= -1000000000000 {
+		if ch, err := g.resolveChannel(ctx, chatID); err == nil {
+			return &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
+		}
+		// resolve failed (unknown channel) — fall through to the
+		// hash-less form so the error surfaces from Telegram, not here
+	} else if chatID > 0 && g.storeDB != nil {
 		if e, found := g.storeDB.LookupPeer(g.alias, chatID); found && e.Kind == "user" && e.AccessHash != 0 {
 			return &tg.InputPeerUser{UserID: chatID, AccessHash: e.AccessHash}
 		}
 	}
-	return p
+	return inputPeerOf(chatID)
 }
 
 func extractSentMessage(updates tg.UpdatesClass, chatID int64) SentMessage {
@@ -761,7 +778,18 @@ func (g *gotdClient) SendChatAction(ctx context.Context, chatID int64, action st
 func (g *gotdClient) DeleteMessages(ctx context.Context, chatID int64, ids []int64, revoke bool) (EditResult, error) {
 	var err error
 	if chatID > 0 {
+		// positive = user (DM delete)
 		_, err = g.raw.MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{ID: intIDs(ids), Revoke: revoke})
+	} else if chatID <= -1000000000000 {
+		// marked channel: hash from the shared peer cache
+		var ch *tg.Channel
+		if ch, err = g.resolveChannel(ctx, chatID); err != nil {
+			return EditResult{}, err
+		}
+		_, err = g.raw.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
+			ID:      intIDs(ids),
+		})
 	} else {
 		_, err = g.raw.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
 			Channel: &tg.InputChannel{ChannelID: -chatID},

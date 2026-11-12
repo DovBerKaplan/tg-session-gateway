@@ -101,26 +101,39 @@ func (g *gotdClient) resolveChannel(ctx context.Context, chatID int64) (*tg.Chan
 	return nil, fmt.Errorf("channel %d not found", bare)
 }
 
-// cacheChannel / cacheUser land entities in the shared peer cache
-// (best-effort — a failed cache write never fails the RPC).
+// cacheChannel / cacheUser land entities in the shared peer cache.
+// Best-effort, and READ-BEFORE-WRITE: history pages repeat the same
+// chats constantly — an unchanged entity skips the write entirely (the
+// store serializes on one connection; redundant writes are what starved
+// facade calls next to the gap-recovery state ticks).
 func (g *gotdClient) cacheChannel(ch *tg.Channel) {
-	if g.storeDB == nil {
+	if g.storeDB == nil || ch.ID == 0 {
 		return
 	}
-	_ = g.storeDB.UpsertPeer(g.alias, store.PeerEntry{
+	e := store.PeerEntry{
 		ID: ch.ID, Kind: "channel", AccessHash: ch.AccessHash,
 		Username: ch.Username, Title: ch.Title,
-	})
+	}
+	if cur, found := g.storeDB.LookupPeer(g.alias, ch.ID); found &&
+		cur.AccessHash == e.AccessHash && cur.Username == e.Username && cur.Title == e.Title {
+		return // unchanged — no write
+	}
+	_ = g.storeDB.UpsertPeer(g.alias, e)
 }
 
 func (g *gotdClient) cacheUser(u *tg.User) {
 	if g.storeDB == nil || u.AccessHash == 0 {
 		return
 	}
-	_ = g.storeDB.UpsertPeer(g.alias, store.PeerEntry{
+	e := store.PeerEntry{
 		ID: u.ID, Kind: "user", AccessHash: u.AccessHash, Username: u.Username,
 		Title: strings.TrimSpace(u.FirstName + " " + u.LastName),
-	})
+	}
+	if cur, found := g.storeDB.LookupPeer(g.alias, u.ID); found &&
+		cur.Kind == "user" && cur.AccessHash == e.AccessHash && cur.Username == e.Username {
+		return // unchanged — no write
+	}
+	_ = g.storeDB.UpsertPeer(g.alias, e)
 }
 
 // cacheResponse fills the peer cache from the chats/users riding any
@@ -179,7 +192,7 @@ func (g *gotdClient) GetHistory(ctx context.Context, chatID int64, offsetID, add
 		limit = 100
 	}
 	res, err := g.scan().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-		Peer:      g.peerFor(chatID),
+		Peer:      g.peerFor(ctx, chatID),
 		OffsetID:  offsetID,
 		AddOffset: addOffset,
 		MinID:     minID,
@@ -591,7 +604,7 @@ func (g *gotdClient) sendDocRef(ctx context.Context, chatID int64, doc DocRef, c
 		},
 	}
 	sender := message.NewSender(g.raw)
-	rb := sender.To(g.peerFor(chatID))
+	rb := sender.To(g.peerFor(ctx, chatID))
 	builder := &rb.Builder
 	var opts []message.StyledTextOption
 	if caption != "" {
@@ -801,7 +814,7 @@ func (g *gotdClient) ReadHistory(ctx context.Context, chatID, maxID int64) (Edit
 		})
 	} else {
 		_, err = g.scan().MessagesReadHistory(ctx, &tg.MessagesReadHistoryRequest{
-			Peer: g.peerFor(chatID), MaxID: int(maxID),
+			Peer: g.peerFor(ctx, chatID), MaxID: int(maxID),
 		})
 	}
 	return EditResult{Ok: err == nil}, err

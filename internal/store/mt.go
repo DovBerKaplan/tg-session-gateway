@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
+	"sort"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -432,6 +434,37 @@ func (m *MT) GetState(alias string) MTState {
 	_ = m.DB.QueryRow("SELECT pts, qts, date, seq FROM sessions WHERE alias = ?", alias).
 		Scan(&st.PTS, &st.QTS, &st.Date, &st.Seq)
 	return st
+}
+
+// sessionStateCols is the allow-list for partial state updates.
+var sessionStateCols = map[string]bool{"pts": true, "qts": true, "date": true, "seq": true}
+
+// UpdateSessionColumn sets ONE state column in a single statement (the
+// gap-recovery manager ticks these per update batch — one statement, no
+// read-modify-write).
+func (m *MT) UpdateSessionColumn(alias, col string, v int64) error {
+	if !sessionStateCols[col] {
+		return fmt.Errorf("store: session column %q not updatable", col)
+	}
+	_, err := m.DB.Exec("UPDATE sessions SET "+col+" = ? WHERE alias = ?", v, alias)
+	return err
+}
+
+// UpdateSessionColumns sets several state columns in ONE statement.
+func (m *MT) UpdateSessionColumns(alias string, cols map[string]int64) error {
+	names := make([]string, 0, len(cols))
+	args := make([]any, 0, len(cols)+1)
+	for col, v := range cols {
+		if !sessionStateCols[col] {
+			return fmt.Errorf("store: session column %q not updatable", col)
+		}
+		names = append(names, col+" = ?")
+		args = append(args, v)
+	}
+	sort.Strings(names) // deterministic SQL
+	args = append(args, alias)
+	_, err := m.DB.Exec("UPDATE sessions SET "+strings.Join(names, ", ")+" WHERE alias = ?", args...)
+	return err
 }
 
 // SaveState persists the update state snapshot.

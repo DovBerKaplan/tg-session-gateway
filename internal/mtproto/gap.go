@@ -46,33 +46,28 @@ func (s *gapStateStorage) SetState(_ context.Context, _ int64, state updates.Sta
 	})
 }
 
-// mutate runs read-modify-write on the state columns; the manager
-// calls these from its single loop goroutine, so no locking is needed.
-func (s *gapStateStorage) mutate(fn func(st store.MTState) store.MTState) error {
-	return s.st.SaveState(s.alias, fn(s.st.GetState(s.alias)))
+// partial state writes are SINGLE UPDATE statements — the manager ticks
+// pts/qts on every update batch, and a SELECT+UPDATE round-trip per
+// tick doubled the write pressure on the store's single connection
+// (the production choke).
+func (s *gapStateStorage) SetPts(_ context.Context, _ int64, pts int) error {
+	return s.st.UpdateSessionColumn(s.alias, "pts", int64(pts))
 }
 
-func (s *gapStateStorage) SetPts(ctx context.Context, userID int64, pts int) error {
-	return s.mutate(func(st store.MTState) store.MTState { st.PTS = int64(pts); return st })
+func (s *gapStateStorage) SetQts(_ context.Context, _ int64, qts int) error {
+	return s.st.UpdateSessionColumn(s.alias, "qts", int64(qts))
 }
 
-func (s *gapStateStorage) SetQts(ctx context.Context, userID int64, qts int) error {
-	return s.mutate(func(st store.MTState) store.MTState { st.QTS = int64(qts); return st })
+func (s *gapStateStorage) SetDate(_ context.Context, _ int64, date int) error {
+	return s.st.UpdateSessionColumn(s.alias, "date", int64(date))
 }
 
-func (s *gapStateStorage) SetDate(ctx context.Context, userID int64, date int) error {
-	return s.mutate(func(st store.MTState) store.MTState { st.Date = int64(date); return st })
+func (s *gapStateStorage) SetSeq(_ context.Context, _ int64, seq int) error {
+	return s.st.UpdateSessionColumn(s.alias, "seq", int64(seq))
 }
 
-func (s *gapStateStorage) SetSeq(ctx context.Context, userID int64, seq int) error {
-	return s.mutate(func(st store.MTState) store.MTState { st.Seq = int64(seq); return st })
-}
-
-func (s *gapStateStorage) SetDateSeq(ctx context.Context, userID int64, date, seq int) error {
-	return s.mutate(func(st store.MTState) store.MTState {
-		st.Date, st.Seq = int64(date), int64(seq)
-		return st
-	})
+func (s *gapStateStorage) SetDateSeq(_ context.Context, _ int64, date, seq int) error {
+	return s.st.UpdateSessionColumns(s.alias, map[string]int64{"date": int64(date), "seq": int64(seq)})
 }
 
 func (s *gapStateStorage) GetChannelPts(_ context.Context, _ int64, channelID int64) (int, bool, error) {
