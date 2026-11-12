@@ -129,9 +129,9 @@ func (p *peerStorage) GetUserAccessHash(_ context.Context, _, targetUserID int64
 func newUpdatesManager(st *store.MT, alias string, handler telegram.UpdateHandler) *updates.Manager {
 	peers := &peerStorage{st: st, alias: alias}
 	return updates.New(updates.Config{
-		Handler:        handler,
-		Storage:        &gapStateStorage{st: st, alias: alias},
-		AccessHasher:   peers,
+		Handler:          handler,
+		Storage:          &gapStateStorage{st: st, alias: alias},
+		AccessHasher:     peers,
 		UserAccessHasher: peers,
 	})
 }

@@ -63,7 +63,9 @@ func TestPeerCacheZeroHashNotPoisoned(t *testing.T) {
 		t.Fatalf("zero-hash seed counted=%d", n)
 	}
 	// and upsert never overwrites a live hash with zero
-	g.resolveChannel(context.Background(), 42) // fills 4242
+	if _, err := g.resolveChannel(context.Background(), 42); err != nil { // fills 4242
+		t.Fatal(err)
+	}
 	if err := mt.UpsertPeer("p1", store.PeerEntry{ID: 42, Kind: "channel"}); err != nil {
 		t.Fatal(err)
 	}

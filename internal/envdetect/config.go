@@ -3,15 +3,15 @@ package envdetect
 // ExplicitFlags records which config fields the operator set explicitly.
 // Explicit values always override environment detection.
 type ExplicitFlags struct {
-	EnvDetect          bool
-	Upstream           bool
-	UpstreamFallback   bool
-	UpstreamKind       bool
-	UpstreamFailover   bool
-	MaxMultipartMB     bool
-	UpstreamTimeoutS   bool
-	PathPrefix         bool
-	UpstreamCAFile     bool
+	EnvDetect        bool
+	Upstream         bool
+	UpstreamFallback bool
+	UpstreamKind     bool
+	UpstreamFailover bool
+	MaxMultipartMB   bool
+	UpstreamTimeoutS bool
+	PathPrefix       bool
+	UpstreamCAFile   bool
 }
 
 // ExplicitConfig is the operator-facing upstream / env-detect configuration.

@@ -45,7 +45,7 @@ func synthetic429(retryAfter int, description string) *gwResponse {
 		jsonBody: map[string]any{
 			"ok": false, "error_code": 429,
 			"description": description,
-			"parameters":   map[string]any{"retry_after": retryAfter},
+			"parameters":  map[string]any{"retry_after": retryAfter},
 		},
 		header: map[string]string{"Retry-After": strconv.Itoa(retryAfter)},
 	}
@@ -100,10 +100,10 @@ func (p *Proxy) Call(ctx context.Context, s *BotSession, method string, body map
 			return jsonResp(200, map[string]any{
 				"ok": true,
 				"result": map[string]any{
-					"url":                     "",
-					"has_custom_certificate":  false,
-					"pending_update_count":    0,
-					"allowed_updates":         []any{},
+					"url":                    "",
+					"has_custom_certificate": false,
+					"pending_update_count":   0,
+					"allowed_updates":        []any{},
 				},
 			})
 		case "setwebhook":

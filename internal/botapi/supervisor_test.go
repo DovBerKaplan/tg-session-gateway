@@ -12,13 +12,13 @@ import (
 
 func TestSupervisorForceFailoverAndFailback(t *testing.T) {
 	cfg := config.BotAPI{
-		Upstream:           "https://api.telegram.org",
-		UpstreamFallback:   "http://telegram-bot-api:8081",
-		UpstreamFailover:   "auto",
-		UpstreamKind:       "cloud",
-		UpstreamTimeoutS:   5,
-		MaxMultipartMB:     64,
-		EnvDetect:          "off",
+		Upstream:         "https://api.telegram.org",
+		UpstreamFallback: "http://telegram-bot-api:8081",
+		UpstreamFailover: "auto",
+		UpstreamKind:     "cloud",
+		UpstreamTimeoutS: 5,
+		MaxMultipartMB:   64,
+		EnvDetect:        "off",
 	}
 	sup, err := NewUpstreamSupervisor(cfg)
 	if err != nil {
@@ -31,9 +31,6 @@ func TestSupervisorForceFailoverAndFailback(t *testing.T) {
 	st := sup.Status()
 	if st["failover_active"] != true || st["active"] != "http://telegram-bot-api:8081" {
 		t.Fatalf("status=%v", st)
-	}
-	if cfg.EffectiveKind() == "local" || true {
-		// ApplyLocalPreset mutates supervisor cfg copy
 	}
 	_ = sup.Failback()
 	st = sup.Status()
@@ -124,7 +121,7 @@ func TestAdminUpstreamEndpointsWithSupervisor(t *testing.T) {
 	if code != 200 || body["ok"] != true {
 		t.Fatalf("failover=%d %v", code, body)
 	}
-	code, raw = get(t, ts.URL, "/admin/upstream", auth)
+	_, raw = get(t, ts.URL, "/admin/upstream", auth)
 	st = map[string]any{}
 	_ = json.Unmarshal([]byte(raw), &st)
 	if st["active"] != fallback.URL || st["failover_active"] != true {
@@ -135,7 +132,7 @@ func TestAdminUpstreamEndpointsWithSupervisor(t *testing.T) {
 	if code != 200 || body["ok"] != true {
 		t.Fatalf("failback=%d %v", code, body)
 	}
-	code, raw = get(t, ts.URL, "/admin/upstream", auth)
+	_, raw = get(t, ts.URL, "/admin/upstream", auth)
 	st = map[string]any{}
 	_ = json.Unmarshal([]byte(raw), &st)
 	if st["active"] != primary.URL || st["failover_active"] != false {

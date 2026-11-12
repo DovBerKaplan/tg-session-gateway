@@ -202,7 +202,7 @@ func (a *App) Close() {
 		close(a.maintStop)
 		close(a.houseStop)
 		a.Beat.Stop()
-			a.Mgr.Shutdown()
+		a.Mgr.Shutdown()
 		a.Store.Close()
 	})
 }
@@ -1262,12 +1262,12 @@ func (a *App) adminImportSession(w http.ResponseWriter, r *http.Request) {
 	}
 	alias := r.PathValue("alias")
 	var body struct {
-		Kind          string `json:"kind"`
-		Phone         string `json:"phone"`
-		ConnOpts      string `json:"conn_opts"`
-		Telethon      string `json:"telethon_string"`
+		Kind           string `json:"kind"`
+		Phone          string `json:"phone"`
+		ConnOpts       string `json:"conn_opts"`
+		Telethon       string `json:"telethon_string"`
 		GotdSessionB64 string `json:"gotd_session_b64"`
-		Force         bool   `json:"force"`
+		Force          bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || alias == "" {
 		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "invalid body"})
@@ -1571,7 +1571,7 @@ func (a *App) adminRegisterClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "id": id, "name": body.Name,
 		"allowlist": body.Allowlist, "sessions": body.Sessions, "lane": body.Lane,
-		"token": token,
+		"token":       token,
 		"description": "store this token now — it is shown once and only its hash is kept",
 	})
 }

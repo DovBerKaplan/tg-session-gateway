@@ -62,9 +62,9 @@ type UpstreamClient struct {
 
 // UpstreamClientOptions configures TLS trust and timeouts.
 type UpstreamClientOptions struct {
-	Timeout   time.Duration
-	CAFile    string // extra PEM CAs; never disables verification
-	EnableH2  bool
+	Timeout  time.Duration
+	CAFile   string // extra PEM CAs; never disables verification
+	EnableH2 bool
 }
 
 // NewUpstreamClient builds the api.telegram.org client with defaults.

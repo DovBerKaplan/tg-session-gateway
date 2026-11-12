@@ -28,11 +28,11 @@ var ErrAwaitingLogin = errors.New("user session awaiting login")
 
 // Login stages reported to the admin surface.
 const (
-	loginStageIdle      = "idle"            // no login started
-	loginStageCodeSent  = "code_sent"       // Telegram sent the code
-	loginStagePassword  = "password_needed" // 2FA required
-	loginStageAuthed    = "authorized"      // done — supervisor connects
-	loginStageFailed    = "failed"
+	loginStageIdle     = "idle"            // no login started
+	loginStageCodeSent = "code_sent"       // Telegram sent the code
+	loginStagePassword = "password_needed" // 2FA required
+	loginStageAuthed   = "authorized"      // done — supervisor connects
+	loginStageFailed   = "failed"
 )
 
 // loginDriver performs the Telegram auth round-trips. Production runs
@@ -51,12 +51,12 @@ type loginDriver interface {
 // loginCtl is one in-flight login: the stage machine plus the stored
 // code hash. Steps are serialized — one Telegram auth call at a time.
 type loginCtl struct {
-	mu      sync.Mutex
-	driver  loginDriver
-	phone   string
+	mu       sync.Mutex
+	driver   loginDriver
+	phone    string
 	codeHash string
-	stage   string
-	lastErr string
+	stage    string
+	lastErr  string
 }
 
 func newLoginCtl(driver loginDriver) *loginCtl {

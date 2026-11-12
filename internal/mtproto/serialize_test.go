@@ -196,8 +196,8 @@ func TestFlattenUpdatesShapes(t *testing.T) {
 func TestSerializeMessageScannerFields(t *testing.T) {
 	m := &tg.Message{
 		ID: 7, Date: 1000, Message: "x", Out: true, GroupedID: 42,
-		PeerID:  &tg.PeerChannel{ChannelID: 55},
-		FromID:  &tg.PeerChannel{ChannelID: 55}, // anonymous post
+		PeerID: &tg.PeerChannel{ChannelID: 55},
+		FromID: &tg.PeerChannel{ChannelID: 55}, // anonymous post
 	}
 	d := SerializeMessage(m)
 	if d["out"] != true || d["grouped_id"] != int64(42) {

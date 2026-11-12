@@ -2,12 +2,12 @@ package store
 
 import (
 	"database/sql"
-	"fmt"
-	"sort"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
@@ -703,7 +703,7 @@ type GroupCursor struct {
 	Alias        string `json:"-"`
 	Group        string `json:"group"`
 	AckedSeq     int64  `json:"acked_seq"`
-	Channels     string `json:"channels,omitempty"`     // JSON array filter ("" = all)
+	Channels     string `json:"channels,omitempty"` // JSON array filter ("" = all)
 	DocumentOnly bool   `json:"document_only,omitempty"`
 }
 

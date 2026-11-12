@@ -169,7 +169,7 @@ func (defaultTLSProber) ProbeTLS(ctx context.Context, upstream, caFile string) (
 	if err != nil {
 		return classifyTLSError(err), err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	certs := conn.ConnectionState().PeerCertificates
 	if len(certs) == 0 {
@@ -261,7 +261,7 @@ func (p defaultClockProber) ProbeClockSkew(ctx context.Context, upstream string)
 	if err != nil {
 		return 0, err
 	}
-	return ts.Sub(time.Now()).Seconds(), nil
+	return time.Until(ts).Seconds(), nil
 }
 
 type defaultDNSProber struct{}

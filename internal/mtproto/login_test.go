@@ -134,8 +134,8 @@ func TestLoginCtlStageGuards(t *testing.T) {
 func telethonFixture(t *testing.T) string {
 	t.Helper()
 	buf := make([]byte, 0, 263)
-	buf = append(buf, 2)                     // dc id
-	buf = append(buf, 10, 0, 0, 1)           // ip 10.0.0.1
+	buf = append(buf, 2)           // dc id
+	buf = append(buf, 10, 0, 0, 1) // ip 10.0.0.1
 	var port [2]byte
 	binary.BigEndian.PutUint16(port[:], 443)
 	buf = append(buf, port[:]...)

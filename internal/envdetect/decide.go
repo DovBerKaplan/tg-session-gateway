@@ -138,10 +138,10 @@ func baselineSettings(cfg ExplicitConfig) ChosenSettings {
 		to = DefaultUpstreamTimeoutS
 	}
 	return ChosenSettings{
-		UpstreamOrder:    []string{up},
-		Kind:             kind,
-		MaxMultipartMB:   mb,
-		UpstreamTimeoutS: to,
+		UpstreamOrder:     []string{up},
+		Kind:              kind,
+		MaxMultipartMB:    mb,
+		UpstreamTimeoutS:  to,
 		RecommendHelmMode: "disabled",
 	}
 }

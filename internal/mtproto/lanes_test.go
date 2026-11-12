@@ -56,9 +56,12 @@ func TestLanePriorityInteractiveFirst(t *testing.T) {
 	// pre-seed a bulk waiter, then make sure an interactive admission
 	// that arrives while the bulk waiter is requeued gets in first.
 	wg.Add(3)
-	go func() { defer wg.Done()
+	go func() {
+		defer wg.Done()
 		l.Admit(context.Background(), LaneBulk, "cl-a", time.Now().Add(2*time.Second), try)
-		mu.Lock(); order = append(order, "bulk"); mu.Unlock()
+		mu.Lock()
+		order = append(order, "bulk")
+		mu.Unlock()
 	}()
 	// let the bulk waiter take its turn (admits immediately via fast
 	// path since queue is empty) — the ordering test starts below
@@ -76,14 +79,20 @@ func TestLanePriorityInteractiveFirst(t *testing.T) {
 		}
 		return false
 	}
-	go func() { defer wg.Done()
+	go func() {
+		defer wg.Done()
 		l.Admit(context.Background(), LaneBulk, "cl-b", time.Now().Add(5*time.Second), gate)
-		mu.Lock(); order = append(order, "bulk2"); mu.Unlock()
+		mu.Lock()
+		order = append(order, "bulk2")
+		mu.Unlock()
 	}()
 	time.Sleep(20 * time.Millisecond)
-	go func() { defer wg.Done()
+	go func() {
+		defer wg.Done()
 		l.Admit(context.Background(), LaneInteractive, "cl-c", time.Now().Add(5*time.Second), gate)
-		mu.Lock(); order = append(order, "interactive"); mu.Unlock()
+		mu.Lock()
+		order = append(order, "interactive")
+		mu.Unlock()
 	}()
 	time.Sleep(40 * time.Millisecond) // both queued
 	mu.Lock()
@@ -186,10 +195,12 @@ func TestLaneRoundRobinWithinLane(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done()
+	go func() {
+		defer wg.Done()
 		l.Admit(context.Background(), LaneBulk, "cl-a", time.Now().Add(2*time.Second), tryFor("cl-a"))
 	}()
-	go func() { defer wg.Done()
+	go func() {
+		defer wg.Done()
 		l.Admit(context.Background(), LaneBulk, "cl-b", time.Now().Add(2*time.Second), tryFor("cl-b"))
 	}()
 	wg.Wait()

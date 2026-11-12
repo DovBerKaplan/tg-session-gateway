@@ -368,7 +368,7 @@ func (a *App) handleFileRoute(w http.ResponseWriter, r *http.Request) {
 		if st, err := os.Stat(disk); err == nil && !st.IsDir() {
 			f, err := os.Open(disk)
 			if err == nil {
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				w.Header().Set("Content-Type", "application/octet-stream")
 				w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
 				w.WriteHeader(200)
@@ -722,14 +722,14 @@ func (a *App) adminEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	st := a.Supervisor.Status()
 	writeJSON(w, 200, map[string]any{
-		"ok": true,
-		"env_detect": a.Cfg.EnvDetect,
-		"facts": st["facts"],
-		"decision": st["decision"],
-		"tls_state": st["tls_state"],
+		"ok":                 true,
+		"env_detect":         a.Cfg.EnvDetect,
+		"facts":              st["facts"],
+		"decision":           st["decision"],
+		"tls_state":          st["tls_state"],
 		"clock_skew_seconds": st["clock_skew_seconds"],
-		"env_runtime": st["env_runtime"],
-		"upstream_active": st["active"],
+		"env_runtime":        st["env_runtime"],
+		"upstream_active":    st["active"],
 	})
 }
 

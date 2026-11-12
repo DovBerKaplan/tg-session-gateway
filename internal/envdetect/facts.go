@@ -6,12 +6,12 @@ package envdetect
 type TLSState string
 
 const (
-	TLSValid             TLSState = "valid"
-	TLSExpired           TLSState = "expired"
-	TLSUnknownCA         TLSState = "unknown_ca"
-	TLSHandshakeFail     TLSState = "handshake_fail"
-	TLSUnexpectedIssuer  TLSState = "unexpected_issuer"
-	TLSUnreachable       TLSState = "unreachable"
+	TLSValid            TLSState = "valid"
+	TLSExpired          TLSState = "expired"
+	TLSUnknownCA        TLSState = "unknown_ca"
+	TLSHandshakeFail    TLSState = "handshake_fail"
+	TLSUnexpectedIssuer TLSState = "unexpected_issuer"
+	TLSUnreachable      TLSState = "unreachable"
 )
 
 // RuntimeKind is where the gateway process is running.

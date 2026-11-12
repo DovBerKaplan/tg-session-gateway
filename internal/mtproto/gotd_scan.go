@@ -12,8 +12,8 @@ import (
 
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/query/dialogs"
-	"github.com/gotd/td/tgerr"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
 )
@@ -413,7 +413,7 @@ func (g *gotdClient) GetParticipant(ctx context.Context, chatID, userID int64) (
 		return nil, err
 	}
 	res, err := g.scan().ChannelsGetParticipant(ctx, &tg.ChannelsGetParticipantRequest{
-		Channel: &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
+		Channel:     &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
 		Participant: &tg.InputPeerUser{UserID: userID},
 	})
 	if err != nil {
@@ -687,7 +687,7 @@ func (g *gotdClient) EditChannel(ctx context.Context, p EditChannelParams) (Edit
 	}
 	if p.About != nil {
 		if _, err := g.scan().MessagesEditChatAbout(ctx, &tg.MessagesEditChatAboutRequest{
-			Peer: &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
+			Peer:  &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
 			About: *p.About,
 		}); err != nil {
 			return EditResult{}, err
@@ -709,7 +709,7 @@ func (g *gotdClient) EditChannel(ctx context.Context, p EditChannelParams) (Edit
 	}
 	if p.NoForwards != nil {
 		if _, err := g.scan().MessagesToggleNoForwards(ctx, &tg.MessagesToggleNoForwardsRequest{
-			Peer: &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
+			Peer:    &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
 			Enabled: *p.NoForwards,
 		}); err != nil {
 			return EditResult{}, err

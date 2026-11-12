@@ -28,11 +28,11 @@ func TestDecide(t *testing.T) {
 				Runtime:      RuntimeDocker,
 			},
 			cfg: ExplicitConfig{
-				EnvDetect:          "auto",
-				Upstream:           cloud,
-				UpstreamFallback:   local,
-				UpstreamFailover:   "auto",
-				Explicit:           ExplicitFlags{UpstreamFallback: true, UpstreamFailover: true},
+				EnvDetect:        "auto",
+				Upstream:         cloud,
+				UpstreamFallback: local,
+				UpstreamFailover: "auto",
+				Explicit:         ExplicitFlags{UpstreamFallback: true, UpstreamFailover: true},
 			},
 			wantFirst:  cloud,
 			wantKind:   "cloud",
@@ -107,9 +107,9 @@ func TestDecide(t *testing.T) {
 		{
 			name: "k8s_runtime_default_auto_failover",
 			facts: DetectedFacts{
-				TLS:     TLSHandshakeFail,
-				Network: NetworkFacts{DNSOK: true},
-				Runtime: RuntimeK8s,
+				TLS:       TLSHandshakeFail,
+				Network:   NetworkFacts{DNSOK: true},
+				Runtime:   RuntimeK8s,
 				Companion: CompanionFacts{URL: local, Reachable: true},
 			},
 			cfg: ExplicitConfig{
@@ -141,9 +141,9 @@ func TestDecide(t *testing.T) {
 		{
 			name: "companion_down_prefer_local",
 			facts: DetectedFacts{
-				TLS:     TLSValid,
-				Network: NetworkFacts{DNSOK: true},
-				Runtime: RuntimeDocker,
+				TLS:       TLSValid,
+				Network:   NetworkFacts{DNSOK: true},
+				Runtime:   RuntimeDocker,
 				Companion: CompanionFacts{URL: local, Reachable: false},
 			},
 			cfg: ExplicitConfig{
@@ -159,9 +159,9 @@ func TestDecide(t *testing.T) {
 		{
 			name: "companion_up_prefer_local",
 			facts: DetectedFacts{
-				TLS:     TLSValid,
-				Network: NetworkFacts{DNSOK: true},
-				Runtime: RuntimeDocker,
+				TLS:       TLSValid,
+				Network:   NetworkFacts{DNSOK: true},
+				Runtime:   RuntimeDocker,
 				Companion: CompanionFacts{URL: local, Reachable: true},
 			},
 			cfg: ExplicitConfig{
@@ -178,9 +178,9 @@ func TestDecide(t *testing.T) {
 		{
 			name: "explicit_upstream_wins",
 			facts: DetectedFacts{
-				TLS:     TLSUnreachable,
-				Network: NetworkFacts{DNSOK: true},
-				Runtime: RuntimeK8s,
+				TLS:       TLSUnreachable,
+				Network:   NetworkFacts{DNSOK: true},
+				Runtime:   RuntimeK8s,
 				Companion: CompanionFacts{URL: local, Reachable: true},
 			},
 			cfg: ExplicitConfig{

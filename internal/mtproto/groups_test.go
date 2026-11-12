@@ -31,9 +31,9 @@ func docUpdate(chatID int64, docID int64) map[string]any {
 	return map[string]any{
 		"_": "UpdateNewChannelMessage",
 		"message": map[string]any{
-			"id": docID,
-			"chat":   map[string]any{"id": chatID, "type": "channel"},
-			"media":  map[string]any{"_": "MessageMediaDocument", "document": map[string]any{"id": docID}},
+			"id":    docID,
+			"chat":  map[string]any{"id": chatID, "type": "channel"},
+			"media": map[string]any{"_": "MessageMediaDocument", "document": map[string]any{"id": docID}},
 		},
 	}
 }
@@ -42,7 +42,7 @@ func textUpdate(chatID int64, msgID int64) map[string]any {
 	return map[string]any{
 		"_": "UpdateNewChannelMessage",
 		"message": map[string]any{
-			"id": msgID,
+			"id":   msgID,
 			"chat": map[string]any{"id": chatID, "type": "channel"},
 		},
 	}

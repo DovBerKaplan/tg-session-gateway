@@ -18,7 +18,7 @@ func (f fakeProbes) ProbeTLS(context.Context, string, string) (TLSState, error) 
 }
 func (f fakeProbes) ProbeClockSkew(context.Context, string) (float64, error) { return f.skew, nil }
 func (f fakeProbes) ProbeDNS(context.Context, string) (bool, bool, error)    { return f.v4, f.v6, nil }
-func (f fakeProbes) ProbeRuntime() RuntimeKind                              { return f.runtime }
+func (f fakeProbes) ProbeRuntime() RuntimeKind                               { return f.runtime }
 func (f fakeProbes) ProbeCompanion(context.Context, string) (CompanionFacts, error) {
 	return f.companion, nil
 }

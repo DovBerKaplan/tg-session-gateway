@@ -221,7 +221,7 @@ func itestConfigWithKey(dir, key string) config.MTProto {
 			OnLimit: "reject", QueueWaitTimeout: 0.5,
 			UpdateQueueMax: 5000, UpdateTTLS: 3600,
 		},
-		Storage:        config.StorageConfig{Durability: "normal", MaintenanceInterval: 0},
+		Storage:         config.StorageConfig{Durability: "normal", MaintenanceInterval: 0},
 		LegacyAppSecret: true,
 		MetricsEnabled:  true,
 	}
@@ -778,9 +778,9 @@ type hangPingClient struct {
 }
 
 func (h *hangPingClient) Ping(ctx context.Context) error {
-	<-ctx.Done()            // wait for the caller's timeout
-	<-make(chan struct{})   // ...and STILL never return: the engine wedge
-	return ctx.Err()        // (unreachable; keeps the compiler happy)
+	<-ctx.Done()          // wait for the caller's timeout
+	<-make(chan struct{}) // ...and STILL never return: the engine wedge
+	return ctx.Err()      // (unreachable; keeps the compiler happy)
 }
 
 func TestPingWatchdogEscapesWedgedPing(t *testing.T) {

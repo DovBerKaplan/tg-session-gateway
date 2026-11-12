@@ -16,7 +16,7 @@ import (
 
 // fakeScanAPI records requests and answers with canned objects.
 type fakeScanAPI struct {
-	refreshDoc *tg.Document // when set, get_messages answers with this doc
+	refreshDoc   *tg.Document          // when set, get_messages answers with this doc
 	channels     map[int64]*tg.Channel // resolveChannel answers
 	users        map[int64]*tg.User
 	historyReqs  []*tg.MessagesGetHistoryRequest
@@ -458,7 +458,7 @@ func TestManagerGatedToUserSessions(t *testing.T) {
 func TestArgPeerRefChannelKeyMarksChannel(t *testing.T) {
 	// channel_id key → marked form, regardless of bare/marked input
 	got, ok := argPeerRef(map[string]any{"channel_id": float64(42)})
-	if !ok || got != -(1000000000000 + 42) {
+	if !ok || got != -(1000000000000+42) {
 		t.Fatalf("channel_id=42 → %d ok=%v", got, ok)
 	}
 	got, _ = argPeerRef(map[string]any{"channel_id": float64(-1000000000042)})
