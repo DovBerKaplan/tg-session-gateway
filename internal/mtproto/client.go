@@ -247,9 +247,22 @@ func argMarkup(args map[string]any) map[string]any {
 }
 
 func adaptSendMessage(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, ok := argInt(args, "chat_id", "chat_username", "chat")
+	// argPeerRef: channel_id marks channel semantics explicitly; chat_id
+	// keeps the Bot API convention (positive = user, -100… = channel)
+	chatID, ok := argPeerRef(args)
 	if !ok {
-		return nil, fmt.Errorf("chat_id required")
+		if chatID, ok = argInt(args, "chat"); ok {
+			// legacy alias key, Bot API convention
+		} else if un := strings.TrimPrefix(argStr(args, "chat_username"), "@"); un != "" {
+			// legacy @username form — resolve to a peer id
+			id, err := c.ResolveUsername(ctx, un)
+			if err != nil {
+				return nil, err
+			}
+			chatID = id
+		} else {
+			return nil, fmt.Errorf("chat_id or channel_id required")
+		}
 	}
 	p := SendParams{
 		ChatID:        chatID,
