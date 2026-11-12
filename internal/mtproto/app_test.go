@@ -769,3 +769,33 @@ func TestAdminPortSplit(t *testing.T) {
 		t.Fatalf("admin /metrics = %d, want 200", code)
 	}
 }
+
+// hangClient's Ping never returns — the wedge the production shadow run
+// caught (supervisor stuck inside the call, reconnects never happened).
+type hangPingClient struct {
+	fakeMTClient
+	pingCalls chan struct{}
+}
+
+func (h *hangPingClient) Ping(ctx context.Context) error {
+	<-ctx.Done()            // wait for the caller's timeout
+	<-make(chan struct{})   // ...and STILL never return: the engine wedge
+	return ctx.Err()        // (unreachable; keeps the compiler happy)
+}
+
+func TestPingWatchdogEscapesWedgedPing(t *testing.T) {
+	hang := &hangPingClient{pingCalls: make(chan struct{}, 4)}
+	s := &Session{Alias: "w1", client: hang, state: StateLive}
+	start := time.Now()
+	if s.pingWithWatchdog() {
+		t.Fatal("wedged ping must report false")
+	}
+	if elapsed := time.Since(start); elapsed > 20*time.Second || elapsed < 14*time.Second {
+		t.Fatalf("watchdog fired at %v (want the 15s hard deadline)", elapsed)
+	}
+	// the healthy path still passes through
+	ok := (&Session{Alias: "w2", client: &fakeMTClient{}}).pingWithWatchdog()
+	if !ok {
+		t.Fatal("healthy ping must report true")
+	}
+}

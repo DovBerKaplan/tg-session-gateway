@@ -312,14 +312,17 @@ func (m *Manager) supervise(s *Session) {
 		s.mu.Unlock()
 		if connected {
 			// active liveness: IsConnected lies through half-open TCP —
-			// ping Telegram for real; a stuck ping forces a reconnect
+			// ping Telegram for real; a stuck ping forces a reconnect.
+			// The watchdog is OUTSIDE the call: gotd's Ping can wedge on
+			// a dead-but-undetected connection (the engine's ack wait
+			// outlives the context), and a supervisor goroutine stuck
+			// INSIDE the call never reconnects — production saw exactly
+			// that (reconnects:0 while the ping age climbed for 10+
+			// minutes and every RPC hung).
 			if monoNow()-s.lastPingAt() > pingInterval {
 				s.setPingAt()
-				pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				err := s.client.Ping(pingCtx)
-				cancel()
-				if err != nil {
-					slog.Warn("liveness ping stuck — half-open suspected, forcing reconnect", "alias", s.Alias, "err", err)
+				if !s.pingWithWatchdog() {
+					slog.Warn("liveness ping failed or wedged — forcing reconnect", "alias", s.Alias)
 					dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
 					_ = s.client.Disconnect(dctx)
 					dcancel()
@@ -798,6 +801,23 @@ func (s *Session) lockHeld() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessionLock != nil && s.sessionLock.Held()
+}
+
+// pingWithWatchdog pings with a HARD outer deadline. Returns false when
+// the ping failed OR never returned: on a wedge, the caller force-cancels
+// the run (Disconnect), which unwedges gotd's engine — the abandoned
+// ping goroutine then returns on its cancelled context.
+func (s *Session) pingWithWatchdog() bool {
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.client.Ping(pingCtx) }()
+	select {
+	case err := <-done:
+		return err == nil
+	case <-time.After(15 * time.Second):
+		return false
+	}
 }
 
 func (s *Session) setPingAt() {
