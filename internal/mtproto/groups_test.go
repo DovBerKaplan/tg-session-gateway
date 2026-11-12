@@ -184,17 +184,17 @@ func TestGapStateStorageRoundtrip(t *testing.T) {
 	if _, found, _ := g.GetState(nil, 0); found {
 		t.Fatal("fresh session has no state")
 	}
-	if err := g.SetState(nil, 0, updates.State{Pts: 10, Qts: 2, Date: 100, Seq: 3}); err != nil {
+	if err := g.SetState(context.TODO(), 0, updates.State{Pts: 10, Qts: 2, Date: 100, Seq: 3}); err != nil {
 		t.Fatal(err)
 	}
 	got, found, _ := g.GetState(nil, 0)
 	if !found || got.Pts != 10 || got.Qts != 2 || got.Date != 100 || got.Seq != 3 {
 		t.Fatalf("state=%+v found=%v", got, found)
 	}
-	if err := g.SetPts(nil, 0, 11); err != nil {
+	if err := g.SetPts(context.TODO(), 0, 11); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.SetDateSeq(nil, 0, 200, 4); err != nil {
+	if err := g.SetDateSeq(context.TODO(), 0, 200, 4); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ = g.GetState(nil, 0)

@@ -718,13 +718,6 @@ func (g *gotdClient) EditChannel(ctx context.Context, p EditChannelParams) (Edit
 	return EditResult{Ok: true}, nil
 }
 
-func derefString(p *string, fallback string) string {
-	if p != nil {
-		return *p
-	}
-	return fallback
-}
-
 // DeleteChannel is channels.deleteChannel (creator only).
 func (g *gotdClient) DeleteChannel(ctx context.Context, chatID int64) (EditResult, error) {
 	ch, err := g.resolveChannel(ctx, chatID)
