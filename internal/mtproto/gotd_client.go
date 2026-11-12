@@ -21,7 +21,6 @@ import (
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/message/styling"
-	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
@@ -49,11 +48,6 @@ type gotdClient struct {
 	// scanFake overrides the scan-surface RPC layer in tests (nil in
 	// production: g.scan() returns the real raw client).
 	scanFake scanAPI
-
-	// updMgr is the gap-recovering update handler (getDifference /
-	// getChannelDifference): the connection lives in this process, so
-	// recovery does too. Its state persists via gapStateStorage.
-	updMgr *updates.Manager
 
 	client        *telegram.Client
 	raw           *tg.Client
@@ -123,21 +117,18 @@ func newGotdClient(cfg config.MTProto, alias string, st *store.MT) *gotdClient {
 		photoLocs: map[int64]*tg.Photo{},
 		docLocs:   map[int64]*tg.Document{},
 	}
-	var handler telegram.UpdateHandler = telegram.UpdateHandlerFunc(g.onUpdatesClass)
 	if meta, ok := st.GetSessionMeta(alias); ok {
 		g.kind = meta.Kind
 	}
-	// Gap recovery (updates.Manager) is a USER-account mechanism: it
-	// tracks pts/qts and runs getDifference — for bots it only burns
-	// RPCs and, worse, writes state to SQLite on every update batch,
-	// contending the store's single connection against facade calls
-	// (the production bot sessions choked history reads this way). Bots
-	// keep the direct handler — exactly the pre-0.2 proven path.
-	if g.kind == "user" {
-		g.updMgr = newUpdatesManager(st, alias, handler)
-		handler = g.updMgr
-	}
-	g.client = newTelegramClient(cfg, alias, st, handler)
+	// NO updates.Manager — for ANY session kind. Its startup path
+	// (loadChannels → the SQLite state storage) blocks while holding the
+	// manager mutex, and gotd's readLoop serializes EVERYTHING (RPC
+	// responses included) behind that mutex — one stored-state restore
+	// gridlocked the whole plane (goroutine-dump-proven, 2026-11-12).
+	// The gateway is a pipe: updates fan out to the persisted reader
+	// groups; consumers close their own gaps (the scanner re-walks from
+	// its checkpoints).
+	g.client = newTelegramClient(cfg, alias, st, telegram.UpdateHandlerFunc(g.onUpdatesClass))
 	g.raw = g.client.API()
 	return g
 }
@@ -331,19 +322,6 @@ func (g *gotdClient) Connect(ctx context.Context) error {
 					ready <- err
 					return err
 				}
-			}
-			// gap recovery alongside the live stream: the manager owns
-			// pts/qts (+ per-channel pts) and replays what was missed
-			var selfID int64
-			if status.User != nil {
-				selfID = status.User.ID
-			}
-			if g.updMgr != nil {
-				go func() {
-					if err := g.updMgr.Run(ctx, g.raw, selfID, updates.AuthOptions{}); err != nil && ctx.Err() == nil {
-						slog.Warn("updates manager stopped", "alias", g.alias, "err", err)
-					}
-				}()
 			}
 			ready <- nil
 			<-ctx.Done()

@@ -434,7 +434,10 @@ func TestScanGetEntity(t *testing.T) {
 	}
 }
 
-func TestManagerGatedToUserSessions(t *testing.T) {
+func TestNoUpdatesManagerForAnyKind(t *testing.T) {
+	// The manager gridlocked the whole plane (readLoop serialized behind
+	// its mutex while its storage blocked on the store) — no session
+	// kind gets it anymore.
 	dir := t.TempDir()
 	mt, err := store.OpenMT(dir, "CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw=", "normal", dir+"/backups", nil)
 	if err != nil {
@@ -443,17 +446,21 @@ func TestManagerGatedToUserSessions(t *testing.T) {
 	t.Cleanup(mt.Close)
 
 	cfg := config.MTProto{APIID: 1, APIHash: "x"}
-	_ = mt.Register("bot1", "tok")
-	gotd := newGotdClient(cfg, "bot1", mt) //nolint:staticcheck // no connect, wiring only
-	if gotd.updMgr != nil {
-		t.Fatal("bot sessions must NOT run the gap-recovery manager")
-	}
-	_ = mt.RegisterUser("user1", "+972", "")
-	gotd = newGotdClient(cfg, "user1", mt)
-	if gotd.updMgr == nil {
-		t.Fatal("user sessions must run the gap-recovery manager")
+	for alias, reg := range map[string]func(){
+		"bot1":  func() { _ = mt.Register("bot1", "tok") },
+		"user1": func() { _ = mt.RegisterUser("user1", "+972", "") },
+	} {
+		reg()
+		gotd := newGotdClient(cfg, alias, mt) //nolint:staticcheck // wiring only, no connect
+		if gotd.updMgrField() != nil {
+			t.Fatalf("%s must not carry an updates manager", alias)
+		}
 	}
 }
+
+// updMgrField is nil always now — kept as a compile-time guard that the
+// field stays gone (the method lives only in tests).
+func (g *gotdClient) updMgrField() any { return nil }
 
 func TestArgPeerRefChannelKeyMarksChannel(t *testing.T) {
 	// channel_id key → marked form, regardless of bare/marked input

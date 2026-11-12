@@ -317,7 +317,10 @@ func (g *gotdClient) GetDialogs(ctx context.Context, limit int) ([]map[string]an
 	for _, ch := range chans {
 		d := dialogDict("channel", ch.id, ch.hash, meta[ch.id])
 		out = append(out, d)
-		g.cacheChannel(&tg.Channel{ID: ch.id, AccessHash: ch.hash, Title: d["title"].(string)})
+		// title may be absent when the metadata fill failed — the hash
+		// alone reads the channel (never a nil type assertion here)
+		title, _ := d["title"].(string)
+		g.cacheChannel(&tg.Channel{ID: ch.id, AccessHash: ch.hash, Title: title})
 	}
 	out = append(out,
 		map[string]any{"kind": "stats", "channels": len(chans), "users": users, "legacy_chats": chats},

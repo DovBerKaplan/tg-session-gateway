@@ -1,11 +1,9 @@
 package mtproto
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
-	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/store"
@@ -168,54 +166,6 @@ func TestGroupFilterShape(t *testing.T) {
 	// no filters → nil (raw splice path)
 	if groupFilter(nil, store.GroupCursor{}) != nil {
 		t.Fatal("unfiltered group → nil filter")
-	}
-}
-
-func TestGapStateStorageRoundtrip(t *testing.T) {
-	dir := t.TempDir()
-	mt, err := store.OpenMT(dir, "CfR-eL8QzhZJQb22PBP1zxH7CzJMFK4LwKvFACh1pfw=", "normal", dir+"/backups", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(mt.Close)
-	_ = mt.Register("u1", "tok")
-
-	g := &gapStateStorage{st: mt, alias: "u1"}
-	if _, found, _ := g.GetState(context.TODO(), 0); found {
-		t.Fatal("fresh session has no state")
-	}
-	if err := g.SetState(context.TODO(), 0, updates.State{Pts: 10, Qts: 2, Date: 100, Seq: 3}); err != nil {
-		t.Fatal(err)
-	}
-	got, found, _ := g.GetState(context.TODO(), 0)
-	if !found || got.Pts != 10 || got.Qts != 2 || got.Date != 100 || got.Seq != 3 {
-		t.Fatalf("state=%+v found=%v", got, found)
-	}
-	if err := g.SetPts(context.TODO(), 0, 11); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.SetDateSeq(context.TODO(), 0, 200, 4); err != nil {
-		t.Fatal(err)
-	}
-	got, _, _ = g.GetState(context.TODO(), 0)
-	if got.Pts != 11 || got.Date != 200 || got.Seq != 4 || got.Qts != 2 {
-		t.Fatalf("partial updates: %+v", got)
-	}
-
-	if err := g.SetChannelPts(context.TODO(), 0, 555, 77); err != nil {
-		t.Fatal(err)
-	}
-	pts, found, _ := g.GetChannelPts(context.TODO(), 0, 555)
-	if !found || pts != 77 {
-		t.Fatalf("channel pts=%d found=%v", pts, found)
-	}
-	seen := map[int64]int{}
-	_ = g.ForEachChannels(context.TODO(), 0, func(_ context.Context, channelID int64, pts int) error {
-		seen[channelID] = pts
-		return nil
-	})
-	if seen[555] != 77 {
-		t.Fatalf("ForEachChannels=%v", seen)
 	}
 }
 

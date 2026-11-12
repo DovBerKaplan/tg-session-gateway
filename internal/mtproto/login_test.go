@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tgdl "github.com/gotd/td/telegram"
 )
@@ -425,11 +426,20 @@ func TestReloginRevivesQuarantinedSession(t *testing.T) {
 	if s.CurrentState() != StateConnecting && s.CurrentState() != StateLive {
 		t.Fatalf("state after relogin=%s", s.CurrentState())
 	}
-	s.mu.Lock()
-	running := s.supervisorRunning
-	s.mu.Unlock()
-	if !running {
-		t.Fatal("supervisor must run again after re-login")
+	// the wake spawns the supervisor goroutine — wait for it to actually
+	// enter (a bare read races with goroutine scheduling under load)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s.mu.Lock()
+		running := s.supervisorRunning
+		s.mu.Unlock()
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("supervisor must run again after re-login")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
