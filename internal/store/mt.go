@@ -451,17 +451,29 @@ func (m *MT) UpdateSessionColumn(alias, col string, v int64) error {
 }
 
 // UpdateSessionColumns sets several state columns in ONE statement.
+// The values bind positionally: sort (name, value) PAIRS so args always
+// follow the sorted names (sorting the names alone left the args in map
+// iteration order — CI's -race runs caught values landing on the wrong
+// columns).
 func (m *MT) UpdateSessionColumns(alias string, cols map[string]int64) error {
-	names := make([]string, 0, len(cols))
-	args := make([]any, 0, len(cols)+1)
+	type pair struct {
+		name  string
+		value int64
+	}
+	pairs := make([]pair, 0, len(cols))
 	for col, v := range cols {
 		if !sessionStateCols[col] {
 			return fmt.Errorf("store: session column %q not updatable", col)
 		}
-		names = append(names, col+" = ?")
-		args = append(args, v)
+		pairs = append(pairs, pair{col, v})
 	}
-	sort.Strings(names) // deterministic SQL
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].name < pairs[j].name })
+	names := make([]string, len(pairs))
+	args := make([]any, 0, len(pairs)+1)
+	for i, p := range pairs {
+		names[i] = p.name + " = ?"
+		args = append(args, p.value)
+	}
 	args = append(args, alias)
 	_, err := m.DB.Exec("UPDATE sessions SET "+strings.Join(names, ", ")+" WHERE alias = ?", args...)
 	return err
