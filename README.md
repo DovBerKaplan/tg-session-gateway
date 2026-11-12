@@ -222,6 +222,25 @@ app = (Application.builder()
 
 That's the whole integration. The gateway speaks the Bot API verbatim.
 
+### Optional: Local Bot API companion (big files)
+
+For 2000 MB-class uploads/downloads, run the tdlib **companion** behind
+the gateway — your bot code still uses **one URL** (`/tgapi`), and
+**Rate Guard** stays on the hot path:
+
+```bash
+# TELEGRAM_API_ID + TELEGRAM_API_HASH required (from my.telegram.org)
+docker compose --profile local-botapi up -d
+# or: scripts/ensure-local-botapi.sh
+```
+
+Set `GW_UPSTREAM_FALLBACK=http://telegram-bot-api:8081` and
+`GW_UPSTREAM_FAILOVER=auto` (or `GW_ENV_DETECT=auto` to probe TLS and
+recommend settings). Failover keeps **full TLS verification** on the
+cloud path — no `InsecureSkipVerify`. Operators: [`tggw doctor`](docs/runbook.md#auto-environment-detection),
+`GET /admin/env`, alerts `UpstreamFailoverActive` / `EnvDegraded`.
+Details: [compatibility](docs/compatibility.md) · [runbook](docs/runbook.md#auto-environment-detection).
+
 Bots also get an auto typing indicator for free: from the moment a user
 messages or presses a button (private chats by default) until your app
 answers, the gateway keeps a `typing...` heartbeat alive — honestly,
@@ -398,7 +417,8 @@ and `...-mtproto`, source on the [`legacy-python`](../../tree/legacy-python) bra
 
 | You need... | Use that instead | Why |
 |---|---|---|
-| Full local Bot API server (files, big uploads, every method) | [tdlibBotApiServer](https://github.com/tdlib/td/blob/master/README.md#telegram-bot-api) or the official [local Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server) | This gateway proxies, it doesn't re-implement the API server; no local file storage |
+| Big files **with** gateway session/queue/rate-guard benefits | **This repo** + `docker compose --profile local-botapi` (companion upstream) | One client URL; companion is internal-only — see [compatibility](docs/compatibility.md) |
+| Standalone local Bot API only (no gateway, no shared poller/queue) | [tdlib Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server) | You lose deploy-isolated sessions, Rate Guard, and the durable queue unless you rebuild them |
 | Every MadelineProto/MTProto method over HTTP | [TelegramApiServer](https://github.com/xtrime-ru/TelegramApiServer), [docker-telethon-plus](https://github.com/psyb0t/docker-telethon-plus) | Broader method coverage, battle-tested; this sidecar is Façade-minimal (send + updates + files) |
 | Session persistence for one in-process bot | A volume + Pyrogram file sessions | Less moving parts; you only need this repo when deploys/replicas share one session |
 | Managed scaling for grammY bots | grammY runner / BotMux-style gateways | Ecosystem-native; this repo is library-agnostic HTTP |

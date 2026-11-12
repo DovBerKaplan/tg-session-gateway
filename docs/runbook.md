@@ -246,3 +246,77 @@ chmod 0600 on open; the `.fernet_key` file is 0600.
 - Volume permissions: mount the data volume owned by the container
   user (65532). The image initializes `/data` with nonroot ownership;
   bind mounts must be pre-chowned (`chown 65532:65532 ./data`).
+
+## Auto environment detection
+
+Optional companion failover and TLS-aware upstream selection. Controlled
+by `GW_ENV_DETECT=off` (default in Compose) or `auto`.
+
+**CLI (read-only probe):**
+
+```bash
+GW_ENV_DETECT=auto GW_UPSTREAM_FALLBACK=http://telegram-bot-api:8081 \
+  tggw doctor          # human summary
+tggw doctor --json     # same facts + decision as JSON
+```
+
+**What gets probed:** cloud upstream TLS (full verification, optional
+extra roots from `GW_UPSTREAM_CA_FILE`), certificate expiry vs local
+clock skew, DNS (A/AAAA) for the upstream host, `HTTP(S)_PROXY` /
+`NO_PROXY`, runtime hint (Docker / Kubernetes / bare metal), and
+companion health at `GW_UPSTREAM_FALLBACK` (`GET …/healthz`) when that
+URL is set.
+
+**Hard rules (not configurable):**
+
+- TLS certificate verification is **never** disabled — no
+  `InsecureSkipVerify`, no “trust the inspection proxy” auto-import.
+- Unknown corporate CA → set `GW_UPSTREAM_CA_FILE` to a PEM bundle.
+- Automatic failover uses **only** a preconfigured
+  `GW_UPSTREAM_FALLBACK` URL (e.g. internal `telegram-bot-api`); the
+  gateway will not invent a companion address.
+
+**Admin visibility (Bearer `GW_ADMIN_SECRET`):**
+
+```bash
+curl -s -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/env | jq
+curl -s -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/upstream | jq
+# manual switch (when supervisor enabled):
+curl -X POST -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/upstream/failover
+curl -X POST -H "Authorization: Bearer $GW_ADMIN_SECRET" localhost:8080/admin/upstream/failback
+```
+
+`/admin/env` returns probe facts, the decision engine output, TLS state,
+and clock skew. `/admin/status` also embeds an `upstream` block when
+failover is active.
+
+**Alerts** ([`monitoring/alerts.yml`](../monitoring/alerts.yml)):
+
+- `UpstreamFailoverActive` — traffic is on the local companion
+  (`tg_gateway_upstream_failover_active == 1` for >2m). Confirm cloud
+  TLS/path health; fail back when cloud is healthy
+  (`POST /admin/upstream/failback` or fix `GW_UPSTREAM_CA_FILE`).
+- `EnvDegraded` — cloud TLS probe is not `valid` but failover is **not**
+  active for >5m. Typical fix: enable companion + `GW_UPSTREAM_FALLBACK`,
+  or add `GW_UPSTREAM_CA_FILE`; never disable verify.
+
+**Override envdetect with explicit `GW_*`:** anything you set in the
+environment wins over recommendations (doctor prints which fields were
+explicit):
+
+| Decision | Override |
+|---|---|
+| Detection on/off | `GW_ENV_DETECT=off` \| `auto` |
+| Primary upstream | `GW_UPSTREAM` |
+| Companion URL | `GW_UPSTREAM_FALLBACK` |
+| Failover policy | `GW_UPSTREAM_FAILOVER=off` \| `auto` \| `prefer_local` |
+| Treat as local (multipart/time presets) | `GW_UPSTREAM_KIND=cloud` \| `local` \| `auto` |
+| Extra trust anchors | `GW_UPSTREAM_CA_FILE` |
+| Upstream HTTP timeout | `GW_UPSTREAM_TIMEOUT_S` |
+| Large uploads | `GW_MAX_MULTIPART_MB` |
+| Consumer URL prefix | `GW_PATH_PREFIX` (`none` = bare `/bot…`) |
+
+Compose helper: [`scripts/ensure-local-botapi.sh`](../scripts/ensure-local-botapi.sh)
+sets fallback + `GW_ENV_DETECT=auto` and starts the `local-botapi` profile.
+Helm: `localBotApi.mode` `standby` \| `always` — see
+[`deploy/helm/tggw/README.md`](../deploy/helm/tggw/README.md).

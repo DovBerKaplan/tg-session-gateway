@@ -27,12 +27,41 @@ services:
       GW_APP_SECRET: ${GW_APP_SECRET:?set in .env}
       GW_FERNET_KEY: ${GW_FERNET_KEY:?set in .env}
       GW_ON_LIMIT: ${GW_ON_LIMIT:-queue}
+      # Local Bot API companion (profile local-botapi): cloud primary + internal fallback.
+      # Set GW_ENV_DETECT=auto to let the gateway recommend failover on TLS failure.
+      GW_UPSTREAM: ${GW_UPSTREAM:-https://api.telegram.org}
+      GW_UPSTREAM_FALLBACK: ${GW_UPSTREAM_FALLBACK:-}
+      GW_UPSTREAM_FAILOVER: ${GW_UPSTREAM_FAILOVER:-off}
+      GW_UPSTREAM_KIND: ${GW_UPSTREAM_KIND:-auto}
+      GW_ENV_DETECT: ${GW_ENV_DETECT:-off}
+      GW_UPSTREAM_CA_FILE: ${GW_UPSTREAM_CA_FILE:-}
+      GW_PATH_PREFIX: ${GW_PATH_PREFIX:-/tgapi}
     volumes:
       - tg-gateway-data:/data
+      # Shared with telegram-bot-api when using --local absolute file paths (optional).
+      - tg-local-botapi-data:/var/lib/telegram-bot-api:ro
     networks:
       - tg-gateway-net
     ports:
       - "127.0.0.1:8080:8080" # admin/API on loopback only (spec §5.1)
+
+  # Local Bot API companion (tdlib/telegram-bot-api). Opt-in:
+  #   docker compose --profile local-botapi up -d
+  # Clients still talk only to tggw (/tgapi). Never expose this port publicly.
+  telegram-bot-api:
+    image: ${TELEGRAM_BOT_API_IMAGE:-aiogram/telegram-bot-api:latest}
+    container_name: tg-gateway-telegram-bot-api
+    profiles: ["local-botapi"]
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-${GW_API_ID:-}}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-${GW_API_HASH:-}}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - tg-local-botapi-data:/var/lib/telegram-bot-api
+    networks:
+      - tg-gateway-net
+    # internal only — no host ports
 
   mtproto:
     image: tggw:latest
@@ -76,3 +105,5 @@ volumes:
     name: tg-gateway-data
   tg-gateway-mt-data:
     name: tg-gateway-mt-data
+  tg-local-botapi-data:
+    name: tg-local-botapi-data

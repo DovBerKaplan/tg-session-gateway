@@ -13,6 +13,7 @@ import sys
 DEFAULT_FLOORS = """\
 # package (module-relative) floor
 internal/botapi 72.0
+internal/envdetect 51.0
 internal/mtproto 62.0
 internal/store 58.0
 internal/rateguard 57.0

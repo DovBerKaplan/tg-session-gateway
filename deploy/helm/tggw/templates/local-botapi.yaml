@@ -1,0 +1,90 @@
+{{- $mode := .Values.localBotApi.mode | default "disabled" }}
+{{- if ne $mode "disabled" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-telegram-bot-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: local-botapi
+    tggw/component: local-botapi
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: local-botapi
+  ports:
+    - name: http
+      port: {{ .Values.localBotApi.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-telegram-bot-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: local-botapi
+    tggw/component: local-botapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: local-botapi
+  template:
+    metadata:
+      labels:
+        {{- include "tggw.labels" . | nindent 8 }}
+        app.kubernetes.io/component: local-botapi
+        tggw/component: local-botapi
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: telegram-bot-api
+          image: {{ .Values.localBotApi.image | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.localBotApi.port }}
+          env:
+            - name: TELEGRAM_API_ID
+              value: {{ if .Values.localBotApi.apiID }}{{ .Values.localBotApi.apiID | quote }}{{ else }}{{ .Values.secrets.apiID | quote }}{{ end }}
+            - name: TELEGRAM_API_HASH
+              value: {{ if .Values.localBotApi.apiHash }}{{ .Values.localBotApi.apiHash | quote }}{{ else }}{{ .Values.secrets.apiHash | quote }}{{ end }}
+            {{- if .Values.localBotApi.local }}
+            - name: TELEGRAM_LOCAL
+              value: "1"
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/telegram-bot-api
+          resources:
+            {{- toYaml .Values.localBotApi.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-telegram-bot-api
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-telegram-bot-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "tggw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: local-botapi
+spec:
+  accessModes: [{{ .Values.localBotApi.storage.accessMode | quote }}]
+  resources:
+    requests:
+      storage: {{ .Values.localBotApi.storage.size }}
+  {{- if .Values.localBotApi.storage.className }}
+  storageClassName: {{ .Values.localBotApi.storage.className | quote }}
+  {{- end }}
+{{- end }}
