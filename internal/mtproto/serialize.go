@@ -1,6 +1,7 @@
 package mtproto
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -94,12 +95,20 @@ func SerializeMessage(m tg.MessageClass) map[string]any {
 		"id", int64(msg.ID),
 		"date", int64(msg.Date),
 		"message", msg.Message,
+		"out", msg.Out,
 	)
+	if msg.GroupedID != 0 {
+		out["grouped_id"] = msg.GroupedID
+	}
 	if msg.PeerID != nil {
 		out["chat"] = SerializeChat(msg.PeerID)
 	}
-	if from, ok := msg.FromID.(interface{ GetUserID() int64 }); ok {
-		out["from_user_id"] = from.GetUserID()
+	switch from := msg.FromID.(type) {
+	case *tg.PeerUser:
+		out["from_user_id"] = from.UserID
+	case *tg.PeerChannel:
+		// anonymous channel post — the channel itself is the author
+		out["from_chat_id"] = from.ChannelID
 	}
 	if msg.ReplyTo != nil {
 		if hdr, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
@@ -229,9 +238,38 @@ func SerializeMedia(m tg.MessageMediaClass) map[string]any {
 		if !ok {
 			return nil
 		}
-		return mapOf("_", "MessageMediaDocument", "document", mapOf(
-			"_", "Document", "id", int64(doc.ID), "mime_type", doc.MimeType,
-			"size", int64(doc.Size), "file_id", formatFileRef("document", doc.ID)))
+		d := map[string]any{
+			"_": "Document", "id": int64(doc.ID), "mime_type": doc.MimeType,
+			"size": int64(doc.Size), "file_id": formatFileRef("document", doc.ID),
+			"dc_id": int64(doc.DCID),
+			// what send_media needs to re-send this document server-side
+			"access_hash":    doc.AccessHash,
+			"file_reference": base64.StdEncoding.EncodeToString(doc.FileReference),
+		}
+		// attributes the scanner's rules read (video/audio/duration/name)
+		for _, attr := range doc.Attributes {
+			switch a := attr.(type) {
+			case *tg.DocumentAttributeFilename:
+				d["file_name"] = a.FileName
+			case *tg.DocumentAttributeVideo:
+				d["duration"] = a.Duration
+				if a.SupportsStreaming {
+					d["supports_streaming"] = true
+				}
+			case *tg.DocumentAttributeAudio:
+				d["duration"] = int64(a.Duration)
+				if a.Voice {
+					d["voice"] = true
+				}
+				if a.Title != "" {
+					d["title"] = a.Title
+				}
+				if a.Performer != "" {
+					d["performer"] = a.Performer
+				}
+			}
+		}
+		return mapOf("_", "MessageMediaDocument", "document", d)
 	case *tg.MessageMediaWebPage:
 		return mapOf("_", "MessageMediaWebPage")
 	}

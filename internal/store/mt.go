@@ -3,9 +3,12 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/health"
@@ -23,7 +26,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     date        INTEGER NOT NULL DEFAULT 0,
     seq         INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    paused      INTEGER NOT NULL DEFAULT 0
+    paused      INTEGER NOT NULL DEFAULT 0,
+    kind        TEXT NOT NULL DEFAULT 'bot',
+    phone       TEXT NOT NULL DEFAULT '',
+    conn_opts   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS update_queue (
@@ -55,6 +61,107 @@ CREATE TABLE IF NOT EXISTS dead_letters (
     payload TEXT NOT NULL,
     reason  TEXT NOT NULL,
     at      REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS clients (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    token_hash    BLOB NOT NULL UNIQUE,
+    allowlist     TEXT NOT NULL,
+    session_scope TEXT NOT NULL,
+    lane          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS consumer_groups (
+    alias         TEXT NOT NULL,
+    group_name    TEXT NOT NULL,
+    acked_seq     INTEGER NOT NULL DEFAULT 0,
+    channels      TEXT NOT NULL DEFAULT '',
+    document_only INTEGER NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, group_name)
+);
+
+CREATE TABLE IF NOT EXISTS channel_pts (
+    alias      TEXT NOT NULL,
+    channel_id INTEGER NOT NULL,
+    pts        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS peers (
+    alias       TEXT NOT NULL,
+    id          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    access_hash INTEGER NOT NULL,
+    username    TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    updated_at  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, id)
+);
+`
+
+// mtClientsMigration is schema v2: per-client tokens with a method
+// allowlist and an explicit session scope. IF NOT EXISTS so fresh DBs
+// (which run the full mtSchema) and v1 DBs converge on the same shape.
+const mtClientsMigration = `
+CREATE TABLE IF NOT EXISTS clients (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    token_hash    BLOB NOT NULL UNIQUE,
+    allowlist     TEXT NOT NULL,
+    session_scope TEXT NOT NULL,
+    lane          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked       INTEGER NOT NULL DEFAULT 0
+);
+`
+
+// mtUserSessionsMigration is schema v3: user accounts alongside bots.
+// kind distinguishes them; phone is the login identity; conn_opts is a
+// JSON blob (ipv6 source address, device fingerprint) the dialer reads.
+const mtUserSessionsMigration = `
+ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'bot';
+ALTER TABLE sessions ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN conn_opts TEXT NOT NULL DEFAULT '';
+`
+
+// mtReaderGroupsMigration is schema v4: update-stream reader groups
+// (each group acks its own cursor; rows delete when every group passed
+// them) and per-channel pts for gotd's gap recovery.
+const mtReaderGroupsMigration = `
+CREATE TABLE IF NOT EXISTS consumer_groups (
+    alias         TEXT NOT NULL,
+    group_name    TEXT NOT NULL,
+    acked_seq     INTEGER NOT NULL DEFAULT 0,
+    channels      TEXT NOT NULL DEFAULT '',
+    document_only INTEGER NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, group_name)
+);
+CREATE TABLE IF NOT EXISTS channel_pts (
+    alias      TEXT NOT NULL,
+    channel_id INTEGER NOT NULL,
+    pts        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, channel_id)
+);
+`
+
+// mtPeerCacheMigration is schema v5: the shared peer cache — access
+// hashes (and names) resolved once per session, served to every client
+// (gotd's update manager + the facade's entity resolution).
+const mtPeerCacheMigration = `
+CREATE TABLE IF NOT EXISTS peers (
+    alias       TEXT NOT NULL,
+    id          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    access_hash INTEGER NOT NULL,
+    username    TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    updated_at  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (alias, id)
 );
 `
 
@@ -90,7 +197,12 @@ func OpenMT(dataDir, fernetKey, durability string, backupsDir string, h *health.
 		_ = db.Close()
 		return nil, err
 	}
-	if err := EnsureSchema(db, 1, map[int]string{}, path, backupsDir); err != nil {
+	if err := EnsureSchema(db, 5, map[int]string{
+		2: mtClientsMigration,
+		3: mtUserSessionsMigration,
+		4: mtReaderGroupsMigration,
+		5: mtPeerCacheMigration,
+	}, path, backupsDir); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -155,9 +267,75 @@ func (m *MT) Register(alias, token string) error {
 		phone = phone[:20] + "…"
 	}
 	_, err = m.DB.Exec(
-		"INSERT INTO sessions (alias, token_enc, phone_or_token) VALUES (?, ?, ?) "+
+		"INSERT INTO sessions (alias, token_enc, phone_or_token, kind) VALUES (?, ?, ?, 'bot') "+
 			"ON CONFLICT(alias) DO UPDATE SET token_enc = excluded.token_enc",
 		alias, enc, phone)
+	return err
+}
+
+// RegisterUser upserts a user-account session (no bot token; the
+// identity is the phone number and the auth_key blob in gotd_sessions).
+func (m *MT) RegisterUser(alias, phone, connOpts string) error {
+	enc, err := m.box.Encrypt(nil)
+	if err != nil {
+		return err
+	}
+	_, err = m.DB.Exec(
+		"INSERT INTO sessions (alias, token_enc, phone_or_token, kind, phone, conn_opts) "+
+			"VALUES (?, ?, ?, 'user', ?, ?) "+
+			"ON CONFLICT(alias) DO UPDATE SET kind = 'user', phone = excluded.phone, "+
+			"conn_opts = excluded.conn_opts",
+		alias, enc, phone, phone, connOpts)
+	return err
+}
+
+// SessionMeta is the non-secret per-session configuration.
+type SessionMeta struct {
+	Kind     string // bot | user
+	Phone    string
+	ConnOpts string // JSON: ipv6 source, device fingerprint
+}
+
+// GetSessionMeta loads the session kind/phone/conn_opts.
+func (m *MT) GetSessionMeta(alias string) (SessionMeta, bool) {
+	var meta SessionMeta
+	err := m.DB.QueryRow(
+		"SELECT kind, phone, conn_opts FROM sessions WHERE alias = ?", alias).
+		Scan(&meta.Kind, &meta.Phone, &meta.ConnOpts)
+	if err != nil {
+		return SessionMeta{}, false
+	}
+	return meta, true
+}
+
+// SetConnOpts rewrites the per-session dialer options.
+func (m *MT) SetConnOpts(alias, opts string) error {
+	_, err := m.DB.Exec("UPDATE sessions SET conn_opts = ? WHERE alias = ?", opts, alias)
+	return err
+}
+
+// HasGotdSession reports whether an auth_key blob is stored for alias.
+func (m *MT) HasGotdSession(alias string) bool {
+	var one int
+	err := m.DB.QueryRow("SELECT 1 FROM gotd_sessions WHERE alias = ?", alias).Scan(&one)
+	return err == nil
+}
+
+// SaveGotdSession seals and stores a raw gotd session JSON blob
+// (the format LoadSession returns).
+func (m *MT) SaveGotdSession(alias string, blob []byte) error {
+	if _, err := m.DB.Exec(
+		"CREATE TABLE IF NOT EXISTS gotd_sessions (alias TEXT PRIMARY KEY, session_blob BLOB NOT NULL)"); err != nil {
+		return err
+	}
+	sealed, err := m.box.SealBlob(blob)
+	if err != nil {
+		return err
+	}
+	_, err = m.DB.Exec(
+		"INSERT INTO gotd_sessions (alias, session_blob) VALUES (?, ?) "+
+			"ON CONFLICT(alias) DO UPDATE SET session_blob = excluded.session_blob",
+		alias, sealed)
 	return err
 }
 
@@ -175,6 +353,8 @@ func (m *MT) Delete(alias string) (bool, error) {
 type SessionRow struct {
 	Alias        string `json:"alias"`
 	PhoneOrToken string `json:"phone_or_token"`
+	Kind         string `json:"kind"`
+	Phone        string `json:"phone"`
 	PTS          int64  `json:"pts"`
 	QTS          int64  `json:"qts"`
 	Date         int64  `json:"date"`
@@ -186,7 +366,7 @@ type SessionRow struct {
 // ListSessions returns every registered session.
 func (m *MT) ListSessions() ([]SessionRow, error) {
 	rows, err := m.DB.Query(
-		"SELECT alias, phone_or_token, pts, qts, date, seq, paused, created_at FROM sessions")
+		"SELECT alias, phone_or_token, kind, phone, pts, qts, date, seq, paused, created_at FROM sessions")
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +375,7 @@ func (m *MT) ListSessions() ([]SessionRow, error) {
 	for rows.Next() {
 		var r SessionRow
 		var paused int
-		if err := rows.Scan(&r.Alias, &r.PhoneOrToken, &r.PTS, &r.QTS, &r.Date, &r.Seq, &paused, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.Alias, &r.PhoneOrToken, &r.Kind, &r.Phone, &r.PTS, &r.QTS, &r.Date, &r.Seq, &paused, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		r.Paused = paused != 0
@@ -254,6 +434,49 @@ func (m *MT) GetState(alias string) MTState {
 	_ = m.DB.QueryRow("SELECT pts, qts, date, seq FROM sessions WHERE alias = ?", alias).
 		Scan(&st.PTS, &st.QTS, &st.Date, &st.Seq)
 	return st
+}
+
+// sessionStateCols is the allow-list for partial state updates.
+var sessionStateCols = map[string]bool{"pts": true, "qts": true, "date": true, "seq": true}
+
+// UpdateSessionColumn sets ONE state column in a single statement (the
+// gap-recovery manager ticks these per update batch — one statement, no
+// read-modify-write).
+func (m *MT) UpdateSessionColumn(alias, col string, v int64) error {
+	if !sessionStateCols[col] {
+		return fmt.Errorf("store: session column %q not updatable", col)
+	}
+	_, err := m.DB.Exec("UPDATE sessions SET "+col+" = ? WHERE alias = ?", v, alias)
+	return err
+}
+
+// UpdateSessionColumns sets several state columns in ONE statement.
+// The values bind positionally: sort (name, value) PAIRS so args always
+// follow the sorted names (sorting the names alone left the args in map
+// iteration order — CI's -race runs caught values landing on the wrong
+// columns).
+func (m *MT) UpdateSessionColumns(alias string, cols map[string]int64) error {
+	type pair struct {
+		name  string
+		value int64
+	}
+	pairs := make([]pair, 0, len(cols))
+	for col, v := range cols {
+		if !sessionStateCols[col] {
+			return fmt.Errorf("store: session column %q not updatable", col)
+		}
+		pairs = append(pairs, pair{col, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].name < pairs[j].name })
+	names := make([]string, len(pairs))
+	args := make([]any, 0, len(pairs)+1)
+	for i, p := range pairs {
+		names[i] = p.name + " = ?"
+		args = append(args, p.value)
+	}
+	args = append(args, alias)
+	_, err := m.DB.Exec("UPDATE sessions SET "+strings.Join(names, ", ")+" WHERE alias = ?", args...)
+	return err
 }
 
 // SaveState persists the update state snapshot.
@@ -471,6 +694,313 @@ func (m *MT) GetAudit(limit int) []AuditEntry {
 		}
 	}
 	return out
+}
+
+// ── reader groups (per-group update cursors) ───────────────────────
+
+// GroupCursor is one reader group's acked position and filters.
+type GroupCursor struct {
+	Alias        string `json:"-"`
+	Group        string `json:"group"`
+	AckedSeq     int64  `json:"acked_seq"`
+	Channels     string `json:"channels,omitempty"` // JSON array filter ("" = all)
+	DocumentOnly bool   `json:"document_only,omitempty"`
+}
+
+// EnsureGroup registers a reader group (idempotent; filters update).
+func (m *MT) EnsureGroup(alias, group, channels string, documentOnly bool) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO consumer_groups (alias, group_name, acked_seq, channels, document_only, updated_at) "+
+			"VALUES (?, ?, 0, ?, ?, ?) "+
+			"ON CONFLICT(alias, group_name) DO UPDATE SET channels = excluded.channels, "+
+			"document_only = excluded.document_only, updated_at = excluded.updated_at",
+		alias, group, channels, boolInt(documentOnly), wallNow())
+	return err
+}
+
+// GroupAck advances one group's cursor (never backwards) and deletes
+// rows every group has passed.
+func (m *MT) GroupAck(alias, group string, seq int64) error {
+	if _, err := m.DB.Exec(
+		"INSERT INTO consumer_groups (alias, group_name, acked_seq, updated_at) VALUES (?, ?, ?, ?) "+
+			"ON CONFLICT(alias, group_name) DO UPDATE SET acked_seq = MAX(acked_seq, excluded.acked_seq), "+
+			"updated_at = excluded.updated_at",
+		alias, group, seq, wallNow()); err != nil {
+		return err
+	}
+	// physical delete below the slowest group's cursor
+	_, _ = m.DB.Exec(
+		"DELETE FROM update_queue WHERE alias = ? AND update_id <= "+
+			"(SELECT MIN(acked_seq) FROM consumer_groups WHERE alias = ?)", alias, alias)
+	return nil
+}
+
+// ListGroups returns the reader groups of one session.
+func (m *MT) ListGroups(alias string) []GroupCursor {
+	rows, err := m.DB.Query(
+		"SELECT alias, group_name, acked_seq, channels, document_only FROM consumer_groups WHERE alias = ?",
+		alias)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []GroupCursor
+	for rows.Next() {
+		var g GroupCursor
+		var docOnly int
+		if err := rows.Scan(&g.Alias, &g.Group, &g.AckedSeq, &g.Channels, &docOnly); err == nil {
+			g.DocumentOnly = docOnly != 0
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// GroupCursorOf loads one group's cursor (0 when unknown).
+func (m *MT) GroupCursorOf(alias, group string) GroupCursor {
+	var g GroupCursor
+	var docOnly int
+	_ = m.DB.QueryRow(
+		"SELECT alias, group_name, acked_seq, channels, document_only FROM consumer_groups "+
+			"WHERE alias = ? AND group_name = ?", alias, group).
+		Scan(&g.Alias, &g.Group, &g.AckedSeq, &g.Channels, &docOnly)
+	g.DocumentOnly = docOnly != 0
+	return g
+}
+
+// ── channel pts (gotd updates.Manager gap recovery) ────────────────
+
+// GetChannelPts loads the persisted channel pts (0 when unknown).
+func (m *MT) GetChannelPts(alias string, channelID int64) (int, bool) {
+	var pts int
+	err := m.DB.QueryRow(
+		"SELECT pts FROM channel_pts WHERE alias = ? AND channel_id = ?", alias, channelID).Scan(&pts)
+	return pts, err == nil
+}
+
+// SetChannelPts persists one channel's pts.
+func (m *MT) SetChannelPts(alias string, channelID int64, pts int) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO channel_pts (alias, channel_id, pts) VALUES (?, ?, ?) "+
+			"ON CONFLICT(alias, channel_id) DO UPDATE SET pts = excluded.pts",
+		alias, channelID, pts)
+	return err
+}
+
+// ForEachChannelPts iterates every persisted channel pts.
+func (m *MT) ForEachChannelPts(alias string, fn func(channelID int64, pts int) error) error {
+	rows, err := m.DB.Query("SELECT channel_id, pts FROM channel_pts WHERE alias = ?", alias)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var channelID int64
+		var pts int
+		if err := rows.Scan(&channelID, &pts); err != nil {
+			return err
+		}
+		if err := fn(channelID, pts); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// ── peers (the shared access-hash cache) ───────────────────────────
+
+// PeerEntry is one cached peer (access hash + display names).
+type PeerEntry struct {
+	ID         int64  `json:"id"`
+	Kind       string `json:"kind"` // user | channel
+	AccessHash int64  `json:"access_hash"`
+	Username   string `json:"username,omitempty"`
+	Title      string `json:"title,omitempty"`
+}
+
+// UpsertPeer caches one peer (never lowers a hash to zero — a stale
+// nonzero hash beats none).
+func (m *MT) UpsertPeer(alias string, e PeerEntry) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO peers (alias, id, kind, access_hash, username, title, updated_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(alias, id) DO UPDATE SET kind = excluded.kind, "+
+			"access_hash = CASE WHEN excluded.access_hash != 0 THEN excluded.access_hash ELSE peers.access_hash END, "+
+			"username = excluded.username, title = excluded.title, updated_at = excluded.updated_at",
+		alias, e.ID, e.Kind, e.AccessHash, e.Username, e.Title, wallNow())
+	return err
+}
+
+// LookupPeer serves the cached entry.
+func (m *MT) LookupPeer(alias string, id int64) (PeerEntry, bool) {
+	var e PeerEntry
+	err := m.DB.QueryRow(
+		"SELECT id, kind, access_hash, username, title FROM peers WHERE alias = ? AND id = ?",
+		alias, id).Scan(&e.ID, &e.Kind, &e.AccessHash, &e.Username, &e.Title)
+	return e, err == nil
+}
+
+// PeerCount is the cache size (stats).
+func (m *MT) PeerCount(alias string) int {
+	var n int
+	_ = m.DB.QueryRow("SELECT COUNT(*) FROM peers WHERE alias = ?", alias).Scan(&n)
+	return n
+}
+
+// ── clients (per-consumer tokens with an allowlist) ────────────────
+
+// ClientRow is one registered consumer client. TokenHash stays in the
+// store layer; callers never see it.
+type ClientRow struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Allowlist []string `json:"allowlist"`
+	Sessions  []string `json:"sessions"`
+	Lane      string   `json:"lane,omitempty"`
+	CreatedAt string   `json:"created_at"`
+	Revoked   bool     `json:"revoked"`
+}
+
+func encodeList(list []string) string {
+	b, err := json.Marshal(list)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func decodeList(s string) []string {
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// RegisterClient issues a new client token. The token is returned ONCE;
+// only its SHA-256 is stored (the gateway never presents it upstream).
+func (m *MT) RegisterClient(id, name string, tokenHash []byte, allowlist, sessions []string, lane string) error {
+	_, err := m.DB.Exec(
+		"INSERT INTO clients (id, name, token_hash, allowlist, session_scope, lane) VALUES (?, ?, ?, ?, ?, ?)",
+		id, name, tokenHash, encodeList(allowlist), encodeList(sessions), lane)
+	return err
+}
+
+// ListClients returns every client, revoked last.
+func (m *MT) ListClients() ([]ClientRow, error) {
+	rows, err := m.DB.Query(
+		"SELECT id, name, allowlist, session_scope, lane, created_at, revoked FROM clients " +
+			"ORDER BY revoked, created_at, id")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ClientRow
+	for rows.Next() {
+		var r ClientRow
+		var allowlist, scope string
+		var revoked int
+		if err := rows.Scan(&r.ID, &r.Name, &allowlist, &scope, &r.Lane, &r.CreatedAt, &revoked); err != nil {
+			return nil, err
+		}
+		r.Allowlist = decodeList(allowlist)
+		r.Sessions = decodeList(scope)
+		r.Revoked = revoked != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ClientCreds is the auth-relevant projection of one client.
+type ClientCreds struct {
+	ID        string
+	Name      string
+	TokenHash []byte
+	Allowlist []string
+	Sessions  []string
+	Lane      string
+}
+
+// FindClientByHash resolves a bearer token's SHA-256 to its creds;
+// revoked clients answer false.
+func (m *MT) FindClientByHash(tokenHash []byte) (ClientCreds, bool) {
+	var c ClientCreds
+	var allowlist, scope string
+	var revoked int
+	err := m.DB.QueryRow(
+		"SELECT id, name, token_hash, allowlist, session_scope, lane, revoked FROM clients WHERE token_hash = ?",
+		tokenHash).Scan(&c.ID, &c.Name, &c.TokenHash, &allowlist, &scope, &c.Lane, &revoked)
+	if err != nil || revoked != 0 {
+		return ClientCreds{}, false
+	}
+	c.Allowlist = decodeList(allowlist)
+	c.Sessions = decodeList(scope)
+	return c, true
+}
+
+// ListClientCreds returns the auth-relevant projection of every
+// non-revoked client (hashes included) — the resolver's snapshot.
+func (m *MT) ListClientCreds() ([]ClientCreds, error) {
+	rows, err := m.DB.Query(
+		"SELECT id, name, token_hash, allowlist, session_scope, lane FROM clients WHERE revoked = 0")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ClientCreds
+	for rows.Next() {
+		var c ClientCreds
+		var allowlist, scope string
+		if err := rows.Scan(&c.ID, &c.Name, &c.TokenHash, &allowlist, &scope, &c.Lane); err != nil {
+			return nil, err
+		}
+		c.Allowlist = decodeList(allowlist)
+		c.Sessions = decodeList(scope)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateClient rewrites the allowlist/scope/lane of one client.
+// Nil arguments keep the stored value.
+func (m *MT) UpdateClient(id string, allowlist, sessions []string, lane *string) (bool, error) {
+	sets := []string{}
+	args := []any{}
+	if allowlist != nil {
+		sets = append(sets, "allowlist = ?")
+		args = append(args, encodeList(allowlist))
+	}
+	if sessions != nil {
+		sets = append(sets, "session_scope = ?")
+		args = append(args, encodeList(sessions))
+	}
+	if lane != nil {
+		sets = append(sets, "lane = ?")
+		args = append(args, *lane)
+	}
+	if len(sets) == 0 {
+		var one int
+		err := m.DB.QueryRow("SELECT 1 FROM clients WHERE id = ?", id).Scan(&one)
+		return err == nil, nil
+	}
+	q := "UPDATE clients SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	args = append(args, id)
+	res, err := m.DB.Exec(q, args...)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// RevokeClient soft-deletes a client by id; false when unknown.
+func (m *MT) RevokeClient(id string) (bool, error) {
+	res, err := m.DB.Exec("UPDATE clients SET revoked = 1 WHERE id = ?", id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // Box exposes the fernet handle for at-rest blob sealing (the session

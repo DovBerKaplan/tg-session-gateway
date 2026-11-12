@@ -7,7 +7,7 @@ info:
     Telegram Bot API envelope ({"ok":true,"result":...}) — only the
     gateway-specific surface is listed here; every non-gateway-owned
     Bot API method is proxied verbatim. The MTProto plane is the
-    sidecar facade (19-method allowlist).
+    sidecar facade (19 core methods + 15 scanner methods; unknown → 501 with the list).
 servers:
   - url: http://tggw:8080
     description: main listener (both planes)
@@ -16,7 +16,8 @@ servers:
 
 components:
   securitySchemes:
-    appSecret: {type: http, scheme: bearer, description: GW_APP_SECRET}
+    appSecret: {type: http, scheme: bearer, description: GW_APP_SECRET (legacy full access; refuse with GW_LEGACY_APP_SECRET=off)}
+    clientToken: {type: http, scheme: bearer, description: per-client tggc_ token (method allowlist + session scope)}
     adminSecret: {type: http, scheme: bearer, description: GW_ADMIN_SECRET}
   schemas:
     Envelope:
@@ -147,13 +148,17 @@ paths:
   /v1/sessions/{alias}/{method}:
     post:
       summary: >
-        MTProto facade call (19-method allowlist: send_message,
-        edit_message_text, edit_message_reply_markup,
+        MTProto facade call (19 core + 15 scanner methods:
+        send_message, edit_message_text, edit_message_reply_markup,
         edit_message_caption, send_chat_action, delete_messages,
         forward_messages, get_chat, resolve_username,
         answer_callback_query, send_photo, send_video, send_document,
         send_audio, send_voice, send_animation, send_media_group,
-        copy_message, get_me). Unknown methods answer 501 with the list.
+        copy_message, get_me; get_history, get_messages, get_dialogs,
+        get_entity, get_full_channel, get_participant, get_participants,
+        send_media, create_channel, edit_channel, delete_channel,
+        edit_admin, join_channel, leave_channel, send_read_acknowledge).
+        Unknown methods answer 501 with the list.
       security: [{appSecret: []}]
       parameters:
         - {name: alias, in: path, required: true, schema: {type: string}}
@@ -199,6 +204,71 @@ paths:
         200: {description: applied}
         404: {description: unknown alias (restart/deadletters/paid)}
         409: {description: session quarantined (restart refused)}
+  /v1/admin/sessions/{alias}/login/start:
+    post:
+      summary: User session, step 1 — send the login code {phone}. Code/password never logged or audited.
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: stage=code_sent}
+        400: {description: missing phone / wrong stage / not a user session}
+        404: {description: unknown alias}
+  /v1/admin/sessions/{alias}/login/code:
+    post:
+      summary: User session, step 2 — submit the login code
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: stage=authorized}
+        409: {description: password_required=true — 2FA is on, call login/password}
+  /v1/admin/sessions/{alias}/login/password:
+    post:
+      summary: User session, step 3 — submit the 2FA password (SRP)
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: stage=authorized}
+        400: {description: wrong stage / bad password}
+  /v1/admin/sessions/{alias}/import:
+    post:
+      summary: >
+        Install an existing authorization without a new login: a Telethon
+        StringSession (telethon_string) or a raw gotd session JSON blob
+        (gotd_session_b64). Sealed at rest; never logged. force=true
+        replaces a stored session — the old holder MUST be stopped first
+        (AUTH_KEY_DUPLICATED).
+      security: [{adminSecret: []}]
+      parameters: [{name: alias, in: path, required: true, schema: {type: string}}]
+      responses:
+        200: {description: imported, session connecting}
+        400: {description: bad source material}
+        409: {description: a session is already stored (pass force=true)}
+  /v1/admin/clients:
+    post:
+      summary: >
+        Issue a client token: {name, allowlist, sessions, lane?}.
+        Allowlist entries are method names or the groups "full" /
+        "readonly"; sessions is the explicit scope of session aliases.
+        The token (tggc_…) is returned ONCE — only its SHA-256 is kept.
+      security: [{adminSecret: []}]
+      responses:
+        200: {description: issued (id + token)}
+        400: {description: missing name/sessions, unknown allowlist entry, bad lane}
+    get:
+      summary: List clients (no hashes, no tokens)
+      security: [{adminSecret: []}]
+      responses: {200: {description: clients}}
+  /v1/admin/clients/{id}:
+    post:
+      summary: Update a client's allowlist / sessions / lane (token never rotates)
+      security: [{adminSecret: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: updated}}
+    delete:
+      summary: Revoke a client — its bearer stops working immediately
+      security: [{adminSecret: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {200: {description: revoked}}
   /v1/admin/safe-mode/ack:
     post:
       summary: Ack crash-loop safe mode and restore

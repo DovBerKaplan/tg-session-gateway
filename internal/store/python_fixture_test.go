@@ -8,7 +8,11 @@ import (
 )
 
 func pythonBin() string {
+	// repo-relative first (the repo moved; the old absolute path went
+	// stale), then the historical location, then system python3.
+	venv, _ := filepath.Abs(filepath.Join("..", "..", ".venv", "bin", "python"))
 	for _, cand := range []string{
+		venv,
 		"/home/dovber/tg-session-gateway/.venv/bin/python",
 		"python3",
 	} {

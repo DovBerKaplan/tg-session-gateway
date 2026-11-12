@@ -104,3 +104,35 @@ groups:
         annotations:
           summary: "event loop lag {{ $value }}s on {{ $labels.plane }} plane — the process serves nothing"
           runbook: "docs/alerting.md#loop-wedged"
+
+      - alert: TGBulkLaneBacklog
+        expr: tg_gateway_lane_queue_depth{lane="bulk"} > 50
+        for: 10m
+        labels: {severity: info}
+        annotations:
+          summary: "history-scan backlog of {{ $value }} calls on {{ $labels.alias }} — interactive traffic unaffected by design; check scanner pace"
+          runbook: "docs/alerting.md#lane-backlog"
+
+      - alert: TGUserSessionAwaitingLogin
+        expr: tg_gateway_session_awaiting_login == 1
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "user session {{ $labels.alias }} has waited for login >30m — complete phone/code/2FA or import"
+          runbook: "docs/runbook.md#user-sessions-login-import-and-the-auth_key_duplicated-rule"
+
+      - alert: UpstreamFailoverActive
+        expr: tg_gateway_upstream_failover_active == 1
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Bot API plane is on the local companion fallback (cloud TLS/transport degraded)"
+          runbook: "docs/runbook.md#auto-environment-detection"
+
+      - alert: EnvDegraded
+        expr: tg_gateway_tls_state{state!="valid"} == 1 and tg_gateway_upstream_failover_active == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "cloud TLS probe degraded ({{ $labels.state }}) without active failover — check companion / GW_UPSTREAM_CA_FILE"
+          runbook: "docs/runbook.md#auto-environment-detection"

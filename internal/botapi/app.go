@@ -46,22 +46,33 @@ type App struct {
 	// adminSrv is non-nil when GW_ADMIN_PORT splits the operator surface
 	// onto its own (unexposed) listener.
 	adminSrv *http.Server
+	// Supervisor owns failover / env-detect (nil in unit tests with fakes).
+	Supervisor *UpstreamSupervisor
 }
 
 // NewApp wires everything. The HTTPClient is injectable so tests fake
-// api.telegram.org; production passes NewUpstreamClient(cfg.Upstream).
+// api.telegram.org; production passes NewUpstreamClient(cfg.Upstream)
+// or an UpstreamSupervisor.
 func NewApp(cfg config.BotAPI, client HTTPClient) (*App, error) {
 	h := health.NewStorage()
 	st, err := store.OpenGateway(cfg.DataDir, cfg.FernetKey, cfg.Storage.Durability, cfg.BackupsDir(), h)
 	if err != nil {
 		return nil, err
 	}
+	cfg.PathPrefix = config.NormalizePathPrefix(cfg.PathPrefix)
 	mgr := NewManager(cfg, st, client, h)
+	proxy := NewProxy(mgr, client, cfg.Policy.QueueWaitTimeout)
+	proxy.SetPathPrefix(cfg.PathPrefix)
+	proxy.SetLocalKind(cfg.EffectiveKind() == "local")
 	app := &App{
 		Cfg: cfg, Store: st, Mgr: mgr, Health: h,
-		Proxy:     NewProxy(mgr, client, cfg.Policy.QueueWaitTimeout),
+		Proxy:     proxy,
 		Boot:      &health.BootTracker{Path: cfg.DataDir + "/boot_history.json"},
 		maintStop: make(chan struct{}),
+	}
+	if sup, ok := client.(*UpstreamSupervisor); ok {
+		app.Supervisor = sup
+		sup.StartLoop()
 	}
 	app.Beat = health.NewBeat()
 	app.buildLifecycle()
@@ -76,8 +87,6 @@ func NewApp(cfg config.BotAPI, client HTTPClient) (*App, error) {
 			Handler:           adminMux,
 			ReadHeaderTimeout: 10 * time.Second, // slowloris guard
 			IdleTimeout:       120 * time.Second,
-			// no WriteTimeout on purpose: getUpdates long-polls up to 50s
-			// and the WS connections stream indefinitely
 		}
 	} else {
 		app.routes(mux)
@@ -87,8 +96,6 @@ func NewApp(cfg config.BotAPI, client HTTPClient) (*App, error) {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // slowloris guard
 		IdleTimeout:       120 * time.Second,
-		// no WriteTimeout on purpose: getUpdates long-polls up to 50s
-		// and the WS connections stream indefinitely
 	}
 	return app, nil
 }
@@ -112,7 +119,14 @@ func (a *App) buildLifecycle() {
 		slog.Error("GW_FERNET_KEY cannot decrypt tokens (wrong key? those bots will not start)",
 			"aliases", strings.Join(bad, ", "))
 	}
-	slog.Info("gateway up", "restored", restored, "version", version.Version)
+	slog.Info("gateway up",
+		"restored", restored,
+		"version", version.Version,
+		"upstream", a.Cfg.Upstream,
+		"upstream_kind", a.Cfg.EffectiveKind(),
+		"env_detect", a.Cfg.EnvDetect,
+		"path_prefix", a.Cfg.PathPrefix,
+	)
 }
 
 // maintenanceLoop runs the hourly integrity/backup/retention sweep.
@@ -142,6 +156,9 @@ func (a *App) maintenanceLoop() {
 func (a *App) Close() {
 	a.closeOnce.Do(func() {
 		close(a.maintStop)
+		if a.Supervisor != nil {
+			a.Supervisor.Stop()
+		}
 		a.Beat.Stop()
 		a.Mgr.Shutdown()
 		a.Store.Close()
@@ -200,14 +217,18 @@ func (a *App) routes(mux *http.ServeMux) {
 // the kubelet probes. When GW_ADMIN_PORT splits the listeners, this is
 // everything the API Service exposes.
 func (a *App) publicRoutes(mux *http.ServeMux) {
-	// token-in-path routes need manual parsing: ServeMux wildcards must
-	// occupy a whole segment, and "/tgapi/bot<token>/<method>" embeds the
-	// token mid-segment.
-	mux.HandleFunc("POST /tgapi/", a.handleTGAPIPost)
-	mux.HandleFunc("GET /tgapi/", a.handleTGAPIGetRoute)
+	prefix := a.Cfg.PathPrefix // "" or "/tgapi"
+	if prefix != "" {
+		mux.HandleFunc("POST "+prefix+"/", a.handleTGAPIPost)
+		mux.HandleFunc("GET "+prefix+"/", a.handleTGAPIGetRoute)
+		mux.HandleFunc("GET "+prefix+"/file/", a.handleFileRoute)
+	}
+	// Bare Bot API paths (/botTOKEN/method, /file/botTOKEN/…) — catch-all
+	// under / with more-specific /admin /bots /healthz winning first.
+	mux.HandleFunc("POST /", a.handleRootBotPost)
+	mux.HandleFunc("GET /", a.handleRootBotGet)
 	mux.HandleFunc("POST /bots/{alias}/{method}", a.handleByAlias)
 	mux.HandleFunc("GET /file/", a.handleFileRoute)
-	mux.HandleFunc("GET /tgapi/file/", a.handleFileRoute)
 
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
@@ -218,6 +239,10 @@ func (a *App) adminRoutes(mux *http.ServeMux) {
 	a.mountPprof(mux)
 	mux.HandleFunc("POST /admin/bots", a.adminRegister)
 	mux.HandleFunc("GET /admin/status", a.adminStatus)
+	mux.HandleFunc("GET /admin/upstream", a.adminUpstream)
+	mux.HandleFunc("GET /admin/env", a.adminEnv)
+	mux.HandleFunc("POST /admin/upstream/failover", a.adminUpstreamFailover)
+	mux.HandleFunc("POST /admin/upstream/failback", a.adminUpstreamFailback)
 	mux.HandleFunc("POST /admin/bots/{alias}/pause", a.adminPause)
 	mux.HandleFunc("POST /admin/bots/{alias}/resume", a.adminResume)
 	mux.HandleFunc("POST /admin/bots/{alias}/drain", a.adminDrain)
@@ -249,32 +274,55 @@ func splitBotTokenPath(path, prefix string) (token, rest string, ok bool) {
 }
 
 func (a *App) handleTGAPIPost(w http.ResponseWriter, r *http.Request) {
-	token, method, ok := splitBotTokenPath(r.URL.Path, "/tgapi")
+	a.dispatchBotAPI(w, r, a.Cfg.PathPrefix, true)
+}
+
+func (a *App) handleTGAPIGetRoute(w http.ResponseWriter, r *http.Request) {
+	prefix := a.Cfg.PathPrefix
+	if strings.HasPrefix(r.URL.Path, prefix+"/file/") || strings.HasPrefix(r.URL.Path, "/file/") {
+		a.handleFileRoute(w, r)
+		return
+	}
+	a.dispatchBotAPI(w, r, prefix, false)
+}
+
+func (a *App) handleRootBotPost(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Path, "/bot") {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	a.dispatchBotAPI(w, r, "", true)
+}
+
+func (a *App) handleRootBotGet(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/file/") {
+		a.handleFileRoute(w, r)
+		return
+	}
+	if !strings.HasPrefix(r.URL.Path, "/bot") {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	a.dispatchBotAPI(w, r, "", false)
+}
+
+// dispatchBotAPI parses /[prefix]/botTOKEN[/test]/method and invokes the proxy.
+func (a *App) dispatchBotAPI(w http.ResponseWriter, r *http.Request, prefix string, isPost bool) {
+	token, method, ok := splitBotTokenPath(r.URL.Path, prefix)
 	if !ok {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
 		return
 	}
+	// Support /botTOKEN/test/method (Telegram test DC path).
+	method = strings.TrimPrefix(method, "/")
+	logConsumer(r, token, method)
 	s := a.Mgr.FindByToken(token)
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404, "description": "unknown bot token"})
 		return
 	}
-	a.callRoute(w, r, s, method)
-}
-
-func (a *App) handleTGAPIGetRoute(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/tgapi/file/") {
-		a.handleFileRoute(w, r)
-		return
-	}
-	token, method, ok := splitBotTokenPath(r.URL.Path, "/tgapi")
-	if !ok {
-		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
-		return
-	}
-	s := a.Mgr.FindByToken(token)
-	if s == nil {
-		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+	if isPost {
+		a.callRoute(w, r, s, method)
 		return
 	}
 	q := map[string]any{}
@@ -286,10 +334,20 @@ func (a *App) handleTGAPIGetRoute(w http.ResponseWriter, r *http.Request) {
 	a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, q, "", nil, ""))
 }
 
+func logConsumer(r *http.Request, token, method string) {
+	slog.Debug("botapi request",
+		"method", method,
+		"token", RedactToken(token),
+		"ua", r.Header.Get("User-Agent"),
+		"x_forwarded_for", r.Header.Get("X-Forwarded-For"),
+		"x_forwarded_proto", r.Header.Get("X-Forwarded-Proto"),
+	)
+}
+
 func (a *App) handleFileRoute(w http.ResponseWriter, r *http.Request) {
 	token, path, ok := splitBotTokenPath(r.URL.Path, "/file")
-	if !ok {
-		token, path, ok = splitBotTokenPath(r.URL.Path, "/tgapi/file")
+	if !ok && a.Cfg.PathPrefix != "" {
+		token, path, ok = splitBotTokenPath(r.URL.Path, a.Cfg.PathPrefix+"/file")
 	}
 	if !ok {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
@@ -299,7 +357,48 @@ func (a *App) handleFileRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
 		return
 	}
-	resp, err := a.Mgr.client.Do(&httpRequest{Method: "GET", URL: "/file/bot" + token + "/" + path})
+	logConsumer(r, token, "file:"+path)
+
+	// Local companion + shared volume: serve absolute disk paths directly.
+	if a.Cfg.EffectiveKind() == "local" && (strings.HasPrefix(path, "/") || looksAbsFilePath(path)) {
+		disk := path
+		if !strings.HasPrefix(disk, "/") {
+			disk = "/" + disk
+		}
+		if st, err := os.Stat(disk); err == nil && !st.IsDir() {
+			f, err := os.Open(disk)
+			if err == nil {
+				defer func() { _ = f.Close() }()
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+				w.WriteHeader(200)
+				_, _ = io.Copy(w, f)
+				return
+			}
+		}
+	}
+
+	req := &httpRequest{Method: "GET", URL: "/file/bot" + token + "/" + path}
+	if streamer, ok := a.Mgr.client.(StreamHTTPClient); ok {
+		resp, err := streamer.DoStream(req)
+		if err != nil {
+			writeJSON(w, 502, map[string]any{"ok": false, "error_code": 502, "description": "upstream: " + err.Error()})
+			return
+		}
+		defer resp.BodyStream.Close()
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", ct)
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			w.Header().Set("Content-Length", cl)
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.BodyStream)
+		return
+	}
+	resp, err := a.Mgr.client.Do(req)
 	if err != nil {
 		writeJSON(w, 502, map[string]any{"ok": false, "error_code": 502, "description": "upstream: " + err.Error()})
 		return
@@ -311,6 +410,10 @@ func (a *App) handleFileRoute(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", ct)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(resp.Body)
+}
+
+func looksAbsFilePath(p string) bool {
+	return strings.Contains(p, "/") && (strings.HasPrefix(p, "var/") || strings.HasPrefix(p, "home/") || strings.HasPrefix(p, "data/") || strings.HasPrefix(p, "tmp/"))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -326,6 +429,9 @@ func writeRawJSON(w http.ResponseWriter, status int, raw []byte) {
 }
 
 func (a *App) writeGwResponse(w http.ResponseWriter, r *gwResponse) {
+	for k, v := range r.header {
+		w.Header().Set(k, v)
+	}
 	if r.isRaw() {
 		writeRawJSON(w, r.status, r.raw)
 		return
@@ -367,10 +473,18 @@ func (a *App) appAuthed(r *http.Request) bool {
 // upload limits: over the cap the gateway answers 413 instead of
 // silently truncating (a truncated upload would send a CORRUPT file).
 const (
-	maxMultipartBody = 64 << 20
-	maxFormBody      = 1 << 20
-	maxJSONBody      = 8 << 20
+	defaultMaxMultipartBody = 64 << 20
+	maxMultipartBody        = defaultMaxMultipartBody // tests + backward-compat alias
+	maxFormBody             = 1 << 20
+	maxJSONBody             = 8 << 20
 )
+
+func (a *App) maxMultipartBody() int64 {
+	if a.Cfg.MaxMultipartMB > 0 {
+		return int64(a.Cfg.MaxMultipartMB) << 20
+	}
+	return defaultMaxMultipartBody
+}
 
 func tooLarge(w http.ResponseWriter, limit int64) bool {
 	const msg = `{"ok":false,"error_code":413,"description":"request body exceeds the gateway limit"}`
@@ -391,9 +505,10 @@ func (a *App) callRoute(w http.ResponseWriter, r *http.Request, s *BotSession, m
 	defer span.End()
 	r = r.WithContext(rctx)
 	ctype := r.Header.Get("Content-Type")
+	maxMP := a.maxMultipartBody()
 	if strings.HasPrefix(ctype, "multipart/") {
-		r.Body = http.MaxBytesReader(w, r.Body, maxMultipartBody)
-		if r.ContentLength > 0 && r.ContentLength <= maxMultipartBody {
+		r.Body = http.MaxBytesReader(w, r.Body, maxMP)
+		if r.ContentLength > 0 && r.ContentLength <= maxMP {
 			// STREAM: read a prefix (the chat_id form field lives in the
 			// leading parts), forward the rest verbatim without ever
 			// holding the whole upload in memory
@@ -407,7 +522,7 @@ func (a *App) callRoute(w http.ResponseWriter, r *http.Request, s *BotSession, m
 		// mandatory for streaming (api.telegram.org rejects chunked)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil && isTooLarge(err) {
-			tooLarge(w, maxMultipartBody)
+			tooLarge(w, maxMP)
 			return
 		}
 		a.writeGwResponse(w, a.Proxy.Call(r.Context(), s, method, nil, ctype, raw, ""))
@@ -459,7 +574,8 @@ func isTooLarge(err error) bool {
 
 // formChatID extracts ONLY the chat_id field for rate-guard scoping —
 // the rest of the body forwards verbatim (url.ParseQuery, no value
-// coercion). Returns nil when absent (global bucket).
+// coercion). Returns nil when absent or @username (global bucket until
+// resolved on the JSON path).
 func formChatID(raw []byte) *int64 {
 	vals, err := url.ParseQuery(string(raw))
 	if err != nil {
@@ -467,6 +583,9 @@ func formChatID(raw []byte) *int64 {
 	}
 	v := vals.Get("chat_id")
 	if v == "" {
+		v = vals.Get("chat")
+	}
+	if v == "" || strings.HasPrefix(v, "@") {
 		return nil
 	}
 	id, err := strconv.ParseInt(v, 10, 64)
@@ -568,7 +687,83 @@ func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
 		st["typing"] = a.Mgr.Typing().StatusFor(s)
 		bots = append(bots, st)
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "bots": bots})
+	out := map[string]any{"ok": true, "bots": bots, "upstream_kind": a.Cfg.EffectiveKind()}
+	if a.Supervisor != nil {
+		out["upstream"] = a.Supervisor.Status()
+	}
+	writeJSON(w, 200, out)
+}
+
+func (a *App) adminUpstream(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	if a.Supervisor == nil {
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "active": a.Cfg.Upstream, "failover_active": false,
+			"kind": a.Cfg.EffectiveKind(),
+		})
+		return
+	}
+	st := a.Supervisor.Status()
+	st["ok"] = true
+	writeJSON(w, 200, st)
+}
+
+func (a *App) adminEnv(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	if a.Supervisor == nil {
+		writeJSON(w, 200, map[string]any{"ok": true, "env_detect": a.Cfg.EnvDetect})
+		return
+	}
+	st := a.Supervisor.Status()
+	writeJSON(w, 200, map[string]any{
+		"ok":                 true,
+		"env_detect":         a.Cfg.EnvDetect,
+		"facts":              st["facts"],
+		"decision":           st["decision"],
+		"tls_state":          st["tls_state"],
+		"clock_skew_seconds": st["clock_skew_seconds"],
+		"env_runtime":        st["env_runtime"],
+		"upstream_active":    st["active"],
+	})
+}
+
+func (a *App) adminUpstreamFailover(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	if a.Supervisor == nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "upstream supervisor not enabled"})
+		return
+	}
+	if err := a.Supervisor.ForceFailover("admin"); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	a.Proxy.SetLocalKind(true)
+	a.Store.Audit("upstream_failover", "", "admin")
+	writeJSON(w, 200, map[string]any{"ok": true, "upstream": a.Supervisor.Status()})
+}
+
+func (a *App) adminUpstreamFailback(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	if a.Supervisor == nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "upstream supervisor not enabled"})
+		return
+	}
+	_ = a.Supervisor.Failback()
+	a.Proxy.SetLocalKind(a.Cfg.EffectiveKind() == "local")
+	a.Store.Audit("upstream_failback", "", "admin")
+	writeJSON(w, 200, map[string]any{"ok": true, "upstream": a.Supervisor.Status()})
 }
 
 func (a *App) adminPause(w http.ResponseWriter, r *http.Request) {
@@ -863,6 +1058,24 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("tg_gateway_storage_degraded{plane=\"bot\"} %d", degraded),
 		fmt.Sprintf("tg_gateway_loop_lag_seconds{plane=\"bot\"} %v", round2(a.Beat.Lag())),
 	)
+	if a.Supervisor != nil {
+		st := a.Supervisor.Status()
+		failover := 0
+		if st["failover_active"] == true {
+			failover = 1
+		}
+		tlsState, _ := st["tls_state"].(string)
+		rt, _ := st["env_runtime"].(string)
+		active, _ := st["active"].(string)
+		skew, _ := st["clock_skew_seconds"].(int64)
+		lines = append(lines,
+			fmt.Sprintf("tg_gateway_upstream_failover_active %d", failover),
+			fmt.Sprintf("tg_gateway_clock_skew_seconds %d", skew),
+			fmt.Sprintf("tg_gateway_tls_state{state=%q} 1", tlsState),
+			fmt.Sprintf("tg_gateway_env_runtime{runtime=%q} 1", rt),
+			fmt.Sprintf("tg_gateway_upstream_active{url=%q} 1", RedactToken(active)),
+		)
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(200)
 	_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))

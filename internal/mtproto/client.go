@@ -50,6 +50,25 @@ type Client interface {
 	AnswerCallbackQuery(ctx context.Context, id, text string, showAlert bool, url string, cacheTime int) (EditResult, error)
 	DownloadMedia(ctx context.Context, fileID string) ([]byte, error)
 	UploadMedia(ctx context.Context, kind, filename string, data []byte) (string, error)
+
+	// scanner surface (0.2): read-side history/dialogs/participants and
+	// channel administration
+	GetHistory(ctx context.Context, chatID int64, offsetID, addOffset, minID, limit int) ([]map[string]any, error)
+	GetMessages(ctx context.Context, chatID int64, ids []int64) ([]map[string]any, error)
+	GetDialogs(ctx context.Context, limit int) ([]map[string]any, error)
+	GetEntity(ctx context.Context, chatID int64) (map[string]any, error)
+	GetFullChannel(ctx context.Context, chatID int64) (map[string]any, error)
+	GetParticipant(ctx context.Context, chatID, userID int64) (map[string]any, error)
+	GetParticipants(ctx context.Context, p ParticipantsParams) ([]map[string]any, error)
+	SendDocument(ctx context.Context, chatID int64, doc DocRef, caption, parseMode string) (SentMessage, error)
+	CreateChannel(ctx context.Context, title, about string, megagroup bool) (map[string]any, error)
+	EditChannel(ctx context.Context, p EditChannelParams) (EditResult, error)
+	DeleteChannel(ctx context.Context, chatID int64) (EditResult, error)
+	EditAdmin(ctx context.Context, p EditAdminParams) (EditResult, error)
+	JoinChannel(ctx context.Context, chatID int64) (EditResult, error)
+	LeaveChannel(ctx context.Context, chatID int64) (EditResult, error)
+	ReadHistory(ctx context.Context, chatID, maxID int64) (EditResult, error)
+	SeedPeers(ctx context.Context, peers []PeerSeed) (int, error)
 }
 
 // BotInfo identifies the connected account.
@@ -135,6 +154,24 @@ var adapters = map[string]adapter{
 	"copy_message":              adaptCopyMessage,
 	"edit_message_caption":      adaptEditCaption,
 	"get_me":                    adaptGetMe,
+
+	// scanner surface (0.2)
+	"get_history":           adaptGetHistory,
+	"get_messages":          adaptGetMessages,
+	"get_dialogs":           adaptGetDialogs,
+	"get_entity":            adaptGetEntity,
+	"get_full_channel":      adaptGetFullChannel,
+	"get_participant":       adaptGetParticipant,
+	"get_participants":      adaptGetParticipants,
+	"send_media":            adaptSendMedia,
+	"create_channel":        adaptCreateChannel,
+	"edit_channel":          adaptEditChannel,
+	"delete_channel":        adaptDeleteChannel,
+	"edit_admin":            adaptEditAdmin,
+	"join_channel":          adaptJoinChannel,
+	"leave_channel":         adaptLeaveChannel,
+	"send_read_acknowledge": adaptSendReadAcknowledge,
+	"seed_peers":            adaptSeedPeers,
 }
 
 // ErrUnsupported marks methods outside the allowlist (HTTP 501).
@@ -210,9 +247,22 @@ func argMarkup(args map[string]any) map[string]any {
 }
 
 func adaptSendMessage(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, ok := argInt(args, "chat_id", "chat_username", "chat")
+	// argPeerRef: channel_id marks channel semantics explicitly; chat_id
+	// keeps the Bot API convention (positive = user, -100… = channel)
+	chatID, ok := argPeerRef(args)
 	if !ok {
-		return nil, fmt.Errorf("chat_id required")
+		if chatID, ok = argInt(args, "chat"); ok {
+			// legacy alias key, Bot API convention
+		} else if un := strings.TrimPrefix(argStr(args, "chat_username"), "@"); un != "" {
+			// legacy @username form — resolve to a peer id
+			id, err := c.ResolveUsername(ctx, un)
+			if err != nil {
+				return nil, err
+			}
+			chatID = id
+		} else {
+			return nil, fmt.Errorf("chat_id or channel_id required")
+		}
 	}
 	p := SendParams{
 		ChatID:        chatID,
@@ -260,7 +310,7 @@ func adaptChatAction(ctx context.Context, c Client, args map[string]any) (any, e
 }
 
 func adaptDeleteMessages(ctx context.Context, c Client, args map[string]any) (any, error) {
-	chatID, _ := argInt(args, "chat_id")
+	chatID, _ := argPeerRef(args)
 	ids, ok := argIntSlice(args["message_ids"])
 	if !ok {
 		if ids, ok = argIntSlice(args["ids"]); !ok {

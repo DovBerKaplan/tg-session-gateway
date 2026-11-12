@@ -38,6 +38,11 @@ botapi:
   env:
     GW_UPSTREAM: "https://api.telegram.org"
     GW_ON_LIMIT: "queue"
+    # Companion failover (see localBotApi below). Empty fallback = cloud only.
+    GW_UPSTREAM_FALLBACK: ""
+    GW_UPSTREAM_FAILOVER: "off"
+    GW_UPSTREAM_KIND: "auto"
+    GW_ENV_DETECT: "off"
   resources:
     requests: { cpu: 10m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
@@ -46,6 +51,25 @@ botapi:
     # ReadWriteOncePod hard-guarantees single-pod attachment (K8s ≥1.29);
     # set to ReadWriteOnce on older clusters.
     accessMode: ReadWriteOncePod
+    className: ""
+
+# ── Local Bot API companion (tdlib/telegram-bot-api) ────────────────
+# mode: disabled | standby (hot, replicas=1, gateway stays on cloud until
+# failover) | always (GW_UPSTREAM points at the companion).
+# Clients never talk to this Service — only tggw does (ClusterIP).
+localBotApi:
+  mode: disabled
+  image: aiogram/telegram-bot-api:latest
+  port: 8081
+  local: true # TELEGRAM_LOCAL=1 — absolute file paths; share PVC with botapi
+  apiID: 0    # or use secrets.apiID
+  apiHash: ""
+  resources:
+    requests: { cpu: 50m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  storage:
+    size: 10Gi
+    accessMode: ReadWriteOnce
     className: ""
 
 # ── MTProto plane ──────────────────────────────────────────────────

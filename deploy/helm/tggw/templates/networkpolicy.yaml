@@ -64,6 +64,17 @@ spec:
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
+    {{- if ne (.Values.localBotApi.mode | default "disabled") "disabled" }}
+    # egress to the in-cluster local Bot API companion (ClusterIP)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: local-botapi
+      ports:
+        - protocol: TCP
+          port: {{ .Values.localBotApi.port }}
+    {{- end }}
     {{- if .Values.networkPolicy.pushEgress }}
     # push mode: deliver updates to the consumer's HTTP endpoint —
     # namespaces labeled as gateway clients (see ingress label)

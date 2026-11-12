@@ -3,6 +3,7 @@ package mtproto
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -23,6 +24,10 @@ var terminalMarkers = []string{
 	"AuthKeyInvalid", "SessionDuplicated", "SESSION_REVOKED",
 	"SessionRevoked", "ACCESS_TOKEN_EXPIRED", "ACCESS_TOKEN_INVALID",
 	"UNAUTHORIZED",
+	// dead user accounts (the scanner's dead-session markers): the
+	// account itself is gone — only a NEW login on the same alias
+	// recovers the session
+	"USER_DEACTIVATED", "USER_DEACTIVATED_BAN",
 }
 
 // ClassifyStartError buckets a start failure: flood (wait it out),
@@ -44,29 +49,37 @@ func ClassifyStartError(err error) string {
 type SessionState string
 
 const (
-	StateConnecting SessionState = "connecting"
-	StateLive       SessionState = "live"
-	StatePaused     SessionState = "paused"
-	StateDraining   SessionState = "draining"
-	StateError      SessionState = "error"
+	StateConnecting    SessionState = "connecting"
+	StateLive          SessionState = "live"
+	StatePaused        SessionState = "paused"
+	StateDraining      SessionState = "draining"
+	StateError         SessionState = "error"
+	StateAwaitingLogin SessionState = "awaiting_login" // user session, admin login flow pending
 )
 
-// Consumer is a connected WS consumer (app replica).
+// Consumer is a connected WS consumer (app replica). A nil Filter
+// receives everything (the legacy broadcast); group consumers carry
+// their reader-group filter (channels subset / document-only).
 type Consumer struct {
 	ID          string
+	Group       string
+	Filter      func(update map[string]any) bool
 	Send        func(string) error
 	ConnectedAt time.Time
 	LastSeen    time.Time
 }
 
-// Session is one bot token owned exclusively by this sidecar.
+// Session is one Telegram account (bot token or user login) owned
+// exclusively by this sidecar.
 type Session struct {
 	Alias string
 	Token string
+	Kind  string // bot | user
 
 	mu    sync.Mutex
 	state SessionState
 	Guard *rateguard.MTGuard
+	lanes *laneScheduler
 
 	clientFactory func() Client
 	client        Client
@@ -78,6 +91,7 @@ type Session struct {
 	LastFloodWait  map[string]any
 
 	// supervisor state
+	supervisorRunning bool
 	terminalError     bool
 	nextRetryAt       float64
 	stopSupervisor    chan struct{}
@@ -114,16 +128,23 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	logins   map[string]*loginCtl
 
 	// ClientFactory builds the Telegram client; tests inject fakes.
 	ClientFactory func(alias string) Client
+	// LoginDriverFactory builds the auth driver for the admin login
+	// flow; tests inject fakes.
+	LoginDriverFactory func(alias string) loginDriver
 }
 
 // NewManager wires the session plane.
 func NewManager(cfg config.MTProto, st *store.MT, h *health.Storage) *Manager {
-	m := &Manager{cfg: cfg, st: st, h: h, sessions: map[string]*Session{}}
+	m := &Manager{cfg: cfg, st: st, h: h, sessions: map[string]*Session{}, logins: map[string]*loginCtl{}}
 	m.ClientFactory = func(alias string) Client {
 		return newGotdClient(cfg, alias, st)
+	}
+	m.LoginDriverFactory = func(alias string) loginDriver {
+		return newGotdLoginDriver(cfg, alias, st)
 	}
 	return m
 }
@@ -161,23 +182,23 @@ func (m *Manager) Sessions() map[string]*Session {
 // Register adds a session; its supervisor starts the client. A rotated
 // token tears the old session down first.
 func (m *Manager) Register(ctx context.Context, alias, token string) (*Session, error) {
-	m.mu.Lock()
-	existing, ok := m.sessions[alias]
-	m.mu.Unlock()
-	if ok {
-		if existing.Token == token {
-			return existing, nil
-		}
+	return m.register(ctx, alias, token, "bot")
+}
+
+// RegisterUser adds a user-account session (login/import comes after).
+func (m *Manager) RegisterUser(ctx context.Context, alias, phone, connOpts string) (*Session, error) {
+	if m.Get(alias) != nil {
 		_ = m.Unregister(ctx, alias)
 	}
-	if err := m.st.Register(alias, token); err != nil {
+	if err := m.st.RegisterUser(alias, phone, connOpts); err != nil {
 		return nil, err
 	}
 	s := &Session{
 		Alias:          alias,
-		Token:          token,
+		Kind:           "user",
 		state:          StateConnecting,
 		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
+		lanes:          newLaneScheduler(),
 		clientFactory:  func() Client { return m.ClientFactory(alias) },
 		updateCh:       make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
 		st:             m.st,
@@ -192,9 +213,75 @@ func (m *Manager) Register(ctx context.Context, alias, token string) (*Session, 
 	return s, nil
 }
 
+func (m *Manager) register(ctx context.Context, alias, token, kind string) (*Session, error) {
+	m.mu.Lock()
+	existing, ok := m.sessions[alias]
+	m.mu.Unlock()
+	if ok {
+		if existing.Token == token && existing.Kind == kind {
+			return existing, nil
+		}
+		_ = m.Unregister(ctx, alias)
+	}
+	if err := m.st.Register(alias, token); err != nil {
+		return nil, err
+	}
+	s := &Session{
+		Alias:          alias,
+		Token:          token,
+		Kind:           kind,
+		state:          StateConnecting,
+		Guard:          rateguard.NewMTGuard(m.cfg.Rate, m.cfg.MTRate),
+		lanes:          newLaneScheduler(),
+		clientFactory:  func() Client { return m.ClientFactory(alias) },
+		updateCh:       make(chan map[string]any, m.cfg.Policy.UpdateQueueMax),
+		st:             m.st,
+		h:              m.h,
+		seenIdemKeys:   map[string]float64{},
+		stopSupervisor: make(chan struct{}),
+	}
+	// a re-registered alias may already be kind=user on disk (bot Register
+	// only touches token_enc); the live session must reflect the row
+	if meta, ok := m.st.GetSessionMeta(alias); ok {
+		s.Kind = meta.Kind
+	}
+	m.mu.Lock()
+	m.sessions[alias] = s
+	m.mu.Unlock()
+	go m.supervise(s)
+	return s, nil
+}
+
+// wakeAfterRelogin revives a session after a successful login/import:
+// a fresh authorization clears quarantine (the OLD key was dead; the
+// NEW one has not been tried) and restarts the supervisor if its
+// goroutine had exited on the terminal error.
+func (m *Manager) wakeAfterRelogin(s *Session) {
+	s.mu.Lock()
+	s.nextRetryAt = 0
+	s.terminalError = false
+	alreadyRunning := s.supervisorRunning
+	s.mu.Unlock()
+	if s.CurrentState() == StateAwaitingLogin || s.CurrentState() == StateError {
+		s.setState(StateConnecting)
+	}
+	if alreadyRunning {
+		return
+	}
+	go m.supervise(s)
+}
+
 // ── the supervisor — owns one session for life ────────────────────
 
 func (m *Manager) supervise(s *Session) {
+	s.mu.Lock()
+	s.supervisorRunning = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.supervisorRunning = false
+		s.mu.Unlock()
+	}()
 	backoff := 1.0
 	pingInterval := 60.0
 	for {
@@ -210,19 +297,32 @@ func (m *Manager) supervise(s *Session) {
 			sleepCtx(s.stopSupervisor, 2*time.Second)
 			continue
 		}
+		// a user session mid-login: the admin flow dials its own runs —
+		// the supervisor must not open a second connection on the same
+		// auth_key (AUTH_KEY_DUPLICATED). Re-attempt only once the login
+		// is authorized (or there is no login at all: import path).
+		if s.CurrentState() == StateAwaitingLogin {
+			if stage, _, _ := m.LoginStage(s.Alias); stage == loginStageCodeSent || stage == loginStagePassword {
+				sleepCtx(s.stopSupervisor, 5*time.Second)
+				continue
+			}
+		}
 		s.mu.Lock()
 		connected := s.client != nil && s.client.IsConnected() && s.state == StateLive
 		s.mu.Unlock()
 		if connected {
 			// active liveness: IsConnected lies through half-open TCP —
-			// ping Telegram for real; a stuck ping forces a reconnect
+			// ping Telegram for real; a stuck ping forces a reconnect.
+			// The watchdog is OUTSIDE the call: gotd's Ping can wedge on
+			// a dead-but-undetected connection (the engine's ack wait
+			// outlives the context), and a supervisor goroutine stuck
+			// INSIDE the call never reconnects — production saw exactly
+			// that (reconnects:0 while the ping age climbed for 10+
+			// minutes and every RPC hung).
 			if monoNow()-s.lastPingAt() > pingInterval {
 				s.setPingAt()
-				pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				err := s.client.Ping(pingCtx)
-				cancel()
-				if err != nil {
-					slog.Warn("liveness ping stuck — half-open suspected, forcing reconnect", "alias", s.Alias, "err", err)
+				if !s.pingWithWatchdog() {
+					slog.Warn("liveness ping failed or wedged — forcing reconnect", "alias", s.Alias)
 					dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
 					_ = s.client.Disconnect(dctx)
 					dcancel()
@@ -254,6 +354,16 @@ func (m *Manager) supervise(s *Session) {
 		s.startAttempts++
 		s.mu.Unlock()
 		if err := m.startClient(s); err != nil {
+			if errors.Is(err, ErrAwaitingLogin) {
+				// keep the lock (the process owns the session); the admin
+				// login flow completes the authorization, then the
+				// supervisor reconnects. Recheck every 30s covers imports.
+				s.setState(StateAwaitingLogin)
+				s.setError("awaiting login: start it via POST /v1/admin/sessions/" +
+					s.Alias + "/login/start")
+				s.setRetryAt(monoNow() + 30.0)
+				continue
+			}
 			kind := ClassifyStartError(err)
 			switch kind {
 			case "terminal":
@@ -313,7 +423,11 @@ func (m *Manager) startClient(s *Session) error {
 	err := client.Connect(ctx)
 	cancel()
 	if err != nil {
-		m.releaseLock(s)
+		// awaiting-login KEEPS the lock: the login flow runs under this
+		// process's ownership; every other failure releases it
+		if !errors.Is(err, ErrAwaitingLogin) {
+			m.releaseLock(s)
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -438,6 +552,9 @@ func (s *Session) pushUpdate(update map[string]any) {
 	raw, _ := json.Marshal(update)
 	for _, c := range consumers {
 		if c.Send != nil {
+			if c.Filter != nil && !c.Filter(update) {
+				continue
+			}
 			if err := c.Send(string(raw)); err != nil {
 				slog.Warn("WS push failed", "alias", s.Alias, "consumer", c.ID, "err", err)
 			}
@@ -588,12 +705,19 @@ func (m *Manager) RestoreAll(ctx context.Context) int {
 		return 0
 	}
 	for _, row := range rows {
-		token, ok := m.st.GetToken(row.Alias)
-		if !ok {
-			continue
-		}
-		if _, err := m.Register(ctx, row.Alias, token); err != nil {
-			continue
+		if row.Kind == "user" {
+			meta, _ := m.st.GetSessionMeta(row.Alias)
+			if _, err := m.RegisterUser(ctx, row.Alias, row.Phone, meta.ConnOpts); err != nil {
+				continue
+			}
+		} else {
+			token, ok := m.st.GetToken(row.Alias)
+			if !ok {
+				continue
+			}
+			if _, err := m.Register(ctx, row.Alias, token); err != nil {
+				continue
+			}
 		}
 		if row.Paused {
 			if s := m.Get(row.Alias); s != nil {
@@ -606,27 +730,6 @@ func (m *Manager) RestoreAll(ctx context.Context) int {
 		}
 	}
 	return n
-}
-
-// PersistStates snapshots pts/qts/date/seq for every live session.
-func (m *Manager) PersistStates() {
-	for _, s := range m.Sessions() {
-		if s.CurrentState() != StateLive {
-			continue
-		}
-		s.mu.Lock()
-		client := s.client
-		s.mu.Unlock()
-		if client == nil {
-			continue
-		}
-		if gc, ok := client.(*gotdClient); ok {
-			st := gc.UpdateState()
-			if st.PTS != 0 || st.QTS != 0 {
-				_ = m.st.SaveState(s.Alias, st)
-			}
-		}
-	}
 }
 
 // Shutdown stops everything, locks released.
@@ -698,6 +801,23 @@ func (s *Session) lockHeld() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessionLock != nil && s.sessionLock.Held()
+}
+
+// pingWithWatchdog pings with a HARD outer deadline. Returns false when
+// the ping failed OR never returned: on a wedge, the caller force-cancels
+// the run (Disconnect), which unwedges gotd's engine — the abandoned
+// ping goroutine then returns on its cancelled context.
+func (s *Session) pingWithWatchdog() bool {
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.client.Ping(pingCtx) }()
+	select {
+	case err := <-done:
+		return err == nil
+	case <-time.After(15 * time.Second):
+		return false
+	}
 }
 
 func (s *Session) setPingAt() {
@@ -811,8 +931,13 @@ func (s *Session) Stats() map[string]any {
 	if len(lastErr) > 200 {
 		lastErr = lastErr[:200]
 	}
+	kind := s.Kind
+	if kind == "" {
+		kind = "bot"
+	}
 	return map[string]any{
 		"alias":                     s.Alias,
+		"kind":                      kind,
 		"state":                     string(s.state),
 		"connection_age_s":          connectionAge,
 		"queue_depth":               len(s.updateCh),
@@ -824,6 +949,7 @@ func (s *Session) Stats() map[string]any {
 		"last_error":                lastErr,
 		"send_paused":               s.SendPaused,
 		"terminal_error":            s.terminalError,
+		"lane_queue":                s.lanes.Depth(),
 		"reconnects":                s.reconnects,
 		"start_attempts":            s.startAttempts,
 		"persist_failures":          s.PersistFailures,

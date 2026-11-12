@@ -25,17 +25,41 @@ type gwResponse struct {
 	status   int
 	jsonBody any
 	raw      []byte
+	header   map[string]string // optional passthrough headers (e.g. Retry-After)
 }
 
 func jsonResp(status int, body any) *gwResponse { return &gwResponse{status: status, jsonBody: body} }
 
 func (r *gwResponse) isRaw() bool { return r.raw != nil }
 
+// synthetic429 builds a Bot-API-shaped 429 identical to Telegram's cloud form.
+func synthetic429(retryAfter int, description string) *gwResponse {
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	if description == "" {
+		description = fmt.Sprintf("Too Many Requests: retry after %d", retryAfter)
+	}
+	return &gwResponse{
+		status: 429,
+		jsonBody: map[string]any{
+			"ok": false, "error_code": 429,
+			"description": description,
+			"parameters":  map[string]any{"retry_after": retryAfter},
+		},
+		header: map[string]string{"Retry-After": strconv.Itoa(retryAfter)},
+	}
+}
+
 // Proxy is the Bot-API-compatible passthrough with Rate Guard.
 type Proxy struct {
 	mgr              *Manager
 	client           HTTPClient
 	queueWaitTimeout float64
+	// pathPrefix is the consumer-facing prefix ("" or "/tgapi"); used to
+	// rewrite absolute getFile paths from a local Bot API companion.
+	pathPrefix string
+	localKind  bool
 }
 
 // NewProxy builds the proxy around the manager/upstream client.
@@ -43,8 +67,17 @@ func NewProxy(m *Manager, client HTTPClient, queueWaitTimeout float64) *Proxy {
 	return &Proxy{mgr: m, client: client, queueWaitTimeout: queueWaitTimeout}
 }
 
-// multipartChatIDRe finds the chat_id form field in a multipart body.
+// SetPathPrefix configures consumer path prefix for getFile rewrites.
+func (p *Proxy) SetPathPrefix(prefix string) { p.pathPrefix = prefix }
+
+// SetLocalKind enables absolute file_path rewriting for local companions.
+func (p *Proxy) SetLocalKind(local bool) { p.localKind = local }
+
+// multipartChatIDRe finds numeric chat_id in a multipart body.
 var multipartChatIDRe = regexp.MustCompile(`name="chat_id"\r?\n\r?\n(-?\d+)\r?\n`)
+
+// multipartChatUsernameRe finds @channel / @username chat_id form fields.
+var multipartChatUsernameRe = regexp.MustCompile(`name="chat_id"\r?\n\r?\n(@[A-Za-z0-9_]+)\r?\n`)
 
 // Call routes one consumer request for a session.
 func (p *Proxy) Call(ctx context.Context, s *BotSession, method string, body map[string]any, contentType string, rawBody []byte, idemKey string) *gwResponse {
@@ -61,13 +94,28 @@ func (p *Proxy) Call(ctx context.Context, s *BotSession, method string, body map
 		case "deletewebhook":
 			// consumers call this on boot (aiogram start_polling does);
 			// the gateway already deleted the webhook when it attached.
-			// Answer success so drop-in consumers don't die.
 			return jsonResp(200, map[string]any{"ok": true, "result": true})
-		default:
+		case "getwebhookinfo":
+			// Gateway owns polling; report no webhook (push mode is admin-side).
 			return jsonResp(200, map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"url":                    "",
+					"has_custom_certificate": false,
+					"pending_update_count":   0,
+					"allowed_updates":        []any{},
+				},
+			})
+		case "setwebhook":
+			return jsonResp(403, map[string]any{
+				"ok": false, "error_code": 403,
+				"description": "Conflict: gateway owns getUpdates; use POST /admin/bots/{alias}/push for gateway→consumer webhook delivery",
+			})
+		default:
+			return jsonResp(403, map[string]any{
 				"ok": false, "error_code": 403,
 				"description": "Conflict: gateway owns this method (spec §4.6)",
-			}).withStatus(403)
+			})
 		}
 	}
 
@@ -140,28 +188,16 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 		if s.EffectiveOnLimit() == "reject" || kind != "write" {
 			s.noteSynthetic429()
 			retry := max(1.0, min(s.guard.WaitTime(m, chatID), 60.0))
-			return jsonResp(429, map[string]any{
-				"ok": false, "error_code": 429,
-				"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-				"parameters":  map[string]any{"retry_after": int(retry)},
-			})
+			return synthetic429(int(retry), "")
 		}
 		wait := min(s.guard.WaitTime(m, chatID), 2.0)
 		if waited+wait > p.queueWaitTimeout {
 			s.noteSynthetic429()
-			return jsonResp(429, map[string]any{
-				"ok": false, "error_code": 429,
-				"description": "Queue wait exceeded GW_QUEUE_WAIT_TIMEOUT",
-				"parameters":  map[string]any{"retry_after": 1},
-			})
+			return synthetic429(1, "Queue wait exceeded GW_QUEUE_WAIT_TIMEOUT")
 		}
 		select {
 		case <-ctx.Done():
-			return jsonResp(429, map[string]any{
-				"ok": false, "error_code": 429,
-				"description": "Queue wait exceeded GW_QUEUE_WAIT_TIMEOUT",
-				"parameters":  map[string]any{"retry_after": 1},
-			})
+			return synthetic429(1, "Queue wait exceeded GW_QUEUE_WAIT_TIMEOUT")
 		case <-time.After(time.Duration(wait * float64(time.Second))):
 		}
 		waited += wait
@@ -171,9 +207,11 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 	if err != nil {
 		return jsonResp(500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
 	}
+	// test DC path: method may be "test/sendMessage"
+	upstreamPath := "/bot" + s.Token + "/" + method
 	resp, err := p.client.Do(&httpRequest{
 		Method:  "POST",
-		URL:     "/bot" + s.Token + "/" + method,
+		URL:     upstreamPath,
 		RawBody: raw,
 		ctx:     ctx,
 	})
@@ -185,27 +223,12 @@ func (p *Proxy) admitAndForward(ctx context.Context, s *BotSession, m, method st
 	if kind == "write" {
 		s.noteSend()
 	}
-	if resp.StatusCode == 429 {
-		s.noteReal429()
-		retry := 5.0
-		var parsed map[string]any
-		if json.Unmarshal(resp.Body, &parsed) == nil {
-			if params, ok := parsed["parameters"].(map[string]any); ok {
-				if v := numberOf(params["retry_after"]); v > 0 {
-					retry = v
-				}
-			}
-		}
-		s.guard.Report429(chatID, retry)
-		p.mgr.RecordBackoff(s, chatID, retry) // durable across restarts
-		s.mu.Lock()
-		s.last429 = map[string]any{
-			"method": method, "chat_id": nullableInt(chatID),
-			"retry_after": retry, "at": wallNow(),
-		}
-		s.mu.Unlock()
+	p.learnFlood(s, chatID, method, resp)
+	bodyOut := resp.Body
+	if m == "getfile" || strings.HasSuffix(m, "/getfile") {
+		bodyOut = p.rewriteGetFileBody(s.Token, resp.Body)
 	}
-	return &gwResponse{status: resp.StatusCode, raw: resp.Body}
+	return p.passthrough(resp.StatusCode, bodyOut, resp.Header)
 }
 
 // CallRawWithChat forwards a pre-read body VERBATIM (urlencoded forms)
@@ -232,11 +255,7 @@ func (p *Proxy) CallRawWithChat(ctx context.Context, s *BotSession, method strin
 	if !s.guard.TryAcquire(m, chatID) {
 		s.noteSynthetic429()
 		retry := max(1, min(s.guard.WaitTime(m, chatID), 60))
-		return jsonResp(429, map[string]any{
-			"ok": false, "error_code": 429,
-			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-			"parameters":  map[string]any{"retry_after": int(retry)},
-		})
+		return synthetic429(int(retry), "")
 	}
 	resp, err := p.client.Do(&httpRequest{
 		Method:  "POST",
@@ -246,7 +265,7 @@ func (p *Proxy) CallRawWithChat(ctx context.Context, s *BotSession, method strin
 		ctx:     ctx,
 	})
 	if idemActive {
-		if err != nil || resp.StatusCode >= 500 {
+		if err != nil || (resp != nil && resp.StatusCode >= 500) {
 			p.mgr.store.IdempotencyFail(s.Alias, idemKey)
 		} else {
 			p.mgr.store.IdempotencyFinish(s.Alias, idemKey)
@@ -258,27 +277,8 @@ func (p *Proxy) CallRawWithChat(ctx context.Context, s *BotSession, method strin
 		})
 	}
 	s.noteSend()
-	if resp.StatusCode == 429 {
-		s.noteReal429()
-		retry := 5.0
-		var parsed map[string]any
-		if json.Unmarshal(resp.Body, &parsed) == nil {
-			if params, ok := parsed["parameters"].(map[string]any); ok {
-				if v := numberOf(params["retry_after"]); v > 0 {
-					retry = v
-				}
-			}
-		}
-		s.guard.Report429(chatID, retry)
-		p.mgr.RecordBackoff(s, chatID, retry)
-		s.mu.Lock()
-		s.last429 = map[string]any{
-			"method": m, "chat_id": nullableInt(chatID),
-			"retry_after": retry, "at": wallNow(),
-		}
-		s.mu.Unlock()
-	}
-	return &gwResponse{status: resp.StatusCode, raw: resp.Body}
+	p.learnFlood(s, chatID, method, resp)
+	return p.passthrough(resp.StatusCode, resp.Body, resp.Header)
 }
 
 // ForwardStream passes a pre-sized multipart body through verbatim
@@ -306,25 +306,20 @@ func (p *Proxy) forwardRaw(ctx context.Context, s *BotSession, method string, ra
 var multipartChatUnresolved atomic.Int64
 
 func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method string, prefix []byte, body io.Reader, total int64, contentType string) *gwResponse {
-	var chatID *int64
-	if mm := multipartChatIDRe.FindSubmatch(prefix); mm != nil {
-		if v, err := strconv.ParseInt(string(mm[1]), 10, 64); err == nil {
-			chatID = &v
-		}
+	chatID, username := extractMultipartChat(prefix)
+	if username != "" && chatID == nil {
+		// resolve @channel via getChat so Rate Guard uses the numeric bucket
+		resolved := p.resolveUsernameChat(ctx, s, map[string]any{"chat_id": username})
+		chatID = extractChatID(resolved)
 	}
-	if chatID == nil {
+	if chatID == nil && username == "" {
 		multipartChatUnresolved.Add(1)
 	}
-	// a multipart write IS the reply — stop the auto-typing loop first
 	p.mgr.Typing().Stop(s, chatID)
 	if !s.guard.TryAcquire(method, chatID) {
 		s.noteSynthetic429()
 		retry := max(1, min(s.guard.WaitTime(method, chatID), 60))
-		return jsonResp(429, map[string]any{
-			"ok": false, "error_code": 429,
-			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-			"parameters":  map[string]any{"retry_after": int(retry)},
-		})
+		return synthetic429(int(retry), "")
 	}
 	resp, err := p.client.Do(&httpRequest{
 		Method:        "POST",
@@ -340,31 +335,25 @@ func (p *Proxy) forwardMultipart(ctx context.Context, s *BotSession, method stri
 		})
 	}
 	s.noteSend()
-	if resp.StatusCode == 429 {
-		s.noteReal429()
-		retry := 5.0
-		var parsed map[string]any
-		if json.Unmarshal(resp.Body, &parsed) == nil {
-			if params, ok := parsed["parameters"].(map[string]any); ok {
-				if v := numberOf(params["retry_after"]); v > 0 {
-					retry = v
-				}
-			}
+	p.learnFlood(s, chatID, method, resp)
+	return p.passthrough(resp.StatusCode, resp.Body, resp.Header)
+}
+
+func extractMultipartChat(prefix []byte) (chatID *int64, username string) {
+	if mm := multipartChatIDRe.FindSubmatch(prefix); mm != nil {
+		if v, err := strconv.ParseInt(string(mm[1]), 10, 64); err == nil {
+			return &v, ""
 		}
-		s.guard.Report429(chatID, retry)
-		p.mgr.RecordBackoff(s, chatID, retry)
-		s.mu.Lock()
-		s.last429 = map[string]any{
-			"method": method, "chat_id": nullableInt(chatID),
-			"retry_after": retry, "at": wallNow(),
-		}
-		s.mu.Unlock()
 	}
-	return &gwResponse{status: resp.StatusCode, raw: resp.Body}
+	if mm := multipartChatUsernameRe.FindSubmatch(prefix); mm != nil {
+		return nil, string(mm[1])
+	}
+	return nil, ""
 }
 
 // internalGetUpdates serves from the internal queue with Bot API
-// long-poll semantics.
+// long-poll semantics. offset and allowed_updates are honored; allowed_updates
+// filters in-process (Telegram already delivered a full stream to the poller).
 func (p *Proxy) internalGetUpdates(ctx context.Context, s *BotSession, body map[string]any) *gwResponse {
 	ctx, span := tracing.Tracer("botapi").Start(ctx, "tggw.pull",
 		trace.WithAttributes(attribute.String("tggw.alias", s.Alias)))
@@ -382,6 +371,10 @@ func (p *Proxy) internalGetUpdates(ctx context.Context, s *BotSession, body map[
 			offset = &i
 		case int64:
 			offset = &n
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				offset = &i
+			}
 		case string:
 			if i, err := strconv.ParseInt(n, 10, 64); err == nil {
 				offset = &i
@@ -396,7 +389,146 @@ func (p *Proxy) internalGetUpdates(ctx context.Context, s *BotSession, body map[
 	if updates == nil {
 		updates = []map[string]any{}
 	}
+	if allowed := allowedUpdateTypes(body["allowed_updates"]); len(allowed) > 0 {
+		filtered := make([]map[string]any, 0, len(updates))
+		for _, u := range updates {
+			if updateMatchesAllowed(u, allowed) {
+				filtered = append(filtered, u)
+			}
+		}
+		updates = filtered
+	}
 	return jsonResp(200, map[string]any{"ok": true, "result": updates})
+}
+
+func allowedUpdateTypes(v any) map[string]bool {
+	out := map[string]bool{}
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case []any:
+		for _, x := range t {
+			if s, ok := x.(string); ok && s != "" {
+				out[s] = true
+			}
+		}
+	case []string:
+		for _, s := range t {
+			if s != "" {
+				out[s] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func updateMatchesAllowed(u map[string]any, allowed map[string]bool) bool {
+	for k := range u {
+		if k == "update_id" {
+			continue
+		}
+		if allowed[k] {
+			return true
+		}
+	}
+	return false
+}
+
+// learnFlood records real HTTP 429 and flood-shaped Bot API errors from local upstreams.
+func (p *Proxy) learnFlood(s *BotSession, chatID *int64, method string, resp *httpResponse) {
+	if resp == nil {
+		return
+	}
+	retry := 0.0
+	if resp.StatusCode == 429 {
+		retry = 5.0
+	}
+	var parsed map[string]any
+	if json.Unmarshal(resp.Body, &parsed) == nil {
+		if params, ok := parsed["parameters"].(map[string]any); ok {
+			if v := numberOf(params["retry_after"]); v > 0 {
+				retry = v
+			}
+		}
+		if retry == 0 {
+			if desc, _ := parsed["description"].(string); desc != "" {
+				if info := rateguard.ParseFloodWait(desc); info != nil && info.Wait > 0 {
+					retry = float64(info.Wait)
+				}
+			}
+		}
+	}
+	if retry <= 0 && resp.StatusCode != 429 {
+		return
+	}
+	if retry <= 0 {
+		retry = 5
+	}
+	s.noteReal429()
+	s.guard.Report429(chatID, retry)
+	p.mgr.RecordBackoff(s, chatID, retry)
+	s.mu.Lock()
+	s.last429 = map[string]any{
+		"method": method, "chat_id": nullableInt(chatID),
+		"retry_after": retry, "at": wallNow(),
+	}
+	s.mu.Unlock()
+}
+
+// passthrough returns upstream status/body/headers verbatim.
+func (p *Proxy) passthrough(status int, body []byte, hdr httpHeader) *gwResponse {
+	r := &gwResponse{status: status, raw: body}
+	if hdr != nil {
+		if ra := hdr.Get("Retry-After"); ra != "" {
+			r.header = map[string]string{"Retry-After": ra}
+		}
+	}
+	return r
+}
+
+// httpHeader is satisfied by net/http.Header without importing in every call site shape.
+type httpHeader interface {
+	Get(string) string
+}
+
+// rewriteGetFileBody rewrites absolute disk file_path from a local Bot API
+// companion into an HTTP path the consumer can fetch via the gateway.
+func (p *Proxy) rewriteGetFileBody(token string, raw []byte) []byte {
+	if !p.localKind || len(raw) == 0 {
+		return raw
+	}
+	var parsed map[string]any
+	if json.Unmarshal(raw, &parsed) != nil {
+		return raw
+	}
+	ok, _ := parsed["ok"].(bool)
+	if !ok {
+		return raw
+	}
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		return raw
+	}
+	fp, _ := result["file_path"].(string)
+	if fp == "" || !strings.HasPrefix(fp, "/") {
+		return raw // relative paths already work with /file/bot…/path
+	}
+	// Absolute path from --local: expose as opaque path under /file/botTOKEN/…
+	// so the gateway streams from upstream /file/botTOKEN/<urlencoded absolute>.
+	rel := strings.TrimPrefix(fp, "/")
+	prefix := p.pathPrefix
+	fileURL := prefix + "/file/bot" + token + "/" + rel
+	result["file_path"] = strings.TrimPrefix(fileURL, "/")
+	// Also expose a gateway-relative hint some libraries ignore file_path host for.
+	_ = fileURL
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // resolveUsernameChat resolves @username targets to numeric ids once

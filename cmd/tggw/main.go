@@ -10,9 +10,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"encoding/json"
+	"strings"
+
 	"github.com/DovBerKaplan/tg-session-gateway/internal/botapi"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/config"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/cryptoutil"
+	"github.com/DovBerKaplan/tg-session-gateway/internal/envdetect"
 	"github.com/DovBerKaplan/tg-session-gateway/internal/version"
 )
 
@@ -42,6 +46,8 @@ func main() {
 		err = runMigrate(os.Args[2:])
 	case "healthcheck":
 		err = runHealthcheck(os.Args[2:])
+	case "doctor":
+		err = runDoctor(os.Args[2:])
 	case "terminate":
 		err = runTerminate()
 	case "version":
@@ -64,6 +70,7 @@ commands:
   mtproto    MTProto session sidecar
   genkey     print a fresh GW_FERNET_KEY and exit
   migrate    pyrofork session file → gotd session (no re-login)
+  doctor     probe TLS/network/runtime/companion; print safe settings
   healthcheck GET /healthz on localhost (exit 0 = alive; container
              healthcheck for shell-less distroless images)
   terminate  SIGTERM to PID 1 — the K8s preStop drain hook (starts
@@ -126,9 +133,63 @@ func runBotAPI() error {
 	if err := preflight(cfg.FernetKey, cfg.DataDir); err != nil {
 		return err
 	}
-	app, err := botapi.NewApp(cfg, botapi.NewUpstreamClient(cfg.Upstream))
+	sup, err := botapi.NewUpstreamSupervisor(cfg)
+	if err != nil {
+		return err
+	}
+	app, err := botapi.NewApp(cfg, sup)
 	if err != nil {
 		return err
 	}
 	return app.RunServe()
+}
+
+func runDoctor(args []string) error {
+	jsonOut := false
+	for _, a := range args {
+		if a == "--json" || a == "-j" {
+			jsonOut = true
+		}
+	}
+	cfg := config.BotAPIFromEnv()
+	ecfg := envdetect.ExplicitConfig{
+		EnvDetect:        cfg.EnvDetect,
+		Upstream:         cfg.Upstream,
+		UpstreamFallback: cfg.UpstreamFallback,
+		UpstreamKind:     cfg.UpstreamKind,
+		UpstreamFailover: cfg.UpstreamFailover,
+		MaxMultipartMB:   cfg.MaxMultipartMB,
+		UpstreamTimeoutS: cfg.UpstreamTimeoutS,
+		PathPrefix:       cfg.PathPrefix,
+		UpstreamCAFile:   cfg.UpstreamCAFile,
+		Explicit: envdetect.ExplicitFlags{
+			EnvDetect:        os.Getenv("GW_ENV_DETECT") != "",
+			Upstream:         os.Getenv("GW_UPSTREAM") != "",
+			UpstreamFallback: os.Getenv("GW_UPSTREAM_FALLBACK") != "",
+			UpstreamKind:     os.Getenv("GW_UPSTREAM_KIND") != "",
+			UpstreamFailover: os.Getenv("GW_UPSTREAM_FAILOVER") != "",
+			MaxMultipartMB:   os.Getenv("GW_MAX_MULTIPART_MB") != "",
+			UpstreamTimeoutS: os.Getenv("GW_UPSTREAM_TIMEOUT_S") != "",
+			PathPrefix:       os.Getenv("GW_PATH_PREFIX") != "",
+			UpstreamCAFile:   os.Getenv("GW_UPSTREAM_CA_FILE") != "",
+		},
+	}
+	if !ecfg.Explicit.EnvDetect {
+		ecfg.EnvDetect = "auto" // doctor always probes
+	}
+	report := envdetect.RunDoctor(ecfg)
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	fmt.Print(report.FormatHuman())
+	// Non-zero when cloud is degraded and no healthy fallback.
+	if cloudBad := report.Facts.TLS != envdetect.TLSValid; cloudBad {
+		fbOK := report.Facts.Companion.Reachable && strings.TrimSpace(cfg.UpstreamFallback) != ""
+		if !fbOK {
+			return fmt.Errorf("cloud upstream unhealthy and no reachable companion fallback")
+		}
+	}
+	return nil
 }

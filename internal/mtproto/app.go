@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -51,6 +52,9 @@ type App struct {
 	Beat   *health.Beat
 	Boot   *health.BootTracker
 
+	// Clients resolves per-consumer bearer tokens (allowlist + scope).
+	Clients *ClientIndex
+
 	SafeMode atomic.Bool
 
 	maintStop chan struct{}
@@ -82,8 +86,12 @@ func newApp(cfg config.MTProto, skipRestore bool) (*App, error) {
 		Mgr:       NewManager(cfg, st, h),
 		Health:    h,
 		Boot:      &health.BootTracker{Path: cfg.DataDir + "/boot_history.json"},
+		Clients:   NewClientIndex(st),
 		maintStop: make(chan struct{}),
 		houseStop: make(chan struct{}),
+	}
+	if err := app.Clients.Reload(); err != nil {
+		slog.Error("client index load failed — client tokens will not authenticate until reloaded", "err", err)
 	}
 	app.Beat = health.NewBeat()
 	app.buildLifecycle(skipRestore)
@@ -150,7 +158,6 @@ func (a *App) housekeepingLoop() {
 		case <-a.houseStop:
 			return
 		case <-t.C:
-			a.Mgr.PersistStates()
 			a.Store.IdempotencyCleanup()
 			ttl := a.Cfg.Policy.UpdateTTLS
 			cutoff := wallNow() - ttl
@@ -195,7 +202,6 @@ func (a *App) Close() {
 		close(a.maintStop)
 		close(a.houseStop)
 		a.Beat.Stop()
-		a.Mgr.PersistStates() // final snapshot before exit
 		a.Mgr.Shutdown()
 		a.Store.Close()
 	})
@@ -306,17 +312,39 @@ func (a *App) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/pause_sending", a.adminPauseSending)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/resume_sending", a.adminResumeSending)
 	mux.HandleFunc("POST /v1/admin/sessions/{alias}/paid", a.adminSetPaid)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/login/start", a.adminLoginStart)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/login/code", a.adminLoginCode)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/login/password", a.adminLoginPassword)
+	mux.HandleFunc("POST /v1/admin/sessions/{alias}/import", a.adminImportSession)
+	mux.HandleFunc("POST /v1/admin/clients", a.adminRegisterClient)
+	mux.HandleFunc("GET /v1/admin/clients", a.adminListClients)
+	mux.HandleFunc("POST /v1/admin/clients/{id}", a.adminUpdateClient)
+	mux.HandleFunc("DELETE /v1/admin/clients/{id}", a.adminRevokeClient)
 	mux.HandleFunc("GET /v1/admin/audit", a.adminAudit)
 
 	mux.HandleFunc("GET /metrics", a.handleMetrics)
 }
 
-func (a *App) appAuthed(r *http.Request) bool {
-	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AppSecret)
-}
-
 func (a *App) adminAuthed(r *http.Request) bool {
 	return bearerOK(r.Header.Get("Authorization"), a.Cfg.AdminSecret)
+}
+
+// resolveCaller maps the request bearer to a Caller: a per-client token
+// (allowlist + session scope), or the legacy GW_APP_SECRET while
+// GW_LEGACY_APP_SECRET is on. Nil means 401.
+func (a *App) resolveCaller(r *http.Request) *Caller {
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return nil
+	}
+	got := strings.TrimPrefix(header, "Bearer ")
+	if got == "" {
+		return nil
+	}
+	if a.Cfg.LegacyAppSecret && bearerOK(header, a.Cfg.AppSecret) {
+		return legacyCaller("")
+	}
+	return a.Clients.Resolve(got)
 }
 
 // ── method proxy ───────────────────────────────────────────────────
@@ -325,8 +353,14 @@ func (a *App) adminAuthed(r *http.Request) bool {
 func (a *App) handleProxyMethod(w http.ResponseWriter, r *http.Request) {
 	alias := r.PathValue("alias")
 	method := r.PathValue("method")
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	if !caller.SessionAllowed(alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope: " + alias})
 		return
 	}
 	s := a.Mgr.Get(alias)
@@ -334,13 +368,14 @@ func (a *App) handleProxyMethod(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404, "description": "unknown session: " + alias})
 		return
 	}
-	a.dispatchProxy(w, r, s, method)
+	a.dispatchProxy(w, r, s, method, caller)
 }
 
 // handleProxyByToken is POST /v1/token/bot<token>/<method> — the same
 // contract for consumers that only hold the bot token.
 func (a *App) handleProxyByToken(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
@@ -354,7 +389,12 @@ func (a *App) handleProxyByToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404, "description": "unknown bot token"})
 		return
 	}
-	a.dispatchProxy(w, r, s, method)
+	if !caller.SessionAllowed(s.Alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope: " + s.Alias})
+		return
+	}
+	a.dispatchProxy(w, r, s, method, caller)
 }
 
 // splitBotTokenPath parses "<prefix>/bot<token>/<rest>" paths.
@@ -416,9 +456,9 @@ func isAllDigits(s string) bool {
 }
 
 // dispatchProxy is the shared alias/token proxy body — the port of
-// proxy_method: idempotency, E4 pause, rate guard, adapter allowlist,
-// flood-wait reporting.
-func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, method string) {
+// proxy_method: caller allowlist, idempotency, E4 pause, rate guard,
+// adapter allowlist, flood-wait reporting.
+func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, method string, caller *Caller) {
 	rctx, span := tracing.Tracer("mtproto").Start(r.Context(), "tggw.mtproxy",
 		trace.WithAttributes(
 			attribute.String("tggw.method", method),
@@ -426,6 +466,13 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 		))
 	defer span.End()
 	r = r.WithContext(rctx)
+	if !caller.MethodAllowed(method) {
+		writeJSON(w, 403, map[string]any{
+			"ok": false, "error_code": 403,
+			"description": "method not in this client's allowlist: " + method,
+		})
+		return
+	}
 	if s.LiveClient() == nil {
 		writeJSON(w, 503, map[string]any{
 			"ok": false, "error_code": 503,
@@ -494,33 +541,32 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 		return
 	}
 
-	waited := 0.0
-	for !s.Guard.TryAcquire(method, chatRef) {
-		if a.Cfg.Policy.OnLimit == "reject" || waited > a.Cfg.Policy.QueueWaitTimeout {
-			s.noteSynthetic429()
-			retry := s.Guard.WaitTime(method, chatRef)
-			if retry < 1.0 {
-				retry = 1.0
-			} else if retry > 60.0 {
-				retry = 60.0
-			}
-			writeJSON(w, 429, map[string]any{
-				"ok": false, "error_code": 429,
-				"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
-				"parameters":  map[string]any{"retry_after": int(retry)},
-			})
-			return
+	// rate guard admission through the lane scheduler: interactive
+	// first, bulk last, round-robin between clients within a lane
+	lane := MethodLane(strings.ToLower(method), caller.Lane)
+	admitted := false
+	if a.Cfg.Policy.OnLimit == "reject" {
+		admitted = s.Guard.TryAcquire(method, chatRef)
+	} else {
+		deadline := time.Now().Add(time.Duration(a.Cfg.Policy.QueueWaitTimeout * float64(time.Second)))
+		admitted = s.lanes.Admit(r.Context(), lane, caller.ID, deadline, func() bool {
+			return s.Guard.TryAcquire(method, chatRef)
+		})
+	}
+	if !admitted {
+		s.noteSynthetic429()
+		retry := s.Guard.WaitTime(method, chatRef)
+		if retry < 1.0 {
+			retry = 1.0
+		} else if retry > 60.0 {
+			retry = 60.0
 		}
-		wait := s.Guard.WaitTime(method, chatRef)
-		if wait > 2.0 {
-			wait = 2.0
-		}
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(time.Duration(wait * float64(time.Second))):
-		}
-		waited += wait
+		writeJSON(w, 429, map[string]any{
+			"ok": false, "error_code": 429,
+			"description": fmt.Sprintf("Too Many Requests: retry after %d", int(retry)),
+			"parameters":  map[string]any{"retry_after": int(retry)},
+		})
+		return
 	}
 
 	client := s.LiveClient()
@@ -542,6 +588,11 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 		}
 		if info := rateguard.ParseFloodWait(err.Error()); info != nil {
 			s.noteRealFloodWait()
+			// account-level flood (no chat scope): degrade the lanes —
+			// bulk pauses for the full wait, normal for half
+			if chatRef == nil {
+				s.lanes.PauseForFlood(float64(info.Wait))
+			}
 			adaptive := s.Guard.ReportFloodWait(err.Error(), chatRef)
 			retry := info.Wait
 			if adaptive != nil {
@@ -583,7 +634,10 @@ func (a *App) dispatchProxy(w http.ResponseWriter, r *http.Request, s *Session, 
 // isReadMethod lists calls exempt from the E4 send pause.
 func isReadMethod(method string) bool {
 	switch strings.ToLower(method) {
-	case "answer_callback_query", "answer_inline_query", "get_updates", "getupdates", "get_me", "get_chat", "resolve_username":
+	case "answer_callback_query", "answer_inline_query", "get_updates", "getupdates",
+		"get_me", "get_chat", "resolve_username",
+		"get_history", "get_messages", "get_dialogs", "get_entity",
+		"get_full_channel", "get_participant", "get_participants":
 		return true
 	}
 	return false
@@ -618,13 +672,19 @@ func (s *Session) noteLastFloodWait(info *rateguard.FloodInfo, chatRef *int64) {
 // is acked (delivery does NOT ack). No-offset mode keeps the legacy
 // delivery=ack behavior.
 func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
 	s := a.Mgr.Get(r.PathValue("alias"))
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	if !caller.SessionAllowed(s.Alias) || !caller.AllowsUpdates() {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "update stream not in this client's allowlist/scope"})
 		return
 	}
 
@@ -644,6 +704,13 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 	limit := 100
 	if v, ok := anyToInt64(body["limit"]); ok && v > 0 {
 		limit = int(v)
+	}
+
+	// reader-group mode: this group acks its own cursor; rows live until
+	// every group (and the legacy offset) has passed them
+	if group := argStr(body, "group"); group != "" {
+		a.handleGroupGetUpdates(w, r, s, group, body, timeout, limit)
+		return
 	}
 
 	if off, ok := anyToInt64(body["offset"]); ok {
@@ -701,6 +768,112 @@ func (a *App) handleGetUpdates(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-time.After(time.Duration(remaining * float64(time.Second))):
 		}
+	}
+}
+
+// handleGroupGetUpdates is the reader-group pull: cursor + filters are
+// per group; the physical rows are shared (deleted once every group
+// passed them, or by TTL).
+func (a *App) handleGroupGetUpdates(w http.ResponseWriter, r *http.Request, s *Session, group string, body map[string]any, timeout float64, limit int) {
+	// every group pull registers the group (cursor 0 until first ack) —
+	// an unacked group must hold its rows; filters update whenever the
+	// request carries them: {"group":"scan","channels":[…],"document_only":true}
+	channels := ""
+	if raw, ok := body["channels"].([]any); ok {
+		if b, err := json.Marshal(raw); err == nil {
+			channels = string(b)
+		}
+	}
+	_ = a.Store.EnsureGroup(s.Alias, group, channels, argBool(body, "document_only"))
+	cursor := a.Store.GroupCursorOf(s.Alias, group)
+	filter := groupFilter(a.Store, cursor)
+
+	off := cursor.AckedSeq + 1
+	if req, ok := anyToInt64(body["offset"]); ok {
+		off = req
+		_ = a.Store.GroupAck(s.Alias, group, off-1)
+	}
+
+	deadline := monoNow() + timeout
+	for {
+		if raws := a.Store.QueuePullRaw(s.Alias, off-1, limit*3); len(raws) > 0 {
+			if filter == nil {
+				writeRawSplice(w, raws[:min(len(raws), limit)])
+				return
+			}
+			// filtered path: decode → filter → re-encode (only groups
+			// with filters pay this; the rest keep the raw splice)
+			out := make([]store.RawUpdate, 0, limit)
+			for _, ru := range raws {
+				var u map[string]any
+				if json.Unmarshal(ru.JSON, &u) != nil {
+					continue
+				}
+				if filter(u) {
+					out = append(out, ru)
+					if len(out) >= limit {
+						break
+					}
+				}
+			}
+			if len(out) > 0 {
+				writeRawSplice(w, out)
+				return
+			}
+		}
+		remaining := deadline - monoNow()
+		if remaining <= 0 {
+			writeJSON(w, 200, map[string]any{"ok": true, "result": []any{}, "group": group})
+			return
+		}
+		if remaining > 0.2 {
+			remaining = 0.2
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(time.Duration(remaining * float64(time.Second))):
+		}
+	}
+}
+
+// groupFilter builds the group's update filter from its stored config
+// (nil = accept everything).
+func groupFilter(st *store.MT, cursor store.GroupCursor) func(map[string]any) bool {
+	var channels map[int64]bool
+	if cursor.Channels != "" {
+		var list []any
+		if json.Unmarshal([]byte(cursor.Channels), &list) == nil {
+			channels = map[int64]bool{}
+			for _, v := range list {
+				if id, ok := anyToInt64(v); ok {
+					channels[id] = true
+				}
+			}
+		}
+	}
+	if channels == nil && !cursor.DocumentOnly {
+		return nil
+	}
+	return func(u map[string]any) bool {
+		msg, _ := u["message"].(map[string]any)
+		if msg == nil {
+			return false // only message updates carry a chat filter
+		}
+		if channels != nil {
+			chat, _ := msg["chat"].(map[string]any)
+			id, _ := anyToInt64(chat["id"])
+			if !channels[id] {
+				return false
+			}
+		}
+		if cursor.DocumentOnly {
+			media, _ := msg["media"].(map[string]any)
+			if media == nil || media["_"] != "MessageMediaDocument" {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -763,7 +936,8 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusCode(4404), "unknown session")
 		return
 	}
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil || !caller.SessionAllowed(alias) || !caller.AllowsUpdates() {
 		_ = c.Write(r.Context(), websocket.MessageText,
 			mustJSON(map[string]any{"ok": false, "error": "unauthorized"}))
 		_ = c.Close(websocket.StatusCode(4401), "unauthorized")
@@ -787,8 +961,17 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	group := r.URL.Query().Get("group")
+	var groupCursor store.GroupCursor
+	var groupFilterFn func(map[string]any) bool
+	if group != "" {
+		groupCursor = a.Store.GroupCursorOf(alias, group)
+		groupFilterFn = groupFilter(a.Store, groupCursor)
+	}
 	s.AddConsumer(&Consumer{
 		ID:          consumerID,
+		Group:       group,
+		Filter:      groupFilterFn,
 		Send:        func(data string) error { return trySend(writeCh, []byte(data)) },
 		ConnectedAt: time.Now(),
 		LastSeen:    time.Now(),
@@ -798,9 +981,24 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		close(writeCh)
 	}()
 
+	// group replay: everything this group has not acked yet rides first
+	if group != "" {
+		for _, ru := range a.Store.QueuePullRaw(alias, groupCursor.AckedSeq, 500) {
+			if groupFilterFn != nil {
+				var u map[string]any
+				if json.Unmarshal(ru.JSON, &u) != nil || !groupFilterFn(u) {
+					continue
+				}
+			}
+			if trySend(writeCh, ru.JSON) != nil {
+				break // slow consumer — it will re-pull by cursor
+			}
+		}
+	}
+
 	_ = c.Write(ctx, websocket.MessageText, mustJSON(map[string]any{
 		"ok": true, "consumer_id": consumerID, "session": alias,
-		"state": string(s.CurrentState()),
+		"state": string(s.CurrentState()), "group": group,
 	}))
 
 	for {
@@ -810,10 +1008,18 @@ func (a *App) handleWSUpdates(w http.ResponseWriter, r *http.Request) {
 		}
 		var msg map[string]any
 		if err := json.Unmarshal(data, &msg); err == nil {
-			if t, _ := msg["type"].(string); t == "ping" {
+			switch t, _ := msg["type"].(string); t {
+			case "ping":
 				select {
 				case writeCh <- mustJSON(map[string]any{"type": "pong"}):
 				default:
+				}
+			case "ack":
+				// group cursor advance: {"type":"ack","seq":N}
+				if group != "" {
+					if seq, ok := anyToInt64(msg["seq"]); ok {
+						_ = a.Store.GroupAck(alias, group, seq)
+					}
 				}
 			}
 		}
@@ -834,13 +1040,19 @@ func trySend(ch chan []byte, data []byte) error {
 // ── session health ─────────────────────────────────────────────────
 
 func (a *App) handleSessionHealth(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
 	s := a.Mgr.Get(r.PathValue("alias"))
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	if !caller.SessionAllowed(s.Alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope"})
 		return
 	}
 	out := map[string]any{"ok": true}
@@ -854,13 +1066,19 @@ func (a *App) handleSessionHealth(w http.ResponseWriter, r *http.Request) {
 // ── media file proxy ───────────────────────────────────────────────
 
 func (a *App) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
-	if !a.appAuthed(r) {
+	caller := a.resolveCaller(r)
+	if caller == nil {
 		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
 		return
 	}
 	s := a.Mgr.Get(r.PathValue("alias"))
 	if s == nil {
 		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	if !caller.SessionAllowed(s.Alias) {
+		writeJSON(w, 403, map[string]any{"ok": false, "error_code": 403,
+			"description": "session not in this client's scope"})
 		return
 	}
 	client := s.LiveClient()
@@ -894,11 +1112,40 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Alias string `json:"alias"`
-		Token string `json:"token"`
+		Alias    string `json:"alias"`
+		Token    string `json:"token"`
+		Kind     string `json:"kind"`
+		Phone    string `json:"phone"`
+		ConnOpts string `json:"conn_opts"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Alias == "" || body.Token == "" {
-		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "alias and token required"})
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Alias == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "alias required"})
+		return
+	}
+	kind := body.Kind
+	if kind == "" {
+		kind = "bot"
+	}
+	if kind != "bot" && kind != "user" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "kind must be bot or user"})
+		return
+	}
+	if kind == "user" {
+		if body.ConnOpts != "" && !json.Valid([]byte(body.ConnOpts)) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "conn_opts must be a JSON object"})
+			return
+		}
+		s, err := a.Mgr.RegisterUser(r.Context(), body.Alias, body.Phone, body.ConnOpts)
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+			return
+		}
+		a.Store.Audit("register", body.Alias, "kind=user phone=***"+last4(body.Phone))
+		writeJSON(w, 200, map[string]any{"ok": true, "alias": s.Alias, "kind": "user", "state": string(s.CurrentState())})
+		return
+	}
+	if body.Token == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "token required for kind=bot"})
 		return
 	}
 	s, err := a.Mgr.Register(r.Context(), body.Alias, body.Token)
@@ -907,7 +1154,197 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Store.Audit("register", body.Alias, "token=…"+last4(body.Token))
-	writeJSON(w, 200, map[string]any{"ok": true, "alias": s.Alias, "state": string(s.CurrentState())})
+	writeJSON(w, 200, map[string]any{"ok": true, "alias": s.Alias, "kind": "bot", "state": string(s.CurrentState())})
+}
+
+// ── user login (stepwise) + session import ─────────────────────────
+
+// adminLoginStart is step 1: Telegram sends the code to phone.
+func (a *App) adminLoginStart(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	if a.Mgr.Get(alias) == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	var body struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Phone) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "phone required"})
+		return
+	}
+	stage, err := a.Mgr.LoginStart(r.Context(), alias, strings.TrimSpace(body.Phone))
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	a.Store.Audit("login_start", alias, "phone=***"+last4(body.Phone))
+	writeJSON(w, 200, map[string]any{"ok": true, "stage": stage})
+}
+
+// adminLoginCode is step 2. 409 + password_required when 2FA is on —
+// the password step follows. The code never reaches logs or audit.
+func (a *App) adminLoginCode(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	if a.Mgr.Get(alias) == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Code) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "code required"})
+		return
+	}
+	passwordRequired, stage, err := a.Mgr.LoginCode(r.Context(), alias, strings.TrimSpace(body.Code))
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	if passwordRequired {
+		a.Store.Audit("login_code", alias, "password_required=true")
+		writeJSON(w, 409, map[string]any{
+			"ok": false, "error_code": 409, "stage": stage,
+			"password_required": true,
+			"description":       "2FA is enabled — submit the password via login/password",
+		})
+		return
+	}
+	a.Store.Audit("login_code", alias, "authorized=true")
+	writeJSON(w, 200, map[string]any{"ok": true, "stage": stage})
+}
+
+// adminLoginPassword is step 3 (only when 2FA asked for it).
+func (a *App) adminLoginPassword(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	if a.Mgr.Get(alias) == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error_code": 404})
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Password == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "password required"})
+		return
+	}
+	stage, err := a.Mgr.LoginPassword(r.Context(), alias, body.Password)
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	a.Store.Audit("login_password", alias, "authorized=true")
+	writeJSON(w, 200, map[string]any{"ok": true, "stage": stage})
+}
+
+// adminImportSession installs an existing authorization without a new
+// login: a Telethon StringSession (decoded with gotd) or a raw gotd
+// session JSON blob (base64). The material is sealed at rest and never
+// logged. force replaces an existing stored session — only after the
+// old holder stopped (Telegram answers AUTH_KEY_DUPLICATED to both).
+func (a *App) adminImportSession(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	alias := r.PathValue("alias")
+	var body struct {
+		Kind           string `json:"kind"`
+		Phone          string `json:"phone"`
+		ConnOpts       string `json:"conn_opts"`
+		Telethon       string `json:"telethon_string"`
+		GotdSessionB64 string `json:"gotd_session_b64"`
+		Force          bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || alias == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "invalid body"})
+		return
+	}
+	if (body.Telethon == "") == (body.GotdSessionB64 == "") {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "exactly one source required: telethon_string or gotd_session_b64"})
+		return
+	}
+	kind := body.Kind
+	if kind == "" {
+		kind = "user"
+	}
+	if kind != "user" && kind != "bot" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "kind must be bot or user"})
+		return
+	}
+	if body.ConnOpts != "" && !json.Valid([]byte(body.ConnOpts)) {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "conn_opts must be a JSON object"})
+		return
+	}
+
+	var blob []byte
+	source := "telethon"
+	if body.Telethon != "" {
+		data, err := sessionTelethonDecode(body.Telethon)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+			return
+		}
+		blob = data
+	} else {
+		source = "gotd"
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(body.GotdSessionB64))
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "gotd_session_b64 must be base64"})
+			return
+		}
+		if !json.Valid(raw) {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "gotd session blob must be JSON"})
+			return
+		}
+		blob = raw
+	}
+
+	if a.Store.HasGotdSession(alias) && !body.Force {
+		writeJSON(w, 409, map[string]any{"ok": false, "error_code": 409,
+			"description": "a session is already stored for this alias; pass force=true to replace it (the old holder must be stopped first — see AUTH_KEY_DUPLICATED)"})
+		return
+	}
+	// tear down any live session before overwriting its authorization
+	if a.Mgr.Get(alias) != nil {
+		a.Mgr.Unregister(r.Context(), alias)
+	}
+	if err := a.Store.RegisterUser(alias, body.Phone, body.ConnOpts); err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if err := a.Store.SaveGotdSession(alias, blob); err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	s, err := a.Mgr.RegisterUser(r.Context(), alias, body.Phone, body.ConnOpts)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	a.Store.Audit("import", alias, "source="+source+" kind="+kind+" force="+boolStr(body.Force))
+	writeJSON(w, 200, map[string]any{"ok": true, "alias": alias, "kind": kind, "state": string(s.CurrentState())})
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
@@ -923,7 +1360,18 @@ func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(aliases)
 	out := make([]map[string]any, 0, len(aliases))
 	for _, alias := range aliases {
-		out = append(out, sessions[alias].Stats())
+		row := sessions[alias].Stats()
+		if row["kind"] == "user" {
+			stage, phone, lastErr := a.Mgr.LoginStage(alias)
+			row["login_stage"] = stage
+			if phone != "" {
+				row["login_phone"] = "***" + last4(phone)
+			}
+			if lastErr != "" {
+				row["login_error"] = lastErr
+			}
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "sessions": out})
 }
@@ -1069,6 +1517,147 @@ func (a *App) adminAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "entries": a.Store.GetAudit(100)})
 }
 
+// ── client tokens (per-consumer allowlists) ────────────────────────
+
+// adminRegisterClient issues a client token. The token appears exactly
+// once, in this response; only its SHA-256 is stored.
+func (a *App) adminRegisterClient(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	var body struct {
+		Name      string   `json:"name"`
+		Allowlist []string `json:"allowlist"`
+		Sessions  []string `json:"sessions"`
+		Lane      string   `json:"lane"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "name required"})
+		return
+	}
+	if len(body.Sessions) == 0 {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "sessions required: the explicit list of session aliases this client may use"})
+		return
+	}
+	if _, err := ExpandAllowlist(body.Allowlist); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+		return
+	}
+	if body.Lane != "" && body.Lane != "interactive" && body.Lane != "normal" && body.Lane != "bulk" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "lane must be interactive, normal or bulk"})
+		return
+	}
+	id, err := newClientID()
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	token, err := newClientToken()
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if err := a.Store.RegisterClient(id, body.Name, hashToken(token), body.Allowlist, body.Sessions, body.Lane); err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	_ = a.Clients.Reload()
+	a.Store.Audit("client_register", body.Name,
+		fmt.Sprintf("id=%s allowlist=[%s] sessions=[%s]", id, strings.Join(body.Allowlist, ","), strings.Join(body.Sessions, ",")))
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "id": id, "name": body.Name,
+		"allowlist": body.Allowlist, "sessions": body.Sessions, "lane": body.Lane,
+		"token":       token,
+		"description": "store this token now — it is shown once and only its hash is kept",
+	})
+}
+
+func (a *App) adminListClients(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	rows, err := a.Store.ListClients()
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "clients": rows})
+}
+
+// adminUpdateClient rewrites allowlist/sessions/lane; omitted fields
+// keep their stored value. The token itself never rotates here — issue
+// a new client and revoke this one instead.
+func (a *App) adminUpdateClient(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		Allowlist *[]string `json:"allowlist"`
+		Sessions  *[]string `json:"sessions"`
+		Lane      *string   `json:"lane"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "invalid JSON body"})
+		return
+	}
+	var allowlist, sessions []string
+	if body.Allowlist != nil {
+		if _, err := ExpandAllowlist(*body.Allowlist); err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": err.Error()})
+			return
+		}
+		allowlist = *body.Allowlist
+	}
+	if body.Sessions != nil {
+		if len(*body.Sessions) == 0 {
+			writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+				"description": "sessions cannot be empty — revoke the client instead"})
+			return
+		}
+		sessions = *body.Sessions
+	}
+	if body.Lane != nil && *body.Lane != "" && *body.Lane != "interactive" && *body.Lane != "normal" && *body.Lane != "bulk" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400,
+			"description": "lane must be interactive, normal or bulk"})
+		return
+	}
+	ok, err := a.Store.UpdateClient(id, allowlist, sessions, body.Lane)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if ok {
+		_ = a.Clients.Reload()
+		a.Store.Audit("client_update", id, "")
+	}
+	writeJSON(w, 200, map[string]any{"ok": ok})
+}
+
+func (a *App) adminRevokeClient(w http.ResponseWriter, r *http.Request) {
+	if !a.adminAuthed(r) {
+		writeJSON(w, 401, map[string]any{"ok": false, "error_code": 401})
+		return
+	}
+	id := r.PathValue("id")
+	ok, err := a.Store.RevokeClient(id)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error_code": 500, "description": err.Error()})
+		return
+	}
+	if ok {
+		_ = a.Clients.Reload()
+		a.Store.Audit("client_revoke", id, "")
+	}
+	writeJSON(w, 200, map[string]any{"ok": ok})
+}
+
 // ── health & metrics ───────────────────────────────────────────────
 
 // bearerOK compares secrets in constant time (timing side channels).
@@ -1156,8 +1745,13 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if connectedSince > 0 {
 			age = int(wallNow() - connectedSince)
 		}
+		awaitingLogin := 0
+		if s.CurrentState() == StateAwaitingLogin {
+			awaitingLogin = 1
+		}
 		lines = append(lines,
 			fmt.Sprintf("tg_gateway_session_state{%s} %d", labels, stateVal),
+			fmt.Sprintf("tg_gateway_session_awaiting_login{%s} %d", labels, awaitingLogin),
 			fmt.Sprintf("tg_gateway_session_connection_age_seconds{%s} %d", labels, age),
 			fmt.Sprintf("tg_gateway_update_queue_depth{%s} %d", labels, queueDepth),
 			fmt.Sprintf("tg_gateway_real_flood_wait_total{%s} %d", labels, realFlood),
@@ -1178,6 +1772,12 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		if lastPingOKAt > 0 {
 			lines = append(lines, fmt.Sprintf("tg_gateway_seconds_since_ping_ok{%s} %.1f", labels, monoNow()-lastPingOKAt))
+		}
+		for lane, depth := range s.lanes.Depth() {
+			lines = append(lines, fmt.Sprintf("tg_gateway_lane_queue_depth{alias=%q,lane=%q} %d", alias, lane, depth))
+		}
+		for lane, n := range s.lanes.Admissions() {
+			lines = append(lines, fmt.Sprintf("tg_gateway_lane_admissions_total{alias=%q,lane=%q} %d", alias, lane, n))
 		}
 	}
 	degraded := 0

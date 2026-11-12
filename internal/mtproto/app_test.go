@@ -46,6 +46,9 @@ type fakeMTClient struct {
 	uploads      []string
 	floodOnceCh  int64 // >0: first send to this chat raises FloodWait(42)
 	flooded      bool
+	sentDocs     []DocRef   // scanner-surface: send_media document refs
+	readAcks     [][2]int64 // scanner-surface: send_read_acknowledge
+	seededPeers  []PeerSeed // scanner-surface: seed_peers
 }
 
 type sentRec struct {
@@ -218,8 +221,9 @@ func itestConfigWithKey(dir, key string) config.MTProto {
 			OnLimit: "reject", QueueWaitTimeout: 0.5,
 			UpdateQueueMax: 5000, UpdateTTLS: 3600,
 		},
-		Storage:        config.StorageConfig{Durability: "normal", MaintenanceInterval: 0},
-		MetricsEnabled: true,
+		Storage:         config.StorageConfig{Durability: "normal", MaintenanceInterval: 0},
+		LegacyAppSecret: true,
+		MetricsEnabled:  true,
 	}
 }
 
@@ -763,5 +767,35 @@ func TestAdminPortSplit(t *testing.T) {
 	}
 	if code := mtRaw(t, "GET", adm.URL+"/metrics", "", "").code; code != 200 {
 		t.Fatalf("admin /metrics = %d, want 200", code)
+	}
+}
+
+// hangClient's Ping never returns — the wedge the production shadow run
+// caught (supervisor stuck inside the call, reconnects never happened).
+type hangPingClient struct {
+	fakeMTClient
+	pingCalls chan struct{}
+}
+
+func (h *hangPingClient) Ping(ctx context.Context) error {
+	<-ctx.Done()          // wait for the caller's timeout
+	<-make(chan struct{}) // ...and STILL never return: the engine wedge
+	return ctx.Err()      // (unreachable; keeps the compiler happy)
+}
+
+func TestPingWatchdogEscapesWedgedPing(t *testing.T) {
+	hang := &hangPingClient{pingCalls: make(chan struct{}, 4)}
+	s := &Session{Alias: "w1", client: hang, state: StateLive}
+	start := time.Now()
+	if s.pingWithWatchdog() {
+		t.Fatal("wedged ping must report false")
+	}
+	if elapsed := time.Since(start); elapsed > 20*time.Second || elapsed < 14*time.Second {
+		t.Fatalf("watchdog fired at %v (want the 15s hard deadline)", elapsed)
+	}
+	// the healthy path still passes through
+	ok := (&Session{Alias: "w2", client: &fakeMTClient{}}).pingWithWatchdog()
+	if !ok {
+		t.Fatal("healthy ping must report true")
 	}
 }
