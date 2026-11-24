@@ -7,7 +7,7 @@ toolchain go1.26.11
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/fernet/fernet-go v0.0.0-20240119011108-303da6aec611
-	github.com/gotd/td v0.163.0
+	github.com/gotd/td v0.166.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
